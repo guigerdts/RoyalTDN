@@ -1,0 +1,129 @@
+# RoyalTDN — CI/CD Pipeline
+# Fase 3, documento 05, sección 5.3.4
+#
+# Pipeline completo: test → build & push → deploy
+# Principios: automatización total, no desplegar sin tests, infra como código.
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════
+  # JOB 1: TEST — verificar que el código funciona
+  # ═══════════════════════════════════════════════════════════════════
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Instalar dependencias base
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements/fase0.txt
+          pip install -r requirements/fase2.txt
+
+      - name: Instalar paquete en modo editable
+        run: pip install -e .
+
+      - name: Verificar imports del paquete
+        run: python -c "import royaltdn; print('✅ Paquete royaltdn importa correctamente')"
+
+      - name: Smoke test — imports
+        run: python tests/smoke_backtest.py --quick
+
+      - name: Smoke test — backtest VectorBT
+        run: python tests/smoke_backtest.py
+        timeout-minutes: 5
+
+      - name: Lint con Ruff
+        run: pip install ruff && ruff check src/
+        continue-on-error: true  # no bloquea el pipeline, solo informa
+
+  # ═══════════════════════════════════════════════════════════════════
+  # JOB 2: BUILD & PUSH — imagen Docker multi-stage
+  # ═══════════════════════════════════════════════════════════════════
+  build-and-push:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login a GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Extraer metadatos (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build y push multi-stage
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ═══════════════════════════════════════════════════════════════════
+  # JOB 3: DEPLOY — (OPCIONAL) requiere VPS configurado
+  # ═══════════════════════════════════════════════════════════════════
+  # Descomentar cuando tengas un VPS con Docker configurado:
+  #
+  # deploy:
+  #   needs: [build-and-push]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main'
+  #
+  #   steps:
+  #     - name: Deploy via SSH
+  #       uses: appleboy/ssh-action@v1.0.3
+  #       with:
+  #         host: ${{ secrets.VPS_HOST }}
+  #         username: ${{ secrets.VPS_USER }}
+  #         key: ${{ secrets.SSH_PRIVATE_KEY }}
+  #         script: |
+  #           cd /opt/royaltdn
+  #           docker compose pull bot
+  #           docker compose down bot
+  #           docker compose up -d bot
+  #           docker image prune -f
+  #           echo "✅ Bot actualizado y reiniciado en $(date)"

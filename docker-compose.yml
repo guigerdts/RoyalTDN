@@ -1,0 +1,115 @@
+# RoyalTDN — Docker Compose (Fase 3)
+# Roadmap Fase 3: Infraestructura Profesional
+# Documento 05, sección 5.3.2
+#
+# Uso:
+#   docker compose up -d                    # Iniciar todos los servicios
+#   docker compose up -d bot                # Solo el bot
+#   docker compose logs -f bot              # Ver logs del bot
+#   docker compose down                     # Detener todo
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Bot de trading (servicio principal)
+  # ═══════════════════════════════════════════════════════════════════════════
+  bot:
+    build: .
+    image: royaltdn/bot:latest
+    container_name: royaltdn-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Conexiones a servicios internos
+      DATABASE_URL: postgresql://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD:-botpassword}@db:5432/${POSTGRES_DB:-trading_bot}
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: ["run"]
+    logging: *default-logging
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Redis Stack — Streams, caché, pub/sub (Fase 3+)
+  # ═══════════════════════════════════════════════════════════════════════════
+  redis:
+    image: redis/redis-stack:latest
+    container_name: royaltdn-redis
+    restart: unless-stopped
+    ports:
+      # 6379 expuesto solo para debug local (comentar en producción)
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TimescaleDB — Base de datos temporal (velas, trades, señales)
+  # ═══════════════════════════════════════════════════════════════════════════
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: royaltdn-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-botuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-botpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-trading_bot}
+    ports:
+      # Opcional: exponer para debug con DBeaver/psql (comentar en producción)
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      # Scripts de inicialización opcionales
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botuser} -d ${POSTGRES_DB:-trading_bot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Grafana — Dashboards de monitoreo
+  # ═══════════════════════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana:latest
+    container_name: royaltdn-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-royaltdn123}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Dashboard pre-configurado (se creará después)
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
+
+volumes:
+  redis_data:
+    driver: local
+  timescale_data:
+    driver: local
+  grafana_data:
+    driver: local

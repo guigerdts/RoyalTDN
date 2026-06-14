@@ -1,0 +1,338 @@
+{
+  "title": "RoyalTDN — Bot Trading Metrics",
+  "uid": "royaltdn-bot-metrics",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "tags": ["royaltdn", "trading"],
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "symbol",
+        "type": "query",
+        "query": "SELECT DISTINCT symbol FROM trades ORDER BY symbol",
+        "datasource": "TimescaleDB",
+        "refresh": 1,
+        "sort": 0,
+        "includeAll": true,
+        "multi": true,
+        "label": "Symbol",
+        "current": {"text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Curva de Equity Acumulada",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "id": 1,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 20,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"showLegend": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      },
+      "targets": [
+        {
+          "format": "table",
+          "group": [],
+          "metricColumn": "none",
+          "rawQuery": true,
+          "rawSql": "SELECT exit_at AS time, SUM(pnl) OVER (ORDER BY exit_at) AS equity FROM trades WHERE ($__un: symbol = '$symbol' OR TRUE) ORDER BY exit_at",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Evolución del capital acumulado. Cada punto es una operación cerrada. La pendiente indica la velocidad de crecimiento."
+    },
+    {
+      "title": "Drawdown desde Máximo",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "id": 2,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {"mode": "fixed", "fixedColor": "#ff4444"},
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 30,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "single"}
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH equity_curve AS ( SELECT exit_at AS time, SUM(pnl) OVER (ORDER BY exit_at) AS equity FROM trades WHERE ($__un: symbol = '$symbol' OR TRUE) ) SELECT time, equity, ((equity - MAX(equity) OVER (ORDER BY time)) / NULLIF(MAX(equity) OVER (ORDER BY time), 0)) * 100 AS drawdown_pct FROM equity_curve ORDER BY time",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Drawdown desde el pico de equity máximo. Si baja de -30% hay que revisar la estrategia."
+    },
+    {
+      "title": "P&L Diario",
+      "type": "barchart",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "id": 3,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "stacking": {"mode": "none"},
+            "axisBorderShow": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "daily_pnl"},
+            "properties": [
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"value": -1000000, "color": "#ff4444"},
+                    {"value": 0, "color": "#ff4444"},
+                    {"value": 0.01, "color": "#00ff00"}
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "auto",
+        "xTickLabelRotation": 0,
+        "showValue": "never",
+        "legend": {"showLegend": false}
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT exit_at::date AS time, SUM(pnl) AS daily_pnl FROM trades WHERE ($__un: symbol = '$symbol' OR TRUE) GROUP BY exit_at::date ORDER BY exit_at::date",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Ganancia o pérdida neta por día. Barras verdes = ganancia, rojas = pérdida."
+    },
+    {
+      "title": "Métricas de Resumen",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 8, "w": 4, "h": 4},
+      "id": 4,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": -100, "color": "#ff4444"},
+              {"value": 0.5, "color": "#ffaa00"},
+              {"value": 0.7, "color": "#00ff00"}
+            ]
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["mean"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FILTER (WHERE pnl > 0)::float / NULLIF(COUNT(*), 0) AS win_rate FROM trades",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Porcentaje de operaciones ganadoras sobre el total."
+    },
+    {
+      "title": "Profit Factor",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 8, "w": 4, "h": 4},
+      "id": 5,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": -100, "color": "#ff4444"},
+              {"value": 1.5, "color": "#ffaa00"},
+              {"value": 2.0, "color": "#00ff00"}
+            ]
+          },
+          "mappings": [],
+          "min": 0,
+          "max": 10
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["mean"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(SUM(pnl) FILTER (WHERE pnl > 0) / NULLIF(ABS(SUM(pnl) FILTER (WHERE pnl < 0)), 0), 2) AS profit_factor FROM trades",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Ratio ganancia total / pérdida total. > 2.0 es saludable."
+    },
+    {
+      "title": "Total Trades",
+      "type": "stat",
+      "gridPos": {"x": 20, "y": 8, "w": 4, "h": 4},
+      "id": 6,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "fixed", "fixedColor": "#36a2eb"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"value": -100, "color": "#36a2eb"}]}
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["count"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS total_trades FROM trades",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Número total de operaciones cerradas."
+    },
+    {
+      "title": "Últimas Operaciones",
+      "type": "table",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "id": 7,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"value": -1000000, "color": "#ff4444"},
+              {"value": 0, "color": "#ff4444"},
+              {"value": 0.01, "color": "#00ff00"}
+            ]
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {"type": "auto"}
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "pnl"},
+            "properties": [{"id": "unit", "value": "currencyUSD"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "exit_at"},
+            "properties": [{"id": "unit", "value": "time"}]
+          }
+        ]
+      },
+      "options": {
+        "footer": {"show": false},
+        "sortBy": [
+          {"desc": true, "displayName": "exit_at"}
+        ],
+        "rowHeight": 40,
+        "showTypeIcons": false
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT entry_at, exit_at, symbol, side, qty, entry_price, exit_price, pnl, ROUND(pnl_pct::numeric, 2) AS pnl_pct FROM trades ORDER BY exit_at DESC LIMIT 20",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Las 20 operaciones más recientes. P&L en verde = ganancia, rojo = pérdida.",
+      "transformations": []
+    }
+  ]
+}

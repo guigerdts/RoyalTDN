@@ -1,0 +1,11 @@
+# RoyalTDN — Fase 3: Infraestructura Profesional
+# Base de datos, Docker, dashboards, CI/CD
+# Instalar con: pip install -r requirements/fase3.txt
+
+# Base de datos (psycopg2-binary incluye libpq, no necesita compilación)
+psycopg2-binary>=2.9,<3
+
+# Docker compose (referencia, se instala aparte)
+# docker-compose >= 2.24
+
+# CI/CD (GitHub Actions — no necesita pip)

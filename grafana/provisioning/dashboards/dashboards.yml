@@ -1,0 +1,20 @@
+# RoyalTDN — Grafana Dashboard Provisioning
+# Fase 3, documento 05, sección 5.3.3
+#
+# Carga automáticamente dashboards desde la carpeta grafana/dashboards/
+# al iniciar el contenedor de Grafana.
+
+apiVersion: 1
+
+providers:
+  - name: "RoyalTDN"
+    orgId: 1
+    folder: "RoyalTDN"
+    folderUid: "royaltdn"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

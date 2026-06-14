@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "royaltdn"
+version = "0.1.0"
+description = "Algoritmic trading bot — Roadmap Fase 0: Los Cimientos"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.1,<3",
+    "numpy>=1.26,<2",
+    "matplotlib>=3.8,<4",
+    "yfinance>=0.2,<1",
+    "alpaca-py>=0.18,<1",
+    "python-dotenv>=1.0,<2",
+    "jupyterlab>=4.0,<5",
+]
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["royaltdn*"]
+
+[project.scripts]
+royaltdn = "royaltdn.main:main"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true

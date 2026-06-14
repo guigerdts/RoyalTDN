@@ -1,0 +1,21 @@
+# RoyalTDN — Grafana Datasource: TimescaleDB
+# Se carga automáticamente al iniciar Grafana.
+# Documento 05, sección 5.3.3
+
+apiVersion: 1
+
+datasources:
+  - name: TimescaleDB
+    type: postgresql
+    access: proxy
+    url: db:5432
+    user: ${POSTGRES_USER}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      database: ${POSTGRES_DB}
+      sslmode: disable
+      postgresVersion: 1500  # PG15
+      timescaledb: true
+    isDefault: true
+    editable: false
