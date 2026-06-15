@@ -311,6 +311,14 @@
           {
             "matcher": {"id": "byName", "options": "exit_at"},
             "properties": [{"id": "unit", "value": "time"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "slippage_bps"},
+            "properties": [{"id": "unit", "value": "none"}, {"id": "displayName", "value": "Slippage (bps)"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "execution_method"},
+            "properties": [{"id": "displayName", "value": "Ejecución"}]
           }
         ]
       },
@@ -326,13 +334,95 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT entry_at, exit_at, symbol, side, qty, entry_price, exit_price, pnl, ROUND(pnl_pct::numeric, 2) AS pnl_pct FROM trades ORDER BY exit_at DESC LIMIT 20",
+          "rawSql": "SELECT entry_at, exit_at, symbol, side, qty, entry_price, exit_price, pnl, ROUND(pnl_pct::numeric, 2) AS pnl_pct, slippage_bps, execution_method FROM trades ORDER BY exit_at DESC LIMIT 20",
           "refId": "A",
           "datasource": "TimescaleDB"
         }
       ],
       "description": "Las 20 operaciones más recientes. P&L en verde = ganancia, rojo = pérdida.",
       "transformations": []
+    },
+    {
+      "title": "Slippage Promedio Diario (TCA)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+      "id": 8,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "lineInterpolation": "smooth",
+            "fillOpacity": 25,
+            "showPoints": "always"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "avg_slippage"},
+            "properties": [
+              {"id": "displayName", "value": "Slippage (bps)"},
+              {"id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": -1000, "color": "#00ff00"},
+                  {"value": -5, "color": "#00ff00"},
+                  {"value": 5, "color": "#ffaa00"},
+                  {"value": 10, "color": "#ff4444"}
+                ]
+              }}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {"showLegend": false},
+        "tooltip": {"mode": "multi"}
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT exit_at::date AS time, AVG(slippage_bps) AS avg_slippage, COUNT(*) AS trades FROM trades WHERE slippage_bps IS NOT NULL AND ($__un: symbol = '$symbol' OR TRUE) GROUP BY exit_at::date ORDER BY exit_at::date",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Slippage promedio diario en basis points. Verde = ejecución mejor que arrival, rojo = peor. Indica calidad de ejecución."
+    },
+    {
+      "title": "Método de Ejecución",
+      "type": "piechart",
+      "gridPos": {"x": 12, "y": 20, "w": 6, "h": 6},
+      "id": 9,
+      "datasource": "TimescaleDB",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "options": {
+        "displayLabels": ["name", "percent"],
+        "legend": {"showLegend": true, "placement": "bottom"},
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": ["count"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT execution_method, COUNT(*) AS count FROM trades WHERE execution_method IS NOT NULL GROUP BY execution_method ORDER BY count DESC",
+          "refId": "A",
+          "datasource": "TimescaleDB"
+        }
+      ],
+      "description": "Distribución de métodos de ejecución: market, twap, limit."
     }
   ]
 }

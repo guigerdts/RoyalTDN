@@ -1,0 +1,5 @@
+# RoyalTDN — Fase 4: Arquitectura Modular y Estrategias Avanzadas
+# Instalar con: pip install -r requirements/fase4.txt
+
+# Redis Streams — mensajería entre módulos
+redis>=5.0,<9

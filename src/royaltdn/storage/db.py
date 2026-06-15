@@ -224,15 +224,16 @@ class Database:
         logger.debug(f"Orden insertada: {order['order_id']}")
 
     async def insert_trade(self, trade: dict) -> None:
-        """Inserta una operación cerrada en trades con P&L."""
+        """Inserta una operación cerrada en trades con P&L y TCA."""
         pnl = trade["pnl"]
         entry_price = trade.get("entry_price", 0)
         pnl_pct = trade.get("pnl_pct", pnl / entry_price if entry_price > 0 else 0)
 
         await self._execute(
             "INSERT INTO trades (symbol, side, entry_price, exit_price, qty, pnl, pnl_pct, "
-            "entry_order_id, exit_order_id, entry_at, exit_at, strategy) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "entry_order_id, exit_order_id, entry_at, exit_at, strategy, "
+            "slippage_bps, arrival_price, execution_method) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 trade["symbol"],
                 trade["side"],
@@ -246,6 +247,9 @@ class Database:
                 trade["entry_at"],
                 trade["exit_at"],
                 trade.get("strategy", "sma_crossover"),
+                trade.get("slippage_bps"),
+                trade.get("arrival_price"),
+                trade.get("execution_method", "market"),
             ),
         )
         logger.info(f"Trade registrado: {trade['symbol']} P&L=${pnl:.2f}")
