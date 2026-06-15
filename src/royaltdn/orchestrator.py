@@ -34,7 +34,7 @@ from royaltdn.risk_manager import (
     check_risk_limits,
     get_atr,
 )
-from royaltdn.alerts import notify_entry, notify_exit, notify_kill_switch, notify_error
+from royaltdn.alerts import notify_entry, notify_exit, notify_kill_switch, notify_error, send_telegram_message_async
 from royaltdn.monitoring.tca import calculate_slippage
 from royaltdn.storage.db import Database
 
@@ -494,8 +494,9 @@ class Orchestrator:
                 if not self._check_task_health():
                     self._use_legacy_fallback = True
                     await self._stop_strategy()
-                    await notify_error(
-                        "⚠️ DataIngestor task murió — cambiando a modo legacy (REST polling)"
+                    await send_telegram_message_async(
+                        "ℹ️ <b>LEGACY FALLBACK</b>\n"
+                        "DataIngestor task murió — cambiando a modo legacy (REST polling)"
                     )
                     break
 
@@ -563,8 +564,9 @@ class Orchestrator:
         logger.info("  Alertas Telegram: ACTIVAS")
         logger.info("  TWAP:             %s", "ACTIVO" if self.twap_enabled else "INACTIVO")
         logger.info("=" * 50)
-        await notify_error(
-            f"⚠️ RoyalTDN en modo LEGACY (REST polling c/{poll_interval}s)\n"
+        await send_telegram_message_async(
+            f"ℹ️ <b>LEGACY FALLBACK</b>\n"
+            f"RoyalTDN en modo LEGACY — REST polling c/{poll_interval}s\n"
             f"Símbolo: {self.symbol} SMA{self.sma_fast}/{self.sma_slow}\n"
             f"Risk manager activo — alertas en tiempo real reducido"
         )
@@ -592,7 +594,7 @@ class Orchestrator:
                     continue
 
                 # Ordenar por timestamp por si vienen desordenados
-                symbol_bars.sort(key=lambda b: b.t)
+                symbol_bars.sort(key=lambda b: b.timestamp)
                 closes = [float(b.c) for b in symbol_bars]
 
                 # 3. Calcular SMA inline
