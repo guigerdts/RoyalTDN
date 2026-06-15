@@ -224,7 +224,7 @@ async def run_bot():
                 state.consecutive_losses,
             )
             if kill:
-                notify_kill_switch(reason)
+                await notify_kill_switch(reason)
                 logger.error("🛑 %s", reason)
                 if state.position == "long" and state.position_qty > 0:
                     await submit_order(trading_client, OrderSide.SELL, state.position_qty, state.db)
@@ -255,13 +255,13 @@ async def run_bot():
                 state.last_entry_at = datetime.now()
 
                 if current_price > 0:
-                    notify_entry(SYMBOL, "buy", qty, current_price)
+                    await notify_entry(SYMBOL, "buy", qty, current_price)
 
             elif signal == 0 and state.position == "long":
                 exit_order = await submit_order(trading_client, OrderSide.SELL, state.position_qty, state.db)
                 pnl = (current_price - state.last_entry_price) * state.position_qty
                 if current_price > 0:
-                    notify_exit(SYMBOL, "sell", state.position_qty, current_price, pnl)
+                    await notify_exit(SYMBOL, "sell", state.position_qty, current_price, pnl)
 
                 if state.db and state.db.is_connected and state.last_entry_at:
                     await state.db.insert_trade({
@@ -291,7 +291,7 @@ async def run_bot():
 
         except Exception as e:
             logger.error("Error en bucle principal: %s", e, exc_info=True)
-            notify_error(str(e))
+            await notify_error(str(e))
             await asyncio.sleep(10)
 
     if state.db:

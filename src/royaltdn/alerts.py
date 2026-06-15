@@ -1,31 +1,30 @@
 """
 RoyalTDN — Sistema de Alertas (Fase 2)
 
-Basado en documento 04_ruta_implementacion_fase0_fase1.md, sección 4.1.6.
-
 Soporta:
-- Telegram (usando python-telegram-bot)
+- Telegram (vía Bot API con httpx)
 
 Variables de entorno requeridas (.env):
   TELEGRAM_BOT_TOKEN=<token_de_bot>
   TELEGRAM_CHAT_ID=<tu_chat_id>
 """
 
+import asyncio
 import logging
 import os
+from typing import Optional
+
+import httpx
 
 logger = logging.getLogger("royaltdn.alerts")
 
+TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
-def send_telegram_message(message: str) -> bool:
+
+async def send_telegram_message_async(message: str) -> bool:
     """
-    Envía un mensaje de Telegram al chat configurado.
-
-    Args:
-        message: Texto del mensaje a enviar.
-
-    Returns:
-        bool: True si se envió correctamente, False si falló o no está configurado.
+    Versión asíncrona: envía un mensaje de Telegram.
+    Usar con `await` desde código async.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,56 +33,76 @@ def send_telegram_message(message: str) -> bool:
         logger.debug("Telegram no configurado — salteando alerta")
         return False
 
+    url = TELEGRAM_API_BASE.format(token=token)
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML",
+    }
+
     try:
-        # Lazy import para no romper si no está instalado
-        import asyncio
-
-        from telegram import Bot
-
-        bot = Bot(token=token)
-
-        async def _send():
-            await bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
-
-        asyncio.run(_send())
-        logger.info(f"📨 Telegram enviado: {message[:60]}...")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+        logger.info("📨 Telegram enviado: %s...", message[:60])
         return True
-
-    except ImportError:
-        logger.warning("python-telegram-bot no instalado — salteando alerta")
-        return False
     except Exception as e:
-        logger.error(f"Error enviando Telegram: {e}")
+        logger.error("Error enviando Telegram: %s", e)
         return False
 
 
-def notify_entry(symbol: str, side: str, qty: int, price: float) -> None:
+def send_telegram_message(message: str) -> bool:
+    """
+    Versión sincrónica (compatible con código sync y async).
+
+    - Si NO hay un event loop corriendo: usa asyncio.run() (seguro).
+    - Si SÍ hay un event loop corriendo: advierte que uses la versión async.
+    """
+    try:
+        asyncio.get_running_loop()
+        logger.warning(
+            "send_telegram_message() llamado desde un event loop activo. "
+            "Usa 'await send_telegram_message_async()' en su lugar."
+        )
+        return False
+    except RuntimeError:
+        # No hay loop corriendo — safe to use asyncio.run()
+        pass
+
+    try:
+        return asyncio.run(send_telegram_message_async(message))
+    except Exception as e:
+        logger.error("Error en send_telegram_message: %s", e)
+        return False
+
+
+async def notify_entry(symbol: str, side: str, qty: int, price: float) -> None:
     """Notifica entrada en una posición."""
-    send_telegram_message(
+    await send_telegram_message_async(
         f"🤖 <b>ENTRADA</b>\n"
         f"{side.upper()} {qty} {symbol} @ ${price:.2f}"
     )
 
 
-def notify_exit(symbol: str, side: str, qty: int, price: float, pnl: float) -> None:
+async def notify_exit(symbol: str, side: str, qty: int, price: float, pnl: float) -> None:
     """Notifica salida de una posición con P&L."""
     emoji = "✅" if pnl >= 0 else "❌"
-    send_telegram_message(
+    await send_telegram_message_async(
         f"{emoji} <b>SALIDA</b>\n"
         f"{side.upper()} {qty} {symbol} @ ${price:.2f} | "
         f"P&L: ${pnl:.2f}"
     )
 
 
-def notify_kill_switch(reason: str) -> None:
+async def notify_kill_switch(reason: str) -> None:
     """Notifica activación de kill switch."""
-    send_telegram_message(
+    await send_telegram_message_async(
         f"🚨 <b>KILL SWITCH ACTIVADO</b>\n{reason}"
     )
 
 
-def notify_error(error: str) -> None:
+async def notify_error(error: str) -> None:
     """Notifica error crítico en el bot."""
-    send_telegram_message(
+    await send_telegram_message_async(
         f"⚠️ <b>ERROR</b>\n{error}"
     )

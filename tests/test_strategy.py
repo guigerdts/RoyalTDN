@@ -167,14 +167,17 @@ def test_buy_then_sell():
     print("  ⚠️  No se generó SELL (puede ser normal con pocos datos)")
 
 
-def test_thread_helper():
-    """Verifica que as_thread construye un Thread."""
-    thread = SMAStrategy.as_thread("redis://localhost:6379/0")
-    assert thread.name == "sma-strategy"
-    assert thread.daemon is True
-    assert hasattr(thread, "engine")
-    assert thread.engine.symbol == "SPY"
-    print("  ✅ as_thread helper")
+def test_async_run_exists():
+    """Verifica que SMAStrategy tiene run() async."""
+    engine = SMAStrategy("redis://localhost:6379/0")
+    assert hasattr(engine, "run")
+    assert callable(engine.run)
+    import asyncio
+    assert asyncio.iscoroutinefunction(engine.run), "run() debe ser async"
+    assert hasattr(engine, "stop")
+    assert callable(engine.stop)
+    assert engine.symbol == "SPY"
+    print("  ✅ Interfaz async OK (run/stop)")
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -194,7 +197,7 @@ def main():
     test_process_bar_generates_buy()
     test_no_duplicate_signals()
     test_buy_then_sell()
-    test_thread_helper()
+    test_async_run_exists()
 
     print("\n✅ TODOS LOS TESTS PASARON")
     return 0

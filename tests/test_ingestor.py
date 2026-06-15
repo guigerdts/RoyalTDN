@@ -53,26 +53,30 @@ def test_class_construction():
     print("  ✅ Feed:", ingestor.feed)
 
 
-def test_thread_helper():
-    """Verifica que as_thread construye un Thread correctamente."""
-    print("\n🔍 Verificando as_thread...")
+def test_async_run_exists():
+    """Verifica que ingestor tiene run() async."""
+    print("\n🔍 Verificando interfaz async...")
 
-    thread = DataIngestor.as_thread(
+    ingestor = DataIngestor(
         api_key="test_key",
         secret_key="test_secret",
         redis_url="redis://localhost:6379/0",
         symbols=["SPY", "QQQ"],
     )
 
-    assert thread.name == "data-ingestor"
-    assert thread.daemon is True
-    assert hasattr(thread, "ingestor")
-    assert thread.ingestor.symbols == ["SPY", "QQQ"]
+    assert hasattr(ingestor, "run")
+    assert callable(ingestor.run)
+    # Verificar que run() es una corutina (se puede await)
+    import asyncio
+    assert asyncio.iscoroutinefunction(ingestor.run), "run() debe ser async"
 
-    print("  ✅ Thread helper OK")
-    print("  ✅ Thread name:", thread.name)
-    print("  ✅ Daemon:", thread.daemon)
-    print("  ✅ Symbols via thread:", thread.ingestor.symbols)
+    assert hasattr(ingestor, "stop")
+    assert callable(ingestor.stop)
+
+    print("  ✅ Interfaz async OK")
+    print("  ✅ run() es corutina")
+    print("  ✅ stop() existe")
+    print("  ✅ Symbols:", ingestor.symbols)
 
 
 def main():
@@ -83,7 +87,7 @@ def main():
 
     test_imports()
     test_class_construction()
-    test_thread_helper()
+    test_async_run_exists()
 
     print("\n✅ TODOS LOS TESTS PASARON")
     return 0

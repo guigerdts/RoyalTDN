@@ -4,8 +4,8 @@
 Fase 4, Bloque 3 (documento 6, sección 6.4.4)
 
 Lanza y coordina:
-  - DataIngestor  (thread): Alpaca WebSocket → Redis ``market_bars``
-  - SMAStrategy   (thread): Redis ``market_bars`` → señales ``signals``
+  - DataIngestor  (task): Alpaca WebSocket → Redis ``market_bars``
+  - SMAStrategy   (task): Redis ``market_bars`` → señales ``signals``
   - Bucle principal (async): consume ``signals`` → risk check → orden Alpaca
 
 Uso desde main.py:
@@ -19,7 +19,6 @@ import logging
 import os
 import traceback
 from datetime import datetime, timezone
-from threading import Thread
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -94,9 +93,11 @@ class Orchestrator:
         self._redis: Optional[aioredis.Redis] = None
         self._db: Optional[Database] = None
 
-        # Threads
-        self._ingestor_thread: Optional[Thread] = None
-        self._strategy_thread: Optional[Thread] = None
+        # Tasks asyncio
+        self._ingestor: Optional[DataIngestor] = None
+        self._strategy: Optional[SMAStrategy] = None
+        self._ingestor_task: Optional[asyncio.Task] = None
+        self._strategy_task: Optional[asyncio.Task] = None
 
         # Fallback: si Redis no está disponible o los threads fallan,
         # el orchestrator cambia a modo legacy (polling REST directo)
@@ -181,33 +182,39 @@ class Orchestrator:
 
         return True
 
-    # ── Lanzar threads ───────────────────────────────────────────────
+    # ── Lanzar tareas asyncio ─────────────────────────────────────────
 
-    def _start_ingestor(self):
-        """Lanza DataIngestor en thread daemon."""
+    async def _start_ingestor(self):
+        """Lanza DataIngestor como tarea asyncio."""
         symbols = [self.symbol]
-        thread = DataIngestor.as_thread(
+        self._ingestor = DataIngestor(
             self.api_key,
             self.secret_key,
             self.redis_url,
             symbols=symbols,
             feed=self.feed,
         )
-        thread.start()
-        self._ingestor_thread = thread
-        logger.info("DataIngestor thread lanzado (%s)", self.symbol)
+        loop = asyncio.get_running_loop()
+        self._ingestor_task = loop.create_task(
+            self._ingestor.run(),
+            name="data-ingestor",
+        )
+        logger.info("DataIngestor task creada (%s)", self.symbol)
 
-    def _start_strategy(self):
-        """Lanza SMAStrategy en thread daemon."""
-        thread = SMAStrategy.as_thread(
+    async def _start_strategy(self):
+        """Lanza SMAStrategy como tarea asyncio."""
+        self._strategy = SMAStrategy(
             self.redis_url,
             symbol=self.symbol,
             sma_fast=self.sma_fast,
             sma_slow=self.sma_slow,
         )
-        thread.start()
-        self._strategy_thread = thread
-        logger.info("SMAStrategy thread lanzado")
+        loop = asyncio.get_running_loop()
+        self._strategy_task = loop.create_task(
+            self._strategy.run(),
+            name="sma-strategy",
+        )
+        logger.info("SMAStrategy task creada")
 
     # ── Ejecución de señales ─────────────────────────────────────────
 
@@ -332,7 +339,7 @@ class Orchestrator:
                 self._consecutive_losses,
             )
             if kill:
-                notify_kill_switch(reason)
+                await notify_kill_switch(reason)
                 logger.error("🛑 %s", reason)
 
                 # Cerrar posición si existe
@@ -370,7 +377,7 @@ class Orchestrator:
             self._last_entry_at = datetime.now(timezone.utc)
 
             if price > 0:
-                notify_entry(self.symbol, "buy", qty, price)
+                await notify_entry(self.symbol, "buy", qty, price)
 
         # ── SELL (cierre) ──
         elif action == "SELL" and self._position == "long":
@@ -388,7 +395,7 @@ class Orchestrator:
             slippage_bps = calculate_slippage(filled_price, arrival_price) if filled_price else None
 
             if price > 0:
-                notify_exit(self.symbol, "sell", self._position_qty, price, pnl)
+                await notify_exit(self.symbol, "sell", self._position_qty, price, pnl)
 
             # Registrar trade en DB (con TCA)
             if self._db and self._db.is_connected and self._last_entry_at:
@@ -419,59 +426,76 @@ class Orchestrator:
             self._position = None
             self._position_qty = 0
 
-    # ── Monitor de salud de threads ─────────────────────────────────
+    # ── Monitor de salud de tareas ──────────────────────────────────
 
-    def _check_thread_health(self) -> bool:
-        """Verifica que los threads del ingestor y estrategia estén vivos.
+    def _check_task_health(self) -> bool:
+        """Verifica que las tareas del ingestor y estrategia estén vivas.
 
         Returns:
             True  → todo bien
-            False → al menos un thread murió (el ingestor)
+            False → al menos una tarea murió (el ingestor)
         """
-        if self._ingestor_thread and not self._ingestor_thread.is_alive():
-            logger.error(
-                "⚠️ DataIngestor thread MURIÓ — activando fallback legacy",
-            )
+        if self._ingestor_task and self._ingestor_task.done():
+            # Verificar si fue una excepción no cancelada
+            if not self._ingestor_task.cancelled():
+                exc = self._ingestor_task.exception()
+                logger.error(
+                    "⚠️ DataIngestor task MURIÓ con error: %s — activando fallback legacy",
+                    exc,
+                )
+            else:
+                logger.warning("DataIngestor task cancelada")
             return False
 
-        if self._strategy_thread and not self._strategy_thread.is_alive():
-            logger.warning("SMAStrategy thread MURIÓ — continuando sin estrategia")
-            # No activamos fallback solo por la estrategia; el main loop
-            # seguirá procesando señales pendientes en Redis
+        if self._strategy_task and self._strategy_task.done():
+            if not self._strategy_task.cancelled():
+                exc = self._strategy_task.exception()
+                logger.warning(
+                    "SMAStrategy task MURIÓ: %s — continuando sin estrategia",
+                    exc,
+                )
+            else:
+                logger.warning("SMAStrategy task cancelada")
+            # No activamos fallback solo por la estrategia
 
         return True
 
-    def _stop_strategy(self):
-        """Detiene el thread de la estrategia si está vivo."""
-        if self._strategy_thread and self._strategy_thread.is_alive():
+    async def _stop_strategy(self):
+        """Detiene la tarea de la estrategia."""
+        if self._strategy and self._strategy_task and not self._strategy_task.done():
             try:
-                if hasattr(self._strategy_thread, 'engine'):
-                    self._strategy_thread.engine.stop()
-                    logger.info("SMAStrategy detenido")
+                self._strategy.stop()
+                self._strategy_task.cancel()
+                # Dar tiempo para que la cancelación se propague
+                try:
+                    await asyncio.wait_for(self._strategy_task, timeout=5.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                logger.info("SMAStrategy detenido")
             except Exception as e:
-                logger.debug("Error deteniendo estrategia: %s", e)
+                logger.debug("Error deteniendo SMAStrategy: %s", e)
 
     # ── Loop principal ──────────────────────────────────────────────
 
     async def _main_loop(self):
         """Bucle principal: consume señales de Redis y ejecuta.
 
-        Monitorea la salud del thread del ingestor cada 10 iteraciones.
+        Monitorea la salud de las tareas del ingestor cada 10 iteraciones.
         Si el ingestor muere, sale del loop y ``start()`` maneja el fallback.
         """
         self._running = True
         _health_counter = 0
 
         while self._running and not self._killed:
-            # Verificar salud de threads cada 10 iteraciones
+            # Verificar salud de tareas cada 10 iteraciones
             _health_counter += 1
             if _health_counter >= 10:
                 _health_counter = 0
-                if not self._check_thread_health():
+                if not self._check_task_health():
                     self._use_legacy_fallback = True
-                    self._stop_strategy()
-                    notify_error(
-                        "⚠️ DataIngestor thread murió — cambiando a modo legacy (REST polling)"
+                    await self._stop_strategy()
+                    await notify_error(
+                        "⚠️ DataIngestor task murió — cambiando a modo legacy (REST polling)"
                     )
                     break
 
@@ -497,7 +521,7 @@ class Orchestrator:
                 break
             except Exception as e:
                 logger.error("Error en main loop: %s", e, exc_info=True)
-                notify_error(str(e))
+                await notify_error(str(e))
                 await asyncio.sleep(5)
 
     # ── Fallback legacy (polling REST) ─────────────────────────────
@@ -527,7 +551,7 @@ class Orchestrator:
             logger.critical(
                 "No se pudo inicializar Alpaca Historical Data Client: %s", e,
             )
-            notify_error(f"Fallo crítico en legacy mode: {e}")
+            await notify_error(f"Fallo crítico en legacy mode: {e}")
             return
 
         poll_interval = 60  # segundos entre polls
@@ -539,7 +563,7 @@ class Orchestrator:
         logger.info("  Alertas Telegram: ACTIVAS")
         logger.info("  TWAP:             %s", "ACTIVO" if self.twap_enabled else "INACTIVO")
         logger.info("=" * 50)
-        notify_error(
+        await notify_error(
             f"⚠️ RoyalTDN en modo LEGACY (REST polling c/{poll_interval}s)\n"
             f"Símbolo: {self.symbol} SMA{self.sma_fast}/{self.sma_slow}\n"
             f"Risk manager activo — alertas en tiempo real reducido"
@@ -607,7 +631,7 @@ class Orchestrator:
                     logger.warning("Rate limit Alpaca — esperando %ds", poll_interval)
                 elif "401" in err_str or "403" in err_str:
                     logger.error("Auth error en legacy loop: %s", err_str)
-                    notify_error(f"Auth error en legacy mode: {err_str}")
+                    await notify_error(f"Auth error en legacy mode: {err_str}")
                     await asyncio.sleep(poll_interval * 3)
                     continue
                 else:
@@ -638,13 +662,13 @@ class Orchestrator:
             logger.info("🔄 MODO FALLBACK LEGACY — usando polling REST (sin Redis Streams)")
             await self._run_legacy_loop()
         else:
-            # Lanzar threads (ingestor + estrategia)
+            # Lanzar tareas asyncio (ingestor + estrategia)
             try:
-                self._start_ingestor()
+                await self._start_ingestor()
                 await asyncio.sleep(0.5)
-                self._start_strategy()
+                await self._start_strategy()
             except Exception as e:
-                logger.error("Error lanzando threads: %s\n%s", e, traceback.format_exc())
+                logger.error("Error lanzando tareas: %s\n%s", e, traceback.format_exc())
                 logger.info("🔄 Fallback a modo legacy")
                 self._use_legacy_fallback = True
                 await self._run_legacy_loop()
@@ -652,14 +676,14 @@ class Orchestrator:
                 return
 
             # Bucle principal con Redis Streams
-            # Si _main_loop sale por thread death, _use_legacy_fallback queda True
+            # Si _main_loop sale por task death, _use_legacy_fallback queda True
             await self._main_loop()
 
             # Transición automática a legacy si el ingestor murió durante la ejecución
             if self._use_legacy_fallback and self._running and not self._killed:
                 logger.info("=" * 50)
                 logger.info("🔄 TRANSICIÓN AUTOMÁTICA A MODO LEGACY (polling REST)")
-                logger.info("  El thread de ingesta falló — continuando con polling directo")
+                logger.info("  La tarea de ingesta falló — continuando con polling directo")
                 logger.info("  Risk manager y alertas siguen activos")
                 logger.info("=" * 50)
                 await self._run_legacy_loop()
@@ -668,23 +692,40 @@ class Orchestrator:
         await self._shutdown()
 
     async def _shutdown(self):
-        """Detiene threads y cierra conexiones."""
+        """Detiene tareas y cierra conexiones."""
         logger.info("Deteniendo RoyalTDN...")
 
-        # Detener threads (usar hasattr por si murieron antes de setear .engine/.ingestor)
-        if self._strategy_thread and hasattr(self._strategy_thread, 'engine'):
+        # Detener estrategia
+        if self._strategy:
             try:
-                self._strategy_thread.engine.stop()
+                self._strategy.stop()
                 logger.info("SMAStrategy detenido")
             except Exception as e:
                 logger.debug("Error deteniendo SMAStrategy: %s", e)
 
-        if self._ingestor_thread and hasattr(self._ingestor_thread, 'ingestor'):
+        # Cancelar tarea de estrategia
+        if self._strategy_task and not self._strategy_task.done():
+            self._strategy_task.cancel()
             try:
-                self._ingestor_thread.ingestor.stop()
+                await asyncio.wait_for(self._strategy_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+        # Detener ingestor
+        if self._ingestor:
+            try:
+                self._ingestor.stop()
                 logger.info("DataIngestor detenido")
             except Exception as e:
                 logger.debug("Error deteniendo DataIngestor: %s", e)
+
+        # Cancelar tarea de ingestor
+        if self._ingestor_task and not self._ingestor_task.done():
+            self._ingestor_task.cancel()
+            try:
+                await asyncio.wait_for(self._ingestor_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
 
         # Cerrar DB
         if self._db:

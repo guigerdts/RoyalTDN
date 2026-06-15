@@ -11,9 +11,8 @@ stream ``signals`` cuando detecta cruces.
 Uso standalone:
     python -m royaltdn.strategy.sma_strategy
 
-Uso desde el bot (thread):
-    thread = SMAStrategy.as_thread(redis_url)
-    thread.start()
+Uso desde el bot (tarea asyncio):
+    task = asyncio.create_task(strategy.run())
 """
 
 import os
@@ -22,7 +21,6 @@ import asyncio
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from threading import Thread
 from typing import Dict, List, Optional, Tuple
 
 import redis.asyncio as aioredis
@@ -203,7 +201,7 @@ class SMAStrategy:
 
     # ── Loop principal ──────────────────────────────────────────────────
 
-    async def _run_async(self):
+    async def run(self):
         """Loop asíncrono: lee barras de Redis, calcula señales."""
         if not await self._connect_redis():
             logger.error("No se pudo conectar a Redis — abortando")
@@ -217,32 +215,33 @@ class SMAStrategy:
             self.sma_slow,
         )
 
-        while self._running:
-            try:
-                # Leer lotes de barras (BLOCK 0 = espera indefinida)
-                result = await self._redis.xreadgroup(
-                    groupname=self.CONSUMER_GROUP,
-                    consumername=self.CONSUMER_NAME,
-                    streams={self.INPUT_STREAM: ">"},
-                    count=10,
-                    block=self.POLL_TIMEOUT_MS,
-                )
+        try:
+            while self._running:
+                try:
+                    # Leer lotes de barras (BLOCK 0 = espera indefinida)
+                    result = await self._redis.xreadgroup(
+                        groupname=self.CONSUMER_GROUP,
+                        consumername=self.CONSUMER_NAME,
+                        streams={self.INPUT_STREAM: ">"},
+                        count=10,
+                        block=self.POLL_TIMEOUT_MS,
+                    )
 
-                if not result:
-                    continue  # timeout sin datos
+                    if not result:
+                        continue  # timeout sin datos
 
-                # result es [(stream, [(msg_id, {fields}), ...]), ...]
-                for stream_name, messages in result:
-                    for msg_id, fields in messages:
-                        await self._process_and_ack(msg_id, fields)
+                    # result es [(stream, [(msg_id, {fields}), ...]), ...]
+                    for stream_name, messages in result:
+                        for msg_id, fields in messages:
+                            await self._process_and_ack(msg_id, fields)
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("Error en loop principal: %s", e)
-                await asyncio.sleep(1)
-
-        await self._cleanup()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error("Error en loop principal: %s", e)
+                    await asyncio.sleep(1)
+        finally:
+            await self._cleanup()
 
     async def _process_and_ack(self, msg_id: str, fields: dict) -> None:
         """Procesa una barra y hace ACK en Redis."""
@@ -265,34 +264,9 @@ class SMAStrategy:
 
     # ── Interfaz pública ───────────────────────────────────────────────
 
-    def start(self):
-        """Arranca el motor (bloqueante)."""
-        asyncio.run(self._run_async())
-
     def stop(self):
-        """Detiene el motor desde otro hilo."""
+        """Detiene el motor (thread-safe)."""
         self._running = False
-
-    @classmethod
-    def as_thread(
-        cls,
-        redis_url: str,
-        symbol: str = "SPY",
-        sma_fast: int = 5,
-        sma_slow: int = 20,
-    ) -> Thread:
-        """Retorna un Thread daemon que corre la estrategia."""
-        engine = cls(redis_url, symbol, sma_fast, sma_slow)
-
-        def _run():
-            try:
-                engine.start()
-            except Exception as e:
-                logger.error("SMAStrategy thread murió: %s", e)
-
-        thread = Thread(target=_run, name="sma-strategy", daemon=True)
-        thread.engine = engine  # type: ignore[attr-defined]
-        return thread
 
 
 # ── Entry point standalone ────────────────────────────────────────────
@@ -311,8 +285,11 @@ def main():
     logger.info("Arrancando SMAStrategy para %s...", symbol)
     engine = SMAStrategy(redis_url=redis_url, symbol=symbol)
 
+    async def _run():
+        await engine.run()
+
     try:
-        engine.start()
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("Detenido por usuario.")
 

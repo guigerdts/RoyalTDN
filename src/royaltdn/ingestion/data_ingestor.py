@@ -10,9 +10,8 @@ publica en un stream de Redis llamado ``market_bars``.
 Uso standalone:
     python -m royaltdn.ingestion.data_ingestor
 
-Uso desde el bot (thread):
-    thread = DataIngestor.as_thread(api_key, secret_key, redis_url)
-    thread.start()
+Uso desde el bot (tarea asyncio):
+    task = asyncio.create_task(ingestor.run())
 """
 
 import os
@@ -20,7 +19,6 @@ import sys
 import asyncio
 import logging
 import traceback
-from threading import Thread
 from typing import List, Optional
 
 from alpaca.data.live import StockDataStream
@@ -69,6 +67,7 @@ class DataIngestor:
         self._redis: Optional[aioredis.Redis] = None
         self._stream: Optional[StockDataStream] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._running = False
 
     # ── Callback de Alpaca ──────────────────────────────────────────────
 
@@ -131,9 +130,10 @@ class DataIngestor:
 
     # ── Arranque ────────────────────────────────────────────────────────
 
-    async def _run_async(self):
-        """Loop principal asíncrono."""
+    async def run(self):
+        """Loop principal asíncrono. Ejecutar como tarea: create_task(ingestor.run())"""
         self._loop = asyncio.get_running_loop()
+        self._running = True
 
         # Conectar Redis (falla suave — sigue sin persistencia)
         await self._connect_redis()
@@ -159,27 +159,17 @@ class DataIngestor:
                 self.feed.value if hasattr(self.feed, 'value') else self.feed,
             )
 
-            # run() es blocking — llama a _run_forever internamente
-            try:
-                self._stream.run()
-            except RuntimeError as e:
-                # Posible nested asyncio.run — intentar con _run_forever directo
-                if "cannot be called from a running event loop" in str(e):
-                    logger.warning("Nested event loop detected, using _run_forever directly")
-                    if hasattr(self._stream, '_run_forever'):
-                        await self._stream._run_forever()
-                    else:
-                        raise
-                else:
-                    raise
+            # _run_forever() es awaitable — corre en el event loop actual
+            await self._stream._run_forever()
 
+        except asyncio.CancelledError:
+            logger.info("Ingestor cancelado — limpiando")
         except Exception as e:
             logger.error(
                 "Error fatal en ingestor: %s\n%s",
                 e, traceback.format_exc(),
             )
             raise
-
         finally:
             await self._cleanup()
 
@@ -190,41 +180,14 @@ class DataIngestor:
             self._redis = None
         logger.info("Ingestor detenido.")
 
-    def start(self):
-        """Arranca el ingestor (bloqueante)."""
-        asyncio.run(self._run_async())
-
     def stop(self):
-        """Detiene el WebSocket desde otro hilo."""
+        """Detiene el WebSocket desde otro hilo/task."""
+        self._running = False
         if self._stream:
             try:
                 self._stream.stop()
             except Exception as e:
                 logger.debug("Error al detener stream: %s", e)
-
-    # ── Modo thread-friendly ────────────────────────────────────────────
-
-    @classmethod
-    def as_thread(
-        cls,
-        api_key: str,
-        secret_key: str,
-        redis_url: str,
-        symbols: Optional[List[str]] = None,
-        feed: str = "iex",
-    ) -> Thread:
-        """Retorna un Thread que corre el ingestor."""
-        ingestor = cls(api_key, secret_key, redis_url, symbols, feed)
-
-        def _run():
-            try:
-                ingestor.start()
-            except Exception as e:
-                logger.error("Ingestor thread murió: %s\n%s", e, traceback.format_exc())
-
-        thread = Thread(target=_run, name="data-ingestor", daemon=True)
-        thread.ingestor = ingestor  # type: ignore[attr-defined]
-        return thread
 
 
 # ── Entry point standalone ────────────────────────────────────────────
@@ -252,8 +215,11 @@ def main():
     logger.info("Arrancando DataIngestor: feed=%s symbols=%s", feed, symbols)
     ingestor = DataIngestor(api_key, secret_key, redis_url, symbols, feed)
 
+    async def _run():
+        await ingestor.run()
+
     try:
-        ingestor.start()
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("Detenido por usuario.")
     except Exception as e:
