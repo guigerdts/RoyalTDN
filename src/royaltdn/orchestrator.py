@@ -595,7 +595,7 @@ class Orchestrator:
 
                 # Ordenar por timestamp por si vienen desordenados
                 symbol_bars.sort(key=lambda b: b.timestamp)
-                closes = [float(b.c) for b in symbol_bars]
+                closes = [float(b.close) for b in symbol_bars]
 
                 # 3. Calcular SMA inline
                 curr_fast = sum(closes[-self.sma_fast:]) / self.sma_fast
