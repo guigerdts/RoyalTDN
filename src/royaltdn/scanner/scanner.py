@@ -7,10 +7,31 @@ Combina AssetUniverse + LiquidityFilter + estrategias para generar
 señales rankeadas across múltiples símbolos.
 """
 
+import json
 import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import pandas as pd
+
+# ── Atomic write helper (same pattern as orchestrator) ────────────────
+
+LOGS_DIR = Path("logs")
+
+def _atomic_write(path: Path, data: dict) -> bool:
+    """Write dict as JSON atomically via .tmp + os.replace."""
+    try:
+        tmp_path = path.with_suffix(".tmp")
+        content = json.dumps(data, indent=2, default=str, ensure_ascii=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(content, encoding="utf-8")
+        os.replace(str(tmp_path), str(path))
+        return True
+    except (OSError, TypeError, ValueError) as e:
+        logger.warning("Error writing %s: %s", path, e)
+        return False
 
 from royaltdn.strategy.base import BaseStrategy
 from royaltdn.scanner.universe import AssetUniverse
@@ -43,6 +64,7 @@ class Scanner:
         self.data_client = data_client
         self._data_cache: Dict[str, pd.DataFrame] = {}
         self._last_scan_results: List[dict] = []
+        self._scan_history: List[dict] = []  # Fase 6 — last 10 scans
 
     def scan(self) -> List[dict]:
         """Ejecuta escaneo completo y retorna señales rankeadas.
@@ -100,6 +122,33 @@ class Scanner:
         # 4. Rankear señales
         ranked = self._rank_signals(signals)
         self._last_scan_results = ranked
+
+        # Track scan history (Fase 6)
+        scan_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "total_symbols": total_symbols,
+            "passed_symbols": passed_count,
+            "signals_count": len(ranked),
+            "top_signals": [
+                {
+                    "symbol": s.get("symbol"),
+                    "strategy": s.get("strategy"),
+                    "action": s.get("action"),
+                    "price": s.get("price"),
+                    "score": s.get("score"),
+                }
+                for s in ranked[:5]
+            ],
+        }
+        self._scan_history.append(scan_entry)
+        if len(self._scan_history) > 10:
+            self._scan_history = self._scan_history[-10:]
+
+        # Publish scanner results to logs/
+        try:
+            self._publish_scanner_results()
+        except Exception:
+            pass
 
         logger.info(
             "Scanner: %d símbolos → %d pasaron filtro → %d señales generadas",
@@ -181,3 +230,30 @@ class Scanner:
             Lista de las mejores N señales.
         """
         return self._last_scan_results[:n]
+
+    # ── Status publishing (Fase 6) ───────────────────────────────────
+
+    def _publish_scanner_results(self) -> None:
+        """Write scanner results to logs/scanner_results.json atomically."""
+        last_scan = self._last_scan_results
+        # Flatten top signals for the JSON output
+        top_list = []
+        for s in last_scan[:10]:
+            top_list.append({
+                "symbol": s.get("symbol"),
+                "strategy": s.get("strategy"),
+                "action": s.get("action"),
+                "price": s.get("price"),
+                "score": s.get("score"),
+            })
+
+        data = {
+            "last_scan": {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "total_signals": len(last_scan),
+                "top_signals": top_list,
+            },
+            "scan_history": self._scan_history[-10:],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _atomic_write(LOGS_DIR / "scanner_results.json", data)

@@ -15,10 +15,12 @@ Uso desde main.py:
 """
 
 import asyncio
+import json
 import logging
 import os
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -44,6 +46,27 @@ from royaltdn.monitoring.tca import calculate_slippage
 from royaltdn.storage.db import Database
 
 logger = logging.getLogger("royaltdn.orchestrator")
+
+# ── Status publishing (Fase 6) ─────────────────────────────────────────────
+
+LOGS_DIR = Path("logs")
+
+def _atomic_write(path: Path, data: dict) -> bool:
+    """Write dict as JSON atomically via .tmp + os.replace.
+    
+    Returns True on success, False on error. Never raises.
+    """
+    try:
+        tmp_path = path.with_suffix(".tmp")
+        content = json.dumps(data, indent=2, default=str, ensure_ascii=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(content, encoding="utf-8")
+        os.replace(str(tmp_path), str(path))
+        return True
+    except (OSError, TypeError, ValueError) as e:
+        logger.warning("Error writing %s: %s", path, e)
+        return False
+
 
 # ── Constantes de entorno (Scanner) ───────────────────────────────────────
 
@@ -130,6 +153,18 @@ class Orchestrator:
         self._consecutive_losses: int = 0
         self._trades_count: int = 0
         self._killed: bool = False
+
+        # Status publishing (Fase 6)
+        self._start_time: Optional[datetime] = None
+        self._last_known_equity: float = 0.0
+        self._equity_stale: bool = False
+        self._equity_points: list = []  # cap 1000
+        self._recent_signals: list = []  # cap 20
+        self._daily_signal_count: int = 0
+        self._last_signal: Optional[dict] = None
+        self._last_error: Optional[str] = None
+        self._last_known_price: float = 0.0
+        self._signal_count_by_strategy: dict = {}
 
     # ── Setup ─────────────────────────────────────────────────────────
 
@@ -221,6 +256,15 @@ class Orchestrator:
             logger.error("Error sincronizando estado del broker: %s", e)
             return False
 
+        # Status publishing init (Fase 6)
+        self._start_time = datetime.now(timezone.utc)
+        self._last_known_equity = self._initial_equity
+        try:
+            self._publish_status()
+            logger.info("Status inicial publicado en logs/")
+        except Exception as e:
+            logger.warning("Error publicando status inicial: %s", e)
+
         return True
 
     # ── Lanzar tareas asyncio ─────────────────────────────────────────
@@ -266,6 +310,218 @@ class Orchestrator:
         return await loop.run_in_executor(
             None, lambda: get_atr(data_client, self.symbol),
         )
+
+    # ── Status publishing (Fase 6) ────────────────────────────────────
+
+    def _get_current_equity(self) -> float:
+        """Fetch current equity from Alpaca, cache per cycle.
+
+        Returns:
+            float: current equity value.
+
+        On error: returns last known value, sets _equity_stale.
+        """
+        try:
+            account = self._trading.get_account()
+            equity = float(account.equity)
+            self._last_known_equity = equity
+            self._equity_stale = False
+            return equity
+        except Exception as e:
+            logger.warning("Error fetching equity: %s", e)
+            self._equity_stale = True
+            return self._last_known_equity
+
+    def _build_equity_curve(self) -> list:
+        """Append current equity point, cap at 1000."""
+        now = datetime.now(timezone.utc)
+        equity = self._last_known_equity if self._last_known_equity else self._initial_equity
+        self._equity_points.append({
+            "timestamp": now.isoformat(),
+            "equity": equity,
+        })
+        if len(self._equity_points) > 1000:
+            self._equity_points = self._equity_points[-1000:]
+        return self._equity_points
+
+    def _build_positions_list(self) -> list:
+        """Build open positions list from orchestrator state."""
+        if not self._position:
+            return []
+        return [{
+            "symbol": self.symbol,
+            "side": self._position,
+            "qty": self._position_qty,
+            "entry_price": self._last_entry_price,
+            "current_price": self._last_known_price if self._last_known_price else self._last_entry_price,
+            "pnl_unrealized": round(
+                (self._last_known_price - self._last_entry_price) * self._position_qty
+                if self._last_known_price and self._last_entry_price else 0, 2
+            ),
+            "entry_at": self._last_entry_at.isoformat() if self._last_entry_at else None,
+            "strategy": "sma_crossover",
+        }]
+
+    def _build_strategies_list(self) -> list:
+        """Build strategies status list from scanner + config."""
+        strategies_list = []
+        if self._scanner and hasattr(self._scanner, 'strategies'):
+            for name, strategy in self._scanner.strategies.items():
+                params = strategy.get_parameters() if hasattr(strategy, 'get_parameters') else {}
+                valid = strategy.validate() if hasattr(strategy, 'validate') else True
+                strategies_list.append({
+                    "name": name,
+                    "active": True,
+                    "params": params,
+                    "validation": valid,
+                    "last_signal": self._signal_count_by_strategy.get(name),
+                    "signal_count": self._signal_count_by_strategy.get(name, 0),
+                    "symbol": getattr(strategy, 'symbol', self.symbol),
+                    "timeframe": getattr(strategy, 'timeframe', '1d'),
+                })
+        else:
+            strategies_list.append({
+                "name": "sma_crossover",
+                "active": True,
+                "params": {"fast_period": self.sma_fast, "slow_period": self.sma_slow},
+                "validation": True,
+                "last_signal": self._last_action,
+                "signal_count": self._trades_count,
+                "symbol": self.symbol,
+                "timeframe": "1d",
+            })
+        return strategies_list
+
+    def _last_signal_summary(self) -> Optional[dict]:
+        """Return last signal summary or None."""
+        if not self._last_signal:
+            return None
+        return {
+            "action": self._last_signal.get("action"),
+            "price": self._last_signal.get("price"),
+            "symbol": self._last_signal.get("symbol", self.symbol),
+            "strategy": self._last_signal.get("strategy", "sma_crossover"),
+            "timestamp": self._last_signal.get("timestamp"),
+            "metadata": self._last_signal.get("metadata", {}),
+        }
+
+    def _publish_status(self) -> None:
+        """Write all 7 JSON status files atomically to logs/.
+
+        Order: equity → positions → signals → strategies → trades → status (LAST).
+        status.json is LAST so its presence and timestamp are authoritative.
+        Never raises — errors are logged.
+        """
+        now = datetime.now(timezone.utc)
+        uptime = int((now - self._start_time).total_seconds()) if self._start_time else 0
+
+        # Track equity point
+        equity = self._get_current_equity()
+        equity_curve = self._build_equity_curve()
+
+        # 1. equity.json
+        pnl_day = equity - self._initial_equity
+        pnl_day_pct = round(pnl_day / self._initial_equity * 100, 2) if self._initial_equity > 0 else 0.0
+        self._last_known_equity = equity
+
+        _atomic_write(LOGS_DIR / "equity.json", {
+            "initial_equity": self._initial_equity,
+            "current_equity": equity,
+            "pnl_day": round(pnl_day, 2),
+            "pnl_day_pct": pnl_day_pct,
+            "drawdown": 0.0,
+            "drawdown_pct": 0.0,
+            "sharpe": None,
+            "equity_curve": equity_curve,
+            "updated_at": now.isoformat(),
+            "stale": self._equity_stale,
+        })
+
+        # 2. positions.json
+        _atomic_write(LOGS_DIR / "positions.json", {
+            "open_positions": self._build_positions_list(),
+            "total_open": 1 if self._position else 0,
+            "updated_at": now.isoformat(),
+        })
+
+        # 3. signals.json
+        _atomic_write(LOGS_DIR / "signals.json", {
+            "today_count": self._daily_signal_count,
+            "last_signals": self._recent_signals[-20:],
+            "updated_at": now.isoformat(),
+        })
+
+        # 4. strategies.json
+        _atomic_write(LOGS_DIR / "strategies.json", {
+            "strategies": self._build_strategies_list(),
+            "updated_at": now.isoformat(),
+        })
+
+        # 5. trades.json — only if trades exist
+        if self._trades_count > 0:
+            trades_path = LOGS_DIR / "trades.json"
+            existing = {}
+            try:
+                if trades_path.exists():
+                    raw = trades_path.read_text(encoding="utf-8")
+                    if raw.strip():
+                        existing = json.loads(raw)
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+            _atomic_write(trades_path, existing or {
+                "total_trades": 0, "win_rate": 0, "profit_factor": 0, "total_pnl": 0,
+                "trades": [], "updated_at": now.isoformat(),
+            })
+
+        # 6. status.json (LAST — authoritative)
+        bot_status = "KILLED" if self._killed else "ONLINE"
+        _atomic_write(LOGS_DIR / "status.json", {
+            "bot_status": bot_status,
+            "mode": "legacy" if self._use_legacy_fallback else "modular",
+            "timestamp": now.isoformat(),
+            "last_signal": self._last_signal_summary(),
+            "last_error": self._last_error,
+            "uptime_seconds": uptime,
+            "symbols": [self.symbol],
+            "scanner_enabled": self._scanner is not None,
+            "version": "1.0.0",
+        })
+
+    def _append_trade(self, trade: dict) -> None:
+        """Append a completed trade to logs/trades.json.
+
+        Reads existing, appends, recalculates summary metrics, writes back atomically.
+        """
+        path = LOGS_DIR / "trades.json"
+
+        existing = {}
+        try:
+            if path.exists():
+                raw = path.read_text(encoding="utf-8")
+                if raw.strip():
+                    existing = json.loads(raw)
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+        trades = existing.get("trades", [])
+        trades.append(trade)
+
+        total = len(trades)
+        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+        total_pnl = sum(t.get("pnl", 0) for t in trades)
+        losses = total - wins
+        gross_profit = sum(t["pnl"] for t in trades if t.get("pnl", 0) > 0)
+        gross_loss = abs(sum(t["pnl"] for t in trades if t.get("pnl", 0) < 0))
+
+        output = {
+            "total_trades": total,
+            "win_rate": round(wins / total * 100, 1) if total > 0 else 0,
+            "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
+            "total_pnl": round(total_pnl, 2),
+            "trades": trades,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _atomic_write(path, output)
 
     async def _submit_order(self, side: OrderSide, qty: int) -> Optional[object]:
         """Envía orden directa o TWAP si supera el umbral.
@@ -393,6 +649,21 @@ class Orchestrator:
             logger.warning("Bot KILLED — ignorando señal")
             return
 
+        # ── Track signal (Fase 6) ──
+        self._daily_signal_count += 1
+        self._last_signal = {
+            "action": action,
+            "symbol": signal.get("symbol", self.symbol),
+            "price": price,
+            "strategy": signal.get("strategy", "sma_crossover"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "metadata": signal.get("metadata", {}),
+        }
+        self._recent_signals.append(self._last_signal)
+        if len(self._recent_signals) > 20:
+            self._recent_signals = self._recent_signals[-20:]
+        self._last_known_price = price
+
         # ── BUY ──
         if action == "BUY" and self._position != "long":
             # Calcular ATR y tamaño de posición
@@ -463,6 +734,26 @@ class Orchestrator:
                 self._consecutive_losses = 0
 
             self._trades_count += 1
+
+            # Append trade to logs/trades.json (Fase 6)
+            trade_record = {
+                "symbol": self.symbol,
+                "side": "long",
+                "entry_price": self._last_entry_price,
+                "exit_price": price,
+                "qty": self._position_qty,
+                "pnl": round(pnl, 2),
+                "entry_at": self._last_entry_at.isoformat() if self._last_entry_at else None,
+                "exit_at": datetime.now(timezone.utc).isoformat(),
+                "strategy": "sma_crossover",
+                "slippage_bps": slippage_bps,
+                "execution_method": exec_method,
+            }
+            try:
+                self._append_trade(trade_record)
+            except Exception as e:
+                logger.warning("Error appending trade: %s", e)
+
             self._position = None
             self._position_qty = 0
 
@@ -709,6 +1000,12 @@ class Orchestrator:
                     logger.warning("Error en legacy loop: %s", err_str)
                 await asyncio.sleep(poll_interval)
 
+            # Publish status at end of cycle (Fase 6)
+            try:
+                self._publish_status()
+            except Exception as e:
+                logger.warning("Status publish error: %s", e)
+
             await asyncio.sleep(poll_interval)
 
         logger.info("Legacy loop finalizado")
@@ -765,6 +1062,13 @@ class Orchestrator:
     async def _shutdown(self):
         """Detiene tareas y cierra conexiones."""
         logger.info("Deteniendo RoyalTDN...")
+
+        # Publish final status (Fase 6) — BEFORE closing connections
+        try:
+            self._publish_status()
+            logger.info("Status final publicado en logs/")
+        except Exception as e:
+            logger.warning("Error publicando status final: %s", e)
 
         # Detener estrategia
         if self._strategy:
