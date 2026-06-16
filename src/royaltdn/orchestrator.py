@@ -22,12 +22,17 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis.asyncio as aioredis
+from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
 from royaltdn.ingestion.data_ingestor import DataIngestor
 from royaltdn.strategy.sma_strategy import SMAStrategy
+from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
+from royaltdn.strategy.momentum_atr import MomentumATRStrategy
+from royaltdn.strategy.factor_rotation import FactorRotationStrategy
+from royaltdn.scanner import AssetUniverse, LiquidityFilter, Scanner
 from royaltdn.execution.twap import execute_twap
 from royaltdn.risk_manager import (
     calculate_position_size,
@@ -39,6 +44,16 @@ from royaltdn.monitoring.tca import calculate_slippage
 from royaltdn.storage.db import Database
 
 logger = logging.getLogger("royaltdn.orchestrator")
+
+# ── Constantes de entorno (Scanner) ───────────────────────────────────────
+
+SCANNER_MIN_VOLUME = int(os.getenv("SCANNER_MIN_VOLUME", "500000"))
+SCANNER_MIN_PRICE = float(os.getenv("SCANNER_MIN_PRICE", "5.0"))
+SCANNER_MAX_SPREAD_PCT = float(os.getenv("SCANNER_MAX_SPREAD_PCT", "0.5"))
+SCANNER_INTERVAL_MINUTES = int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
+STRATEGIES_ENABLED = os.getenv("STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr").split(",")
+SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N", "3"))
+SCANNER_UNIVERSE = os.getenv("SCANNER_UNIVERSE", "etfs")
 
 # ── Constantes ────────────────────────────────────────────────────────────
 
@@ -96,6 +111,7 @@ class Orchestrator:
         # Tasks asyncio
         self._ingestor: Optional[DataIngestor] = None
         self._strategy: Optional[SMAStrategy] = None
+        self._scanner: Optional[Scanner] = None
         self._ingestor_task: Optional[asyncio.Task] = None
         self._strategy_task: Optional[asyncio.Task] = None
 
@@ -121,6 +137,31 @@ class Orchestrator:
         """Inicializa conexiones y sincroniza estado del broker."""
         # Trading client (sincrónico, se usa en executor)
         self._trading = TradingClient(self.api_key, self.secret_key, paper=True)
+
+        # Scanner (opcional) — inicializar después del trading client
+        try:
+            data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+            universe = AssetUniverse(self.api_key, self.secret_key)
+            liquidity_filter = LiquidityFilter(
+                min_volume=SCANNER_MIN_VOLUME,
+                min_price=SCANNER_MIN_PRICE,
+                max_spread_pct=SCANNER_MAX_SPREAD_PCT,
+            )
+            strategies = {}
+            if "sma_crossover" in STRATEGIES_ENABLED:
+                strategies["sma_crossover"] = SMAStrategy()
+            if "bollinger_rsi" in STRATEGIES_ENABLED:
+                strategies["bollinger_rsi"] = BollingerRSIStrategy()
+            if "momentum_atr" in STRATEGIES_ENABLED:
+                strategies["momentum_atr"] = MomentumATRStrategy()
+            if "factor_rotation" in STRATEGIES_ENABLED:
+                strategies["factor_rotation"] = FactorRotationStrategy()
+
+            self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
+            logger.info("Scanner inicializado — universo=%s estrategias=%s", SCANNER_UNIVERSE, list(strategies.keys()))
+        except Exception as e:
+            logger.warning("Scanner no disponible (%s) — operando solo con SPY", e)
+            self._scanner = None
 
         # Redis (async) — OPCIONAL: si falla, activa fallback legacy
         try:
@@ -221,7 +262,6 @@ class Orchestrator:
     async def _get_atr_value(self) -> float:
         """Calcula ATR usando Alpaca REST (sincrónico en executor)."""
         loop = asyncio.get_running_loop()
-        from alpaca.data.historical import StockHistoricalDataClient
         data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
         return await loop.run_in_executor(
             None, lambda: get_atr(data_client, self.symbol),
@@ -563,6 +603,7 @@ class Orchestrator:
         logger.info("  Risk manager:    ACTIVO")
         logger.info("  Alertas Telegram: ACTIVAS")
         logger.info("  TWAP:             %s", "ACTIVO" if self.twap_enabled else "INACTIVO")
+        logger.info("  Scanner:          %s", "ACTIVO" if self._scanner else "NO DISPONIBLE")
         logger.info("=" * 50)
         await send_telegram_message_async(
             f"ℹ️ <b>LEGACY FALLBACK</b>\n"
@@ -571,8 +612,36 @@ class Orchestrator:
             f"Risk manager activo — alertas en tiempo real reducido"
         )
 
+        # Contador para el scanner (se ejecuta cada SCANNER_INTERVAL_MINUTES)
+        scanner_cycle = 0
+        scanner_iterations = max(1, int((SCANNER_INTERVAL_MINUTES * 60) / poll_interval))
+
         while self._running and not self._killed:
             try:
+                # ── Scanner multi-estrategia ──
+                if self._scanner:
+                    scanner_cycle += 1
+                    if scanner_cycle >= scanner_iterations:
+                        scanner_cycle = 0
+                        logger.info("🔍 Scanner: ejecutando escaneo multi-estrategia...")
+                        try:
+                            signals = self._scanner.scan()
+                            top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
+                            if top_signals:
+                                logger.info(
+                                    "🔍 Scanner: %d señales generadas — ejecutando top %d",
+                                    len(signals), len(top_signals),
+                                )
+                                for sig in top_signals:
+                                    await self._execute_signal(sig)
+                                # Saltar la lógica SPY en este ciclo
+                                await asyncio.sleep(poll_interval)
+                                continue
+                            else:
+                                logger.info("🔍 Scanner: sin señales — usando SPY por defecto")
+                        except Exception as e:
+                            logger.warning("🔍 Scanner error: %s — continuando con SPY", e)
+
                 # 1. Obtener últimas velas
                 now = datetime.now(timezone.utc)
                 request = StockBarsRequest(

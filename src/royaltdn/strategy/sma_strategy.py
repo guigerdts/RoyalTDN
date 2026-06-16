@@ -82,7 +82,7 @@ class SMAStrategy(BaseStrategy):
 
     def __init__(
         self,
-        redis_url: str,
+        redis_url: str = None,
         symbol: str = "SPY",
         sma_fast: int = 5,
         sma_slow: int = 20,
