@@ -21,9 +21,12 @@ import asyncio
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 import redis.asyncio as aioredis
+
+from royaltdn.strategy.base import BaseStrategy
 
 logger = logging.getLogger("royaltdn.strategy.sma")
 
@@ -63,10 +66,12 @@ def detect_cross(
 # ── Motor de estrategia ──────────────────────────────────────────────
 
 
-class SMAStrategy:
+class SMAStrategy(BaseStrategy):
     """Consume barras de ``market_bars`` y publica señales en ``signals``.
 
     Configuración por defecto: SMA5 y SMA20 sobre el símbolo SPY.
+    Hereda de BaseStrategy e implementa generate_signal() para uso
+    con DataFrames (backtesting/scanner) además del streaming vía Redis.
     """
 
     INPUT_STREAM = "market_bars"
@@ -81,7 +86,9 @@ class SMAStrategy:
         symbol: str = "SPY",
         sma_fast: int = 5,
         sma_slow: int = 20,
+        timeframe: str = "1d",
     ):
+        super().__init__(timeframe=timeframe)
         self.redis_url = redis_url
         self.symbol = symbol
         self.sma_fast = sma_fast
@@ -100,7 +107,83 @@ class SMAStrategy:
         self._redis: aioredis.Redis | None = None
         self._running = False
 
-    # ── Procesamiento de barra ──────────────────────────────────────────
+    # ── Propiedades ─────────────────────────────────────────────────────
+
+    @property
+    def name(self) -> str:
+        return "sma_crossover"
+
+    # ── Implementación BaseStrategy ─────────────────────────────────────
+
+    def generate_signal(self, data: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Genera señal a partir de un DataFrame OHLCV.
+
+        Usa el cierre (``close``) para calcular SMA rápida y lenta,
+        y detecta el cruce entre el valor actual y el anterior.
+
+        Args:
+            data: DataFrame con columna ``close`` (obligatorio).
+
+        Returns:
+            Dict con action, price y metadata, o None si no hay señal.
+        """
+        if "close" not in data.columns:
+            logger.warning("generate_signal: faltan columnas (close)")
+            return None
+
+        closes = data["close"].dropna().tolist()
+        if len(closes) < self.sma_slow:
+            return None
+
+        # Valores actuales
+        curr_fast = compute_sma(closes, self.sma_fast)
+        curr_slow = compute_sma(closes, self.sma_slow)
+
+        if curr_fast is None or curr_slow is None:
+            return None
+
+        # Valores previos (para detectar cruce)
+        prev_fast = compute_sma(closes[:-1], self.sma_fast)
+        prev_slow = compute_sma(closes[:-1], self.sma_slow)
+
+        action = detect_cross(prev_fast, prev_slow, curr_fast, curr_slow)
+        if action is None:
+            return None
+
+        return {
+            "action": action,
+            "price": float(closes[-1]),
+            "metadata": {
+                "sma_fast": round(curr_fast, 2),
+                "sma_slow": round(curr_slow, 2),
+                "fast_period": self.sma_fast,
+                "slow_period": self.sma_slow,
+            },
+        }
+
+    def get_parameters(self) -> Dict[str, Any]:
+        """Retorna los parámetros actuales de la estrategia."""
+        return {
+            "fast_period": self.sma_fast,
+            "slow_period": self.sma_slow,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+        }
+
+    def validate(self) -> bool:
+        """Valida que SMA rápida < SMA lenta y ambos > 0."""
+        if self.sma_fast <= 0 or self.sma_slow <= 0:
+            logger.error("SMAStrategy: periods deben ser > 0")
+            return False
+        if self.sma_fast >= self.sma_slow:
+            logger.error(
+                "SMAStrategy: fast_period (%d) debe ser < slow_period (%d)",
+                self.sma_fast, self.sma_slow,
+            )
+            return False
+        return True
+
+    # ── Procesamiento de barra (streaming) ─────────────────────────────
 
     def process_bar(self, bar: dict) -> Optional[Dict]:
         """Procesa una barra y retorna una señal si hay cruce.
@@ -108,6 +191,7 @@ class SMAStrategy:
         Método público y **puro** (no toca Redis) — ideal para tests.
 
         ``bar`` debe tener al menos ``close`` (str o float).
+        Es el equivalente a generate_signal() para streaming bar-a-bar.
         """
         close = float(bar["close"])
         self._prices.append(close)
@@ -203,6 +287,10 @@ class SMAStrategy:
 
     async def run(self):
         """Loop asíncrono: lee barras de Redis, calcula señales."""
+        if not self.validate():
+            logger.error("SMAStrategy no pasó validación — abortando")
+            return
+
         if not await self._connect_redis():
             logger.error("No se pudo conectar a Redis — abortando")
             return
