@@ -40,6 +40,11 @@ logs = st.Page(
     title="📋 Logs",
     icon="📋",
 )
+builder = st.Page(
+    "pages/builder.py",
+    title="🛠️ Builder",
+    icon="🛠️",
+)
 
-nav = st.navigation([dashboard, scanner, estrategias, trades, logs])
+nav = st.navigation([dashboard, scanner, estrategias, trades, logs, builder])
 nav.run()
