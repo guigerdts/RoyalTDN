@@ -19,8 +19,10 @@ from royaltdn.frontend.components.loaders import load_scanner_results
 st.title("🔍 Scanner")
 
 scanner_data = load_scanner_results()
+last_scan = scanner_data.get("last_scan", {}) if scanner_data else {}
+signals = last_scan.get("top_signals", [])
 
-if not scanner_data or not scanner_data.get("top_signals"):
+if not signals:
     st.info("Scanner not initialized or no scan completed yet")
     time.sleep(5)
     st.rerun()
@@ -37,7 +39,7 @@ with st.expander("Scanner Configuration", expanded=False):
 # ── Signals table with coloured rows ─────────────────────────────
 
 st.subheader("Top Signals")
-signals_df = pd.DataFrame(scanner_data.get("top_signals", []))
+signals_df = pd.DataFrame(signals)
 
 if not signals_df.empty:
     def _colour_signal_row(row) -> list[str]:
@@ -67,7 +69,7 @@ st.plotly_chart(fig, width='stretch')
 # ── Scan history ─────────────────────────────────────────────────
 
 st.subheader("Scan History")
-history = scanner_data.get("history", [])
+history = scanner_data.get("scan_history", [])
 if history:
     st.dataframe(pd.DataFrame(history), width='stretch', hide_index=True)
 else:

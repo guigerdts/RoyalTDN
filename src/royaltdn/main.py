@@ -12,6 +12,7 @@ Comandos:
 import logging
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -33,6 +34,16 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+
+# File handler for log viewer (Fase 6 Hito 5)
+_log_dir = Path("logs")
+_log_dir.mkdir(parents=True, exist_ok=True)
+_file_handler = logging.FileHandler(_log_dir / "bot.log", encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
+logging.getLogger().addHandler(_file_handler)
+
 logger = logging.getLogger("royaltdn")
 
 
