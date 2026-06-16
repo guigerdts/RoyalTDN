@@ -50,3 +50,7 @@ logs/
 dump.rdb
 test_dry_run.py
 _scripts/
+
+# ── User strategies (Fase 7) ───────────────────────────────────────────────────
+user_strategies/
+!user_strategies/.gitkeep
