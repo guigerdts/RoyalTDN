@@ -32,6 +32,10 @@ from royaltdn.frontend.components.builder_state import (
 
 from royaltdn.strategy.schema import validate_config
 
+# ── Lazy imports for backtesting (avoid heavy imports at top level) ─────
+
+_BACKTEST_RESULT_KEY = "builder_backtest_result"
+
 # ── Page ────────────────────────────────────────────────────────────────
 
 st.title("🛠️ Strategy Builder")
@@ -241,7 +245,7 @@ with col_center:
     st.divider()
     st.subheader("📈 Backtesting")
 
-    # Backtest config (placeholder — completed in Hito 4)
+    # Backtest config
     bt_col1, bt_col2 = st.columns(2)
     with bt_col1:
         st.text_input("Symbol", value="SPY", key="builder_symbol",
@@ -261,14 +265,77 @@ with col_center:
         key="builder_backtest_period",
     )
 
-    if st.button("▶️ Run Backtest", use_container_width=True, disabled=True):
-        pass  # placeholder — Hito 4
-    st.info("Backtesting will be available in Phase 4")
+    # Run backtest button — disabled if no entry conditions
+    has_entry_conds = len(st.session_state.get("builder_entry_conditions", [])) > 0
+    if st.button("▶️ Run Backtest", use_container_width=True, disabled=not has_entry_conds):
+        cfg = build_config()
+        ok, err = validate_config(cfg)
+        if not ok:
+            st.error(f"Config invalid: {err}")
+        else:
+            with st.spinner("Downloading data & running backtest..."):
+                try:
+                    from royaltdn.strategy.backtesting import run_backtest
+                    result = run_backtest(
+                        config=cfg,
+                        symbol=st.session_state.builder_symbol,
+                        timeframe=st.session_state.builder_timeframe,
+                        period=st.session_state.builder_backtest_period,
+                    )
+                    st.session_state[_BACKTEST_RESULT_KEY] = result
+                except Exception as e:
+                    st.error(f"Backtest error: {e}")
 
-    # Reserved space for backtest results
-    st.container(border=True, height=200).markdown(
-        "*Backtest metrics & charts will appear here*"
-    )
+    if not has_entry_conds:
+        st.caption("Add entry conditions to run backtest")
+
+    # Show backtest results
+    bt_result = st.session_state.get(_BACKTEST_RESULT_KEY)
+    if bt_result:
+        st.divider()
+        metrics = bt_result.get("metrics", {})
+        if bt_result.get("error"):
+            st.warning(bt_result["error"])
+
+        if metrics and "error" not in metrics:
+            from royaltdn.frontend.components.backtest_charts import (
+                plot_drawdown,
+                plot_equity_curve,
+                plot_monthly_heatmap,
+                plot_trade_distribution,
+                render_metrics_cards,
+            )
+
+            # Metrics cards
+            render_metrics_cards(metrics)
+
+            # Charts
+            dates = bt_result.get("dates", [])
+            equity_series = bt_result.get("equity_series", [])
+            bh_equity = bt_result.get("buy_hold_equity", [])
+            drawdown_series = bt_result.get("drawdown_series", [])
+            trades = bt_result.get("trades", [])
+            daily_returns = bt_result.get("daily_returns", [])
+
+            fig_eq = plot_equity_curve(equity_series, bh_equity, dates)
+            st.plotly_chart(fig_eq, width='stretch')
+
+            dd_col, dist_col = st.columns(2)
+            with dd_col:
+                fig_dd = plot_drawdown(drawdown_series, dates)
+                st.plotly_chart(fig_dd, width='stretch')
+            with dist_col:
+                fig_dist = plot_trade_distribution(trades)
+                st.plotly_chart(fig_dist, width='stretch')
+
+            # Monthly heatmap
+            fig_hm = plot_monthly_heatmap(daily_returns, dates)
+            st.plotly_chart(fig_hm, width='stretch')
+
+            # Trades table
+            if trades:
+                with st.expander("📋 Trade List", expanded=False):
+                    st.dataframe(trades, width='stretch')
 
 # ── RIGHT COLUMN: Strategy Management ──────────────────────────────────
 

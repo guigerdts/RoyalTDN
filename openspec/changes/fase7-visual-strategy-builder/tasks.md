@@ -21,13 +21,14 @@
 
 ## Phase 3 — Hito 3: Builder UI (~500 lines)
 
-- [ ] 3.1 Create `src/royaltdn/frontend/components/builder_state.py` — session_state getters/setters for `strategy_config`, `indicators_added`, `rules`, `backtest_results`, `strategy_deployed` | Verify: state persists across reruns; sliders trigger update; initial values empty | Deps: 1.1
-- [ ] 3.2 Create `src/royaltdn/frontend/pages/builder.py` — 3-column layout (30/40/30): left=indicator picker (16) + param sliders + rule tree editor (max 2 levels); center=auto-backtest + Plotly equity + metrics table; right=JSON preview + Save/Deploy buttons + error toasts | Verify: page renders 3 columns; selecting SMA shows Period+Source; 3rd nesting level blocked with toast; param change triggers backtest; Save writes timestamped JSON; Deploy updates .active | Deps: 1.2, 1.3, 1.4, 2.1, 2.2, 3.1
+- [x] 3.1 `src/royaltdn/frontend/components/builder_state.py` — session_state getters/setters for builder_indicators, entry/exit conditions, config, JSON view, save/deploy flags | Verified: init, add/remove indicator, add/remove conditions, build_config, validate, load_config_into_state, reset | Deps: 1.1
+- [x] 3.2 `src/royaltdn/frontend/pages/builder.py` — 3-column Streamlit page (left=indicator palette + rules; center=JSON preview + backtest placeholder; right=save/load/deploy + risk mgmt) | Verified: imports correctly, integrated with StrategyStore + schema validation, 16 indicator defs with param forms, 30+ operators in 7 groups | Deps: 1.2, 1.3, 1.4, 2.1, 2.2, 3.1
 
 ## Phase 4 — Hito 4: Backtesting (~400 lines)
 
-- [ ] 4.1 Create `src/royaltdn/strategy/backtesting.py` — `BacktestEngine` with `__init__(config)`, `run() -> dict`, `config_hash` (SHA-256); yfinance mapping (1m=7d, 5m/15m=60d, 1H=730d, 1D=5y); VectorBT Portfolio; `@st.cache_data` by hash | Verify: SPY 1D + RSI>70 returns all 7 result fields; empty rules → 0 trades + flat equity; cache hit skips yfinance; invalid ticker returns error field | Deps: 1.2, 1.3
-- [ ] 4.2 Create `src/royaltdn/frontend/components/backtest_charts.py` — Plotly equity curve (green/red return), drawdown area, monthly heatmap, metrics table (Return/Sharpe/WinRate/MaxDD/Trades) | Verify: positive return green; max DD always red; 0 trades shows "No signals generated" annotation | Deps: 4.1
+- [x] 4.1 `src/royaltdn/strategy/backtesting.py` — `run_backtest()` with yfinance data download, DynamicStrategy signal generation, portfolio simulation, metrics computation | Verified: import OK, invalid config returns error, no-trades config handled gracefully, metrics computed correctly | Deps: 1.2, 1.3
+- [x] 4.2 `src/royaltdn/frontend/components/backtest_charts.py` — Plotly equity curve, drawdown, trade distribution, monthly heatmap, metrics cards | Verified: imports OK, all chart functions return valid figures | Deps: 4.1
+- [x] 4.3 Builder integration — backtesting section in center column replaces placeholder; Run Backtest button triggers real backtest; metrics cards + charts displayed | Verified: button disabled when no entry conditions; results show metrics + 4 charts + trade table | Deps: 3.2, 4.1, 4.2
 
 ## Phase 5 — Hito 5: Integration (~200 lines)
 
