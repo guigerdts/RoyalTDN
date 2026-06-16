@@ -1,0 +1,4 @@
+# Fase 7 — Strategy Builder + Backtesting
+pandas-ta>=0.4.0
+yfinance>=1.4.0
+vectorbt>=1.0.0

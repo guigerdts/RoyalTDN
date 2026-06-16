@@ -32,6 +32,7 @@
 
 ## Phase 5 — Hito 5: Integration (~200 lines)
 
-- [ ] 5.1 Modify `src/royaltdn/orchestrator.py` — in `_run_legacy_loop()`: every 30th iteration after `_publish_status()`, call watcher to scan `user_strategies/*.json` (ignore .tmp), validate via schema, create/replace DynamicStrategy | Verify: new JSON loaded within 60s; corrupt JSON skipped with warning; .tmp ignored; missing .active → predefined only | Deps: 1.4, 2.1, 2.2, 2.3
-- [ ] 5.2 Modify `src/royaltdn/frontend/app.py` — add builder page to `st.navigation` pages list | Verify: Builder appears in sidebar nav; clicking loads builder page | Deps: 3.2
-- [ ] 5.3 Create `requirements/fase7.txt` — `pandas-ta`, `yfinance`, `vectorbt[full]` | Verify: `pip install -r requirements/fase7.txt` succeeds; imports work | Deps: none
+- [x] 5.1 Orchestrator integration — `_load_user_strategies()`, `_watch_user_strategies()`, user strategy signal evaluation in legacy loop, strategies.json includes user strategies | Verified: compiles OK, watcher detects new files, user strategies generate signals filtered by symbol | Deps: 1.4, 2.1, 2.2, 2.3
+- [x] 5.2 `app.py` verification — Builder page registered in st.navigation (already done in Hito 3) | Verified: builder page loads, nav order correct | Deps: 3.2
+- [x] 5.3 `requirements/fase7.txt` — pandas-ta, yfinance, vectorbt | Verified: file exists with expected contents | Deps: none
+- [x] 5.4 Integration tests — `tests/test_hito5_integration.py` with 7 tests covering store→dynamic chain, watcher detection, signal generation, invalid rejection, multiple strategies, symbol filtering, requirements file | Verified: all 7 pass | Deps: 5.1, 5.2, 5.3

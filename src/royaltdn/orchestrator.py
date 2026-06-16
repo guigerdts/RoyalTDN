@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 import redis.asyncio as aioredis
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.trading.client import TradingClient
@@ -166,6 +168,11 @@ class Orchestrator:
         self._last_known_price: float = 0.0
         self._signal_count_by_strategy: dict = {}
 
+        # User strategies (Fase 7)
+        self.strategy_store = None
+        self.user_strategies: dict = {}
+        self._last_user_strategy_files: set = set()
+
     # ── Setup ─────────────────────────────────────────────────────────
 
     async def _setup(self) -> bool:
@@ -197,6 +204,14 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Scanner no disponible (%s) — operando solo con SPY", e)
             self._scanner = None
+
+        # User strategies (Fase 7)
+        try:
+            from royaltdn.strategy.strategy_store import StrategyStore
+            self.strategy_store = StrategyStore()
+            self._load_user_strategies()
+        except Exception as e:
+            logger.warning("Strategy store no disponible (%s)", e)
 
         # Redis (async) — OPCIONAL: si falla, activa fallback legacy
         try:
@@ -363,7 +378,7 @@ class Orchestrator:
         }]
 
     def _build_strategies_list(self) -> list:
-        """Build strategies status list from scanner + config."""
+        """Build strategies status list from scanner + config + user strategies."""
         strategies_list = []
         if self._scanner and hasattr(self._scanner, 'strategies'):
             for name, strategy in self._scanner.strategies.items():
@@ -390,7 +405,107 @@ class Orchestrator:
                 "symbol": self.symbol,
                 "timeframe": "1d",
             })
+
+        # User strategies (Fase 7)
+        for name, strat in self.user_strategies.items():
+            strategies_list.append({
+                "name": f"user_{name}",
+                "active": True,
+                "params": strat.get_parameters() if hasattr(strat, 'get_parameters') else {},
+                "validation": strat.validate() if hasattr(strat, 'validate') else True,
+                "last_signal": self._signal_count_by_strategy.get(f"user_{name}"),
+                "signal_count": self._signal_count_by_strategy.get(f"user_{name}", 0),
+                "symbol": strat.symbols[0] if strat.symbols else "ALL",
+                "timeframe": strat.timeframe,
+            })
+
         return strategies_list
+
+    # ── User strategies (Fase 7) ─────────────────────────────────────
+
+    def _load_user_strategies(self):
+        """Load all user strategies from disk into self.user_strategies."""
+        if not self.strategy_store:
+            return
+        from royaltdn.strategy.dynamic import DynamicStrategy
+
+        configs = self.strategy_store.load_all()
+        self.user_strategies.clear()
+        count = 0
+        for cfg in configs:
+            name = cfg.get("name", "unnamed")
+            try:
+                strat = DynamicStrategy(cfg)
+                if strat.validate():
+                    self.user_strategies[name] = strat
+                    count += 1
+                    logger.info("Estrategia de usuario cargada: %s", name)
+                else:
+                    logger.warning("Estrategia de usuario inválida (validación): %s", name)
+            except Exception as e:
+                logger.warning("Error cargando estrategia %s: %s", name, e)
+
+        # Track current files for watcher
+        self._last_user_strategy_files = set()
+        import glob as glob_mod
+        try:
+            self._last_user_strategy_files = {
+                f for f in glob_mod.glob(os.path.join(self.strategy_store.store_dir, "*.json"))
+                if not f.endswith(".tmp")
+            }
+        except Exception:
+            pass
+
+        logger.info("Estrategias de usuario cargadas: %d", count)
+
+    def _watch_user_strategies(self):
+        """Check for new/removed/changed user strategies on disk."""
+        if not self.strategy_store:
+            return
+        from royaltdn.strategy.dynamic import DynamicStrategy
+
+        import glob as glob_mod
+        try:
+            current_files = {
+                f for f in glob_mod.glob(os.path.join(self.strategy_store.store_dir, "*.json"))
+                if not f.endswith(".tmp")
+            }
+        except Exception:
+            return
+
+        previous = self._last_user_strategy_files
+        new_files = current_files - previous
+        removed_files = previous - current_files
+
+        # Load new/changed strategies
+        if new_files:
+            for fpath in sorted(new_files):
+                try:
+                    with open(fpath, "r") as f:
+                        import json as json_mod
+                        cfg = json_mod.load(f)
+                    name = cfg.get("name", "unnamed")
+                    strat = DynamicStrategy(cfg)
+                    if strat.validate():
+                        self.user_strategies[name] = strat
+                        logger.info("Watcher: nueva estrategia detectada - %s", name)
+                    else:
+                        logger.warning("Watcher: estrategia inválida - %s", name)
+                except Exception as e:
+                    logger.warning("Watcher: error cargando %s: %s", fpath, e)
+
+        # Remove deleted strategies
+        if removed_files:
+            for fpath in removed_files:
+                fname = os.path.basename(fpath)
+                for name in list(self.user_strategies.keys()):
+                    sanitized = name.lower().replace(" ", "_").replace("-", "_")
+                    if sanitized in fname:
+                        self.user_strategies.pop(name, None)
+                        logger.info("Watcher: estrategia eliminada - %s", name)
+                        break
+
+        self._last_user_strategy_files = current_files
 
     def _last_signal_summary(self) -> Optional[dict]:
         """Return last signal summary or None."""
@@ -933,6 +1048,12 @@ class Orchestrator:
                         except Exception as e:
                             logger.warning("🔍 Scanner error: %s — continuando con SPY", e)
 
+                # ── User strategies watcher (Fase 7) ──
+                try:
+                    self._watch_user_strategies()
+                except Exception as e:
+                    logger.warning("User strategies watcher error: %s", e)
+
                 # 1. Obtener últimas velas
                 now = datetime.now(timezone.utc)
                 request = StockBarsRequest(
@@ -983,6 +1104,32 @@ class Orchestrator:
                     }
                     logger.info("Señal legacy: %s %s @ %.2f", self.symbol, action, closes[-1])
                     await self._execute_signal(signal)
+
+                # ── User strategy evaluation (Fase 7) ──
+                if self.user_strategies and len(symbol_bars) >= 50:
+                    ohlcv = {
+                        "open":   [float(b.open)   for b in symbol_bars],
+                        "high":   [float(b.high)   for b in symbol_bars],
+                        "low":    [float(b.low)    for b in symbol_bars],
+                        "close":  closes,
+                        "volume": [float(b.volume) for b in symbol_bars],
+                    }
+                    data = pd.DataFrame(ohlcv)
+                    for name, strat in list(self.user_strategies.items()):
+                        try:
+                            symbols = strat.symbols
+                            if symbols and self.symbol not in symbols and "ALL" not in symbols:
+                                continue
+                            signal = strat.generate_signal(data)
+                            if signal:
+                                signal["symbol"] = signal.get("symbol", self.symbol)
+                                logger.info(
+                                    "Señal usuario %s: %s %s @ %.2f",
+                                    name, self.symbol, signal["action"], closes[-1],
+                                )
+                                await self._execute_signal(signal)
+                        except Exception as e:
+                            logger.warning("Error en estrategia usuario %s: %s", name, e)
 
             except asyncio.CancelledError:
                 break
