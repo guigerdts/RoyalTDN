@@ -1,2 +1,1 @@
-streamlit>=1.28,<2.0
-plotly>=5.18,<6.0
+# Fase 6 removed — Streamlit replaced by Rich console (Fase 8)

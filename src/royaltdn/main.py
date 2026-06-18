@@ -5,19 +5,24 @@ Arquitectura modular: DataIngestor + SMAStrategy + Orchestrator.
 
 Comandos:
     check                Probar conexión Alpaca Paper
-    run                  Ejecutar bot con arquitectura modular
-    run-legacy           Ejecutar bot con polling REST (respaldo)
+    run                  Iniciar bot + consola interactiva
+    status               Mostrar estado actual del bot
+    logs                 Mostrar últimas líneas de log
+    pause                Pausar el bot
+    resume               Reanudar el bot
+    scanner              Disparar scanner manual
 """
 
-import logging
 import os
 import sys
-from pathlib import Path
+import threading
 
 from dotenv import load_dotenv
+from loguru import logger
 
 from alpaca.trading.client import TradingClient
 
+from royaltdn.frontend.console.loguru_config import setup_logging
 from royaltdn.orchestrator import Orchestrator
 
 # ── Configuración ──────────────────────────────────────────────────────────
@@ -30,27 +35,12 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 SYMBOL = "SPY"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-
-# File handler for log viewer (Fase 6 Hito 5)
-_log_dir = Path("logs")
-_log_dir.mkdir(parents=True, exist_ok=True)
-_file_handler = logging.FileHandler(_log_dir / "bot.log", encoding="utf-8")
-_file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-))
-logging.getLogger().addHandler(_file_handler)
-
-logger = logging.getLogger("royaltdn")
-
 
 # ── Comando: check ─────────────────────────────────────────────────────────
 
 def cmd_check():
     """Prueba la conexión con Alpaca Paper."""
+    setup_logging()
     if not API_KEY or not API_SECRET:
         logger.error("ALPACA_API_KEY y ALPACA_SECRET_KEY deben estar en .env")
         sys.exit(1)
@@ -59,31 +49,110 @@ def cmd_check():
     account = client.get_account()
 
     logger.info("=== Conexión Alpaca Paper exitosa ===")
-    logger.info("  Estado:       %s", account.status.value)
-    logger.info("  Capital:      $%.2f", float(account.equity))
-    logger.info("  Poder compra: $%.2f", float(account.buying_power))
-    logger.info("  PDT:          %s", account.pattern_day_trader)
+    logger.info("  Estado:       {}", account.status.value)
+    logger.info("  Capital:      ${:.2f}", float(account.equity))
+    logger.info("  Poder compra: ${:.2f}", float(account.buying_power))
+    logger.info("  PDT:          {}", account.pattern_day_trader)
     return account
+
+
+# ── Comando: status ────────────────────────────────────────────────────────
+
+def cmd_status():
+    """One-shot dashboard render from JSON files."""
+    from rich import print as rprint
+    from royaltdn.frontend.console.components.state import StateLoader
+    from royaltdn.frontend.console.log_handler import LogBuffer
+    from royaltdn.frontend.console.screens.dashboard import render_dashboard
+
+    loader = StateLoader()
+    state = loader.load_all()
+    log_buffer = LogBuffer()
+    layout = render_dashboard(state, log_buffer)
+    rprint(layout)
+
+    bot_status = state.get("status", {}).get("bot_status", "OFFLINE")
+    if bot_status == "OFFLINE":
+        sys.exit(1)
+
+
+# ── Comando: logs ──────────────────────────────────────────────────────────
+
+def cmd_logs():
+    """Show last 50 lines of bot.log with syntax highlighting."""
+    from rich.console import Console
+    from pathlib import Path
+
+    log_file = Path("logs/bot.log")
+    if not log_file.exists():
+        print("No hay logs aún.")
+        return
+
+    console = Console()
+    lines = log_file.read_text().splitlines()
+    for line in lines[-50:]:
+        styled = line
+        if "CRITICAL" in line:
+            styled = f"[bold red]{line}[/]"
+        elif "ERROR" in line:
+            styled = f"[red]{line}[/]"
+        elif "WARNING" in line or "WARN" in line:
+            styled = f"[yellow]{line}[/]"
+        elif "INFO" in line:
+            styled = f"[green]{line}[/]"
+        elif "DEBUG" in line:
+            styled = f"[dim]{line}[/]"
+        console.print(styled)
+
+
+# ── Comando: pause ─────────────────────────────────────────────────────────
+
+def cmd_pause():
+    """Send pause signal to the bot."""
+    from royaltdn.frontend.console.commands import pause_bot
+    pause_bot()
+    print("✅ Señal de pausa enviada. El bot se pausará en el próximo ciclo.")
+
+
+# ── Comando: resume ────────────────────────────────────────────────────────
+
+def cmd_resume():
+    """Send resume signal to the bot."""
+    from royaltdn.frontend.console.commands import resume_bot
+    resume_bot()
+    print("✅ Señal de reanudación enviada.")
+
+
+# ── Comando: scanner ───────────────────────────────────────────────────────
+
+def cmd_scanner():
+    """Trigger scanner manually."""
+    from royaltdn.frontend.console.commands import trigger_scanner
+    trigger_scanner()
+    print("✅ Scanner disparado. Los resultados aparecerán en el próximo ciclo.")
 
 
 # ── Comando: run ───────────────────────────────────────────────────────────
 
 def cmd_run():
-    """Arranca el bot con arquitectura modular (Fase 4)."""
+    """Arranca el bot con arquitectura modular + consola interactiva."""
+    setup_logging()
     if not API_KEY or not API_SECRET:
         logger.error("ALPACA_API_KEY y ALPACA_SECRET_KEY deben estar en .env")
         sys.exit(1)
 
     logger.info("=" * 50)
     logger.info("RoyalTDN — Arquitectura Modular (Fase 4)")
-    logger.info("  Símbolo:     %s", SYMBOL)
+    logger.info("  Símbolo:     {}", SYMBOL)
     logger.info("  Estrategia:  SMA5/SMA20")
     logger.info("  Broker:      Alpaca Paper (IEX)")
-    logger.info("  Redis:       %s", REDIS_URL)
-    logger.info("  TimescaleDB: %s", "SÍ" if DATABASE_URL else "NO")
+    logger.info("  Redis:       {}", REDIS_URL)
+    logger.info("  TimescaleDB: {}", "SÍ" if DATABASE_URL else "NO")
     logger.info("=" * 50)
 
-    Orchestrator.run(
+    from royaltdn.frontend.console.app import run_console
+
+    orch = Orchestrator(
         api_key=API_KEY,
         secret_key=API_SECRET,
         redis_url=REDIS_URL,
@@ -91,30 +160,52 @@ def cmd_run():
         symbol=SYMBOL,
     )
 
+    t = threading.Thread(target=orch.start, daemon=True)
+    t.start()
+
+    try:
+        run_console()
+    finally:
+        orch.stop()
+        logger.info("🛑 Bot detenido.")
+
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
 def main():
+    load_dotenv()
+
     if len(sys.argv) < 2:
-        print("Uso: python -m royaltdn <check|run|run-legacy>")
+        print("Uso: python -m royaltdn <comando>")
+        print("")
+        print("Comandos:")
+        print("  run         Iniciar bot + consola interactiva")
+        print("  status      Mostrar estado actual del bot")
+        print("  logs        Mostrar últimas líneas de log")
+        print("  pause       Pausar el bot")
+        print("  resume      Reanudar el bot")
+        print("  scanner     Disparar scanner manual")
+        print("  check       Verificar configuración")
         sys.exit(1)
 
-    command = sys.argv[1]
+    cmd = sys.argv[1]
+    commands = {
+        "run": cmd_run,
+        "status": cmd_status,
+        "logs": cmd_logs,
+        "pause": cmd_pause,
+        "resume": cmd_resume,
+        "scanner": cmd_scanner,
+        "check": cmd_check,
+    }
 
-    if command == "check":
-        cmd_check()
-    elif command == "run":
-        cmd_run()
-    elif command == "run-legacy":
-        # Redirigir al módulo legacy
-        from royaltdn.legacy_polling import main as legacy_main
-        sys.argv = [sys.argv[0], *sys.argv[2:]] if len(sys.argv) > 2 else [sys.argv[0]]
-        legacy_main()
-    else:
-        print(f"Comando desconocido: {command}")
-        print("Usa: check | run | run-legacy")
+    if cmd not in commands:
+        print(f"Comando desconocido: {cmd}")
+        print("Use: python -m royaltdn <comando>")
         sys.exit(1)
+
+    commands[cmd]()
 
 
 if __name__ == "__main__":

@@ -16,13 +16,13 @@ Uso desde main.py:
 
 import asyncio
 import json
-import logging
 import os
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from loguru import logger
 import pandas as pd
 
 import redis.asyncio as aioredis
@@ -47,8 +47,6 @@ from royaltdn.alerts import notify_entry, notify_exit, notify_kill_switch, notif
 from royaltdn.monitoring.tca import calculate_slippage
 from royaltdn.storage.db import Database
 
-logger = logging.getLogger("royaltdn.orchestrator")
-
 # ── Status publishing (Fase 6) ─────────────────────────────────────────────
 
 LOGS_DIR = Path("logs")
@@ -66,7 +64,7 @@ def _atomic_write(path: Path, data: dict) -> bool:
         os.replace(str(tmp_path), str(path))
         return True
     except (OSError, TypeError, ValueError) as e:
-        logger.warning("Error writing %s: %s", path, e)
+        logger.warning("Error writing {}: {}", path, e)
         return False
 
 
@@ -146,6 +144,7 @@ class Orchestrator:
 
         # Estado del bot
         self._running = False
+        self.paused = False
         self._position: Optional[str] = None         # "long" | None
         self._position_qty: int = 0
         self._last_entry_price: float = 0.0
@@ -200,9 +199,9 @@ class Orchestrator:
                 strategies["factor_rotation"] = FactorRotationStrategy()
 
             self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
-            logger.info("Scanner inicializado — universo=%s estrategias=%s", SCANNER_UNIVERSE, list(strategies.keys()))
+            logger.info("Scanner inicializado — universo={} estrategias={}", SCANNER_UNIVERSE, list(strategies.keys()))
         except Exception as e:
-            logger.warning("Scanner no disponible (%s) — operando solo con SPY", e)
+            logger.warning("Scanner no disponible ({}) — operando solo con SPY", e)
             self._scanner = None
 
         # User strategies (Fase 7)
@@ -211,7 +210,7 @@ class Orchestrator:
             self.strategy_store = StrategyStore()
             self._load_user_strategies()
         except Exception as e:
-            logger.warning("Strategy store no disponible (%s)", e)
+            logger.warning("Strategy store no disponible ({})", e)
 
         # Redis (async) — OPCIONAL: si falla, activa fallback legacy
         try:
@@ -221,7 +220,7 @@ class Orchestrator:
                 socket_connect_timeout=5,
             )
             await self._redis.ping()
-            logger.info("Conectado a Redis: %s", self.redis_url)
+            logger.info("Conectado a Redis: {}", self.redis_url)
 
             # Crear consumer group para signals (si no existe)
             try:
@@ -235,7 +234,7 @@ class Orchestrator:
                 if "BUSYGROUP" not in str(e):
                     raise
         except Exception as e:
-            logger.warning("Redis no disponible (%s) — activando fallback legacy", e)
+            logger.warning("Redis no disponible ({}) — activando fallback legacy", e)
             self._redis = None
             self._use_legacy_fallback = True
 
@@ -268,7 +267,7 @@ class Orchestrator:
                 self._position_qty,
             )
         except Exception as e:
-            logger.error("Error sincronizando estado del broker: %s", e)
+            logger.error("Error sincronizando estado del broker: {}", e)
             return False
 
         # Status publishing init (Fase 6)
@@ -278,7 +277,7 @@ class Orchestrator:
             self._publish_status()
             logger.info("Status inicial publicado en logs/")
         except Exception as e:
-            logger.warning("Error publicando status inicial: %s", e)
+            logger.warning("Error publicando status inicial: {}", e)
 
         return True
 
@@ -299,7 +298,7 @@ class Orchestrator:
             self._ingestor.run(),
             name="data-ingestor",
         )
-        logger.info("DataIngestor task creada (%s)", self.symbol)
+        logger.info("DataIngestor task creada ({})", self.symbol)
 
     async def _start_strategy(self):
         """Lanza SMAStrategy como tarea asyncio."""
@@ -326,6 +325,41 @@ class Orchestrator:
             None, lambda: get_atr(data_client, self.symbol),
         )
 
+    # ── Console IPC signal polling (Fase 8) ───────────────────────────
+
+    def _check_signals(self) -> None:
+        """Check console IPC signal files and act on them."""
+        import os as _os
+
+        # Pause/Resume signal
+        pause_file = _os.path.join("logs", "pause_signal.json")
+        if _os.path.exists(pause_file):
+            try:
+                with open(pause_file) as f:
+                    import json as _json
+                    cmd = _json.load(f)
+                action = cmd.get("action")
+                if action == "pause":
+                    self.paused = True
+                    logger.info("⏸️  Bot pausado por comando de consola")
+                elif action == "resume":
+                    self.paused = False
+                    logger.info("▶️  Bot reanudado por comando de consola")
+                _os.remove(pause_file)
+            except Exception as e:
+                logger.warning("Error al leer comando de pausa: {}", e)
+
+        # Scanner trigger signal
+        scanner_file = _os.path.join("logs", "scan_now_signal.json")
+        if _os.path.exists(scanner_file):
+            try:
+                _os.remove(scanner_file)
+                logger.info("🔍 Ejecutando scanner por comando de consola")
+                if self._scanner is not None:
+                    self._scanner.scan()
+            except Exception as e:
+                logger.warning("Error al ejecutar scanner manual: {}", e)
+
     # ── Status publishing (Fase 6) ────────────────────────────────────
 
     def _get_current_equity(self) -> float:
@@ -343,7 +377,7 @@ class Orchestrator:
             self._equity_stale = False
             return equity
         except Exception as e:
-            logger.warning("Error fetching equity: %s", e)
+            logger.warning("Error fetching equity: {}", e)
             self._equity_stale = True
             return self._last_known_equity
 
@@ -439,11 +473,11 @@ class Orchestrator:
                 if strat.validate():
                     self.user_strategies[name] = strat
                     count += 1
-                    logger.info("Estrategia de usuario cargada: %s", name)
+                    logger.info("Estrategia de usuario cargada: {}", name)
                 else:
-                    logger.warning("Estrategia de usuario inválida (validación): %s", name)
+                    logger.warning("Estrategia de usuario inválida (validación): {}", name)
             except Exception as e:
-                logger.warning("Error cargando estrategia %s: %s", name, e)
+                logger.warning("Error cargando estrategia {}: {}", name, e)
 
         # Track current files for watcher
         self._last_user_strategy_files = set()
@@ -456,7 +490,7 @@ class Orchestrator:
         except Exception:
             pass
 
-        logger.info("Estrategias de usuario cargadas: %d", count)
+        logger.info("Estrategias de usuario cargadas: {}", count)
 
     def _watch_user_strategies(self):
         """Check for new/removed/changed user strategies on disk."""
@@ -488,11 +522,11 @@ class Orchestrator:
                     strat = DynamicStrategy(cfg)
                     if strat.validate():
                         self.user_strategies[name] = strat
-                        logger.info("Watcher: nueva estrategia detectada - %s", name)
+                        logger.info("Watcher: nueva estrategia detectada - {}", name)
                     else:
-                        logger.warning("Watcher: estrategia inválida - %s", name)
+                        logger.warning("Watcher: estrategia inválida - {}", name)
                 except Exception as e:
-                    logger.warning("Watcher: error cargando %s: %s", fpath, e)
+                    logger.warning("Watcher: error cargando {}: {}", fpath, e)
 
         # Remove deleted strategies
         if removed_files:
@@ -502,7 +536,7 @@ class Orchestrator:
                     sanitized = name.lower().replace(" ", "_").replace("-", "_")
                     if sanitized in fname:
                         self.user_strategies.pop(name, None)
-                        logger.info("Watcher: estrategia eliminada - %s", name)
+                        logger.info("Watcher: estrategia eliminada - {}", name)
                         break
 
         self._last_user_strategy_files = current_files
@@ -592,6 +626,7 @@ class Orchestrator:
         bot_status = "KILLED" if self._killed else "ONLINE"
         _atomic_write(LOGS_DIR / "status.json", {
             "bot_status": bot_status,
+            "paused": self.paused,
             "mode": "legacy" if self._use_legacy_fallback else "modular",
             "timestamp": now.isoformat(),
             "last_signal": self._last_signal_summary(),
@@ -645,7 +680,7 @@ class Orchestrator:
         habilitado, delega en ``execute_twap`` para repartir en lotes.
         """
         if qty <= 0:
-            logger.warning("Qty %d inválida — orden cancelada", qty)
+            logger.warning("Qty {} inválida — orden cancelada", qty)
             return None
 
         # TWAP para órdenes grandes
@@ -692,7 +727,7 @@ class Orchestrator:
                 time_in_force=TimeInForce.DAY,
             )
         )
-        logger.info("📤 Orden: %s %d %s — ID: %s", side.name, qty, self.symbol, order.id)
+        logger.info("📤 Orden: {} {} {} — ID: {}", side.name, qty, self.symbol, order.id)
 
         if self._db and self._db.is_connected:
             await self._db.insert_order({
@@ -737,10 +772,10 @@ class Orchestrator:
         price = float(signal.get("price", 0))
 
         if action not in ("BUY", "SELL"):
-            logger.warning("Señal desconocida: %s", action)
+            logger.warning("Señal desconocida: {}", action)
             return
 
-        logger.info("🚦 Procesando señal %s @ %.2f", action, price)
+        logger.info("🚦 Procesando señal {} @ {:.2f}", action, price)
 
         # ── Risk check ──
         if not self._killed:
@@ -751,7 +786,7 @@ class Orchestrator:
             )
             if kill:
                 await notify_kill_switch(reason)
-                logger.error("🛑 %s", reason)
+                logger.error("🛑 {}", reason)
 
                 # Cerrar posición si existe
                 if self._position == "long" and self._position_qty > 0:
@@ -867,7 +902,7 @@ class Orchestrator:
             try:
                 self._append_trade(trade_record)
             except Exception as e:
-                logger.warning("Error appending trade: %s", e)
+                logger.warning("Error appending trade: {}", e)
 
             self._position = None
             self._position_qty = 0
@@ -919,7 +954,7 @@ class Orchestrator:
                     pass
                 logger.info("SMAStrategy detenido")
             except Exception as e:
-                logger.debug("Error deteniendo SMAStrategy: %s", e)
+                logger.debug("Error deteniendo SMAStrategy: {}", e)
 
     # ── Loop principal ──────────────────────────────────────────────
 
@@ -960,14 +995,14 @@ class Orchestrator:
 
                 for stream_name, messages in result:
                     for msg_id, fields in messages:
-                        logger.debug("Signal recibida: %s %s", msg_id, fields)
+                        logger.debug("Signal recibida: {} {}", msg_id, fields)
                         await self._execute_signal(fields)
                         await self._redis.xack(SIGNALS_STREAM, CONSUMER_GROUP, msg_id)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("Error en main loop: %s", e, exc_info=True)
+                logger.error("Error en main loop: {}", e, exc_info=True)
                 await notify_error(str(e))
                 await asyncio.sleep(5)
 
@@ -1005,11 +1040,11 @@ class Orchestrator:
 
         self._running = True
         logger.info("=" * 50)
-        logger.info("🔄 MODO LEGACY ACTIVO — polling cada %ds", poll_interval)
+        logger.info("🔄 MODO LEGACY ACTIVO — polling cada {}s", poll_interval)
         logger.info("  Risk manager:    ACTIVO")
         logger.info("  Alertas Telegram: ACTIVAS")
-        logger.info("  TWAP:             %s", "ACTIVO" if self.twap_enabled else "INACTIVO")
-        logger.info("  Scanner:          %s", "ACTIVO" if self._scanner else "NO DISPONIBLE")
+        logger.info("  TWAP:             {}", "ACTIVO" if self.twap_enabled else "INACTIVO")
+        logger.info("  Scanner:          {}", "ACTIVO" if self._scanner else "NO DISPONIBLE")
         logger.info("=" * 50)
         await send_telegram_message_async(
             f"ℹ️ <b>LEGACY FALLBACK</b>\n"
@@ -1024,6 +1059,14 @@ class Orchestrator:
 
         while self._running and not self._killed:
             try:
+                # ── Console IPC signals (Fase 8) ──
+                self._check_signals()
+                if self.paused:
+                    self._publish_status()
+                    import time as _time
+                    _time.sleep(60)
+                    continue
+
                 # ── Scanner multi-estrategia ──
                 if self._scanner:
                     scanner_cycle += 1
@@ -1046,13 +1089,13 @@ class Orchestrator:
                             else:
                                 logger.info("🔍 Scanner: sin señales — usando SPY por defecto")
                         except Exception as e:
-                            logger.warning("🔍 Scanner error: %s — continuando con SPY", e)
+                            logger.warning("🔍 Scanner error: {} — continuando con SPY", e)
 
                 # ── User strategies watcher (Fase 7) ──
                 try:
                     self._watch_user_strategies()
                 except Exception as e:
-                    logger.warning("User strategies watcher error: %s", e)
+                    logger.warning("User strategies watcher error: {}", e)
 
                 # 1. Obtener últimas velas
                 now = datetime.now(timezone.utc)
@@ -1102,7 +1145,7 @@ class Orchestrator:
                         "fast_sma": round(curr_fast, 2),
                         "slow_sma": round(curr_slow, 2),
                     }
-                    logger.info("Señal legacy: %s %s @ %.2f", self.symbol, action, closes[-1])
+                    logger.info("Señal legacy: {} {} @ {:.2f}", self.symbol, action, closes[-1])
                     await self._execute_signal(signal)
 
                 # ── User strategy evaluation (Fase 7) ──
@@ -1129,7 +1172,7 @@ class Orchestrator:
                                 )
                                 await self._execute_signal(signal)
                         except Exception as e:
-                            logger.warning("Error en estrategia usuario %s: %s", name, e)
+                            logger.warning("Error en estrategia usuario {}: {}", name, e)
 
             except asyncio.CancelledError:
                 break
@@ -1137,21 +1180,21 @@ class Orchestrator:
                 err_str = f"{e}"
                 # No alarmar por errores esperados fuera de mercado
                 if "429" in err_str:
-                    logger.warning("Rate limit Alpaca — esperando %ds", poll_interval)
+                    logger.warning("Rate limit Alpaca — esperando {}s", poll_interval)
                 elif "401" in err_str or "403" in err_str:
-                    logger.error("Auth error en legacy loop: %s", err_str)
+                    logger.error("Auth error en legacy loop: {}", err_str)
                     await notify_error(f"Auth error en legacy mode: {err_str}")
                     await asyncio.sleep(poll_interval * 3)
                     continue
                 else:
-                    logger.warning("Error en legacy loop: %s", err_str)
+                    logger.warning("Error en legacy loop: {}", err_str)
                 await asyncio.sleep(poll_interval)
 
             # Publish status at end of cycle (Fase 6)
             try:
                 self._publish_status()
             except Exception as e:
-                logger.warning("Status publish error: %s", e)
+                logger.warning("Status publish error: {}", e)
 
             await asyncio.sleep(poll_interval)
 
@@ -1183,7 +1226,7 @@ class Orchestrator:
                 await asyncio.sleep(0.5)
                 await self._start_strategy()
             except Exception as e:
-                logger.error("Error lanzando tareas: %s\n%s", e, traceback.format_exc())
+                logger.error("Error lanzando tareas: {}\n{}", e, traceback.format_exc())
                 logger.info("🔄 Fallback a modo legacy")
                 self._use_legacy_fallback = True
                 await self._run_legacy_loop()
@@ -1215,7 +1258,7 @@ class Orchestrator:
             self._publish_status()
             logger.info("Status final publicado en logs/")
         except Exception as e:
-            logger.warning("Error publicando status final: %s", e)
+            logger.warning("Error publicando status final: {}", e)
 
         # Detener estrategia
         if self._strategy:
@@ -1223,7 +1266,7 @@ class Orchestrator:
                 self._strategy.stop()
                 logger.info("SMAStrategy detenido")
             except Exception as e:
-                logger.debug("Error deteniendo SMAStrategy: %s", e)
+                logger.debug("Error deteniendo SMAStrategy: {}", e)
 
         # Cancelar tarea de estrategia
         if self._strategy_task and not self._strategy_task.done():
@@ -1239,7 +1282,7 @@ class Orchestrator:
                 self._ingestor.stop()
                 logger.info("DataIngestor detenido")
             except Exception as e:
-                logger.debug("Error deteniendo DataIngestor: %s", e)
+                logger.debug("Error deteniendo DataIngestor: {}", e)
 
         # Cancelar tarea de ingestor
         if self._ingestor_task and not self._ingestor_task.done():
@@ -1264,11 +1307,11 @@ class Orchestrator:
             pnl_total = final_equity - self._initial_equity
             logger.info("=" * 50)
             logger.info("BOT DETENIDO")
-            logger.info("  Capital inicial: $%.2f", self._initial_equity)
-            logger.info("  Capital final:   $%.2f", final_equity)
-            logger.info("  P&L total:       $%.2f", pnl_total)
-            logger.info("  Trades:          %d", self._trades_count)
-            logger.info("  Losses seguidas: %d", self._consecutive_losses)
+            logger.info("  Capital inicial: ${:.2f}", self._initial_equity)
+            logger.info("  Capital final:   ${:.2f}", final_equity)
+            logger.info("  P&L total:       ${:.2f}", pnl_total)
+            logger.info("  Trades:          {}", self._trades_count)
+            logger.info("  Losses seguidas: {}", self._consecutive_losses)
             logger.info("=" * 50)
 
     def stop(self):
