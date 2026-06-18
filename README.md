@@ -2,9 +2,9 @@
 
 Bot de trading algorítmico de grado profesional construido sobre **Python + Alpaca + Redis + TimescaleDB + Grafana**.
 
-**Stack**: Python 3.13 (asyncio), Alpaca API (paper + live), Redis Streams, TimescaleDB, Grafana, Docker, Streamlit, pandas-ta.
+**Stack**: Python 3.13 (asyncio), Alpaca API (paper + live), Redis Streams, TimescaleDB, Grafana, Docker, **Rich TUI**, **Loguru**, pandas-ta.
 
-**Estado**: Fase 7 — Constructor visual de estrategias multi-indicador con backtesting integrado.
+**Estado**: Fase 8 — Consola interactiva Rich + Loguru + 6 CLI subcomandos + IPC por señales.
 
 ## Arquitectura
 
@@ -23,29 +23,39 @@ Bot de trading algorítmico de grado profesional construido sobre **Python + Alp
 │                                     Orchestrator                                        │
 │                                                                                         │
 │  _main_loop ──► consume signals ──► risk check ──► execute (TWAP/market) ──► TCA       │
-│                                                                                         │
+│                         │                                            ▲                  │
 │  ⚠️ Si DataIngestor muere → auto fallback a _run_legacy_loop (REST polling)             │
-│                                                                                         │
+│                         │                                            │                  │
 │  _run_legacy_loop ──► REST Alpaca ──► SMA inline ──► execute_signal ──► _publish_status │
 │       │                                                                                 │
+│       ├── _check_signals() ──► lee pause_signal.json / scanner_trigger.json             │
 │       ├── _watch_user_strategies() ──► detecta cambios en user_strategies/*.json       │
 │       └── evalúa DynamicStrategy de usuario ──► señales BUY/SELL                        │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+└────┬───────────────────────────────────────────────────────────────────────────────┬────┘
+     │  publica 7 JSON files                                                         │ poll signals
+     ▼ cada ciclo                                                                     ▼
+┌──────────────────┐                                                         ┌──────────────────┐
+│   logs/*.json     │                                                         │ pause_signal.json│
+│   - status        │◄──── lee ─────┐                                         │ scanner_trigger  │
+│   - equity        │               │                                         └──────────────────┘
+│   - positions     │               │
+│   - signals       │               │
+│   - strategies    │               │
+│   - trades        │               │
+│   - scanner_res   │               │
+└──────────────────┘               │
+                                   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                    Streamlit Frontend (Fase 6+7)                  │
+│                   Rich Console TUI (Fase 8)                       │
+│                                                                   │
+│  StateLoader → Widgets → Rich Live render loop @ 2 FPS           │
 │                                                                   │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
 │  │Dashboard │ │ Scanner  │ │Estrategias│ │  Trades  │ │  Logs  │ │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘ │
-│  ┌──────────────────────────────────────────────────────────┐    │
-│  │  🛠️ Builder (Fase 7)                                     │    │
-│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐  │    │
-│  │  │ Indicadores   │ │ JSON Preview │ │ Save / Load      │  │    │
-│  │  │ + Reglas      │ │ + Backtest   │ │ + Deploy         │  │    │
-│  │  └──────────────┘ └──────────────┘ └──────────────────┘  │    │
-│  └──────────────────────────────────────────────────────────┘    │
+│                                                                   │
+│  Comandos: p=pausar  r=reanudar  scan=scanner  q=salir           │
+│  Filtros:   i=INFO   w=WARNING   e=ERROR     a=todos             │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,12 +67,11 @@ Bot de trading algorítmico de grado profesional construido sobre **Python + Alp
 | `BollingerRSIStrategy` | Estrategia Bollinger + RSI (oversold/overbought) | `strategy/bollinger_rsi.py` |
 | `MomentumATRStrategy` | Estrategia momentum con trailing ATR | `strategy/momentum_atr.py` |
 | `FactorRotationStrategy` | Rotación de factores basada en ranking | `strategy/factor_rotation.py` |
-| `Orchestrator` | Coordina todo: threads, risk manager, ejecución, TCA, **watcher de estrategias de usuario** | `orchestrator.py` |
+| `Orchestrator` | Coordina todo: threads, risk manager, ejecución, TCA, **IPC signal polling**, watcher de estrategias | `orchestrator.py` |
 | `Scanner` | Escaneo multi-estrategia del universo de activos | `scanner.py` |
 | `TWAP` | Ejecución time-weighted average price para órdenes grandes | `execution/twap.py` |
 | `TCA` | Transaction Cost Analysis (slippage en bps) | `monitoring/tca.py` |
 | `Risk Manager` | Position sizing (ATR), kill switches (drawdown, pérdidas seguidas) | `risk_manager.py` |
-| `Frontend` | **Streamlit** 6 páginas: Dashboard, Scanner, Estrategias, Trades, Logs, **Builder** | `frontend/` |
 | — | — | — |
 | *Fase 7* | | |
 | `indicators` | 16 funciones indicadoras (15 pandas-ta + SmartMoneyFlowCloud manual) | `strategy/indicators.py` |
@@ -72,24 +81,40 @@ Bot de trading algorítmico de grado profesional construido sobre **Python + Alp
 | `DynamicStrategy` | Estrategia definida en runtime desde JSON, hereda de BaseStrategy | `strategy/dynamic.py` |
 | `Backtesting` | Motor de backtesting con yfinance + simulación de portafolio | `strategy/backtesting.py` |
 | `Builder UI` | Constructor visual 3 columnas (paleta, reglas, preview, backtest, gestión) | `frontend/pages/builder.py` |
+| — | — | — |
+| *Fase 8* | | |
+| `StateLoader` | Lector de 7 JSON con TTL cache para el dashboard | `frontend/console/components/state.py` |
+| `LogBuffer` | Buffer circular thread-safe (200 líneas) para logs en vivo | `frontend/console/log_handler.py` |
+| `Widgets` | 12 funciones Rich renderable (KPIs, tablas, panels, footer) | `frontend/console/components/widgets.py` |
+| `Screens` | 5 pantallas: Dashboard, Scanner, Estrategias, Trades, Logs | `frontend/console/screens/` |
+| `Commands` | Señales IPC: pause_bot(), resume_bot(), trigger_scanner() | `frontend/console/commands.py` |
+| `Console App` | Bucle Rich Live @ 2 FPS con input() para comandos | `frontend/console/app.py` |
+| `Loguru Config` | Configuración centralizada de Loguru (3 sinks) | `frontend/console/loguru_config.py` |
+| `CLI` | 6 subcomandos: run, status, logs, pause, resume, scanner | `main.py` |
 
 ## Comandos
 
 ```bash
-python -m royaltdn check        # Verificar conexión Alpaca Paper
-python -m royaltdn run           # Bot completo (ingestor → Redis → strategy → ejecución)
-                                # Con auto-fallback a legacy si ingestor falla
-python -m royaltdn run-legacy    # Bot legacy directo (sin Redis)
+python -m royaltdn          # Mostrar ayuda con todos los comandos
 
-streamlit run src/royaltdn/frontend/app.py  # Frontend Streamlit (6 páginas)
+python -m royaltdn check    # Verificar conexión Alpaca Paper
+python -m royaltdn run      # Bot completo + consola interactiva Rich (Fase 8)
+python -m royaltdn run-legacy # Bot legacy directo (sin Redis, sin consola)
+
+python -m royaltdn status   # One-shot: mostrar estado actual del bot
+python -m royaltdn logs     # One-shot: mostrar últimas 50 líneas de log
+
+python -m royaltdn pause    # Señal IPC: pausar el bot
+python -m royaltdn resume   # Señal IPC: reanudar el bot
+python -m royaltdn scanner  # Señal IPC: disparar scanner manual
 ```
 
 ### Modo run (recomendado)
 
-Arranca la arquitectura modular completa. Si Redis no está disponible o el thread del `DataIngestor` falla (ej: conflicto de event loop en `alpaca-py`), el `Orchestrator` **detecta automáticamente la muerte del thread** y transiciona a modo legacy:
+Arranca la arquitectura modular completa **más la consola interactiva Rich** en la terminal. El Orchestrator corre en un thread daemon y la consola en el thread principal. Si Redis no está disponible o el thread del `DataIngestor` falla (ej: conflicto de event loop en `alpaca-py`), el `Orchestrator` **detecta automáticamente la muerte del thread** y transiciona a modo legacy:
 
 ```bash
-# Normal (con Redis + TimescaleDB)
+# Normal (con Redis + TimescaleDB + consola interactiva)
 REDIS_URL=redis://localhost:6379/0 python -m royaltdn run
 
 # Forzar fallback legacy (Redis inválido)
@@ -98,23 +123,32 @@ REDIS_URL=redis://noexiste:6379/0 python -m royaltdn run
 
 En modo legacy, el risk manager, TWAP, alertas Telegram, **y las estrategias de usuario** siguen activos — solo cambia la fuente de datos (REST polling cada 60s en vez de WebSocket).
 
-### Frontend Streamlit
+### Consola Interactiva (Fase 8)
+
+Al ejecutar `python -m royaltdn run`, la consola Rich se inicia automáticamente con 5 pantallas navegables por teclado:
+
+| Pantalla | Comando | Descripción |
+|----------|---------|-------------|
+| Dashboard | `1` / `d` | KPIs, equity curve, posiciones abiertas, señales |
+| Scanner | `2` / `s` | Resultados del escaneo multi-estrategia |
+| Estrategias | `3` / `e` | Estado de estrategias activas y de usuario |
+| Trades | `4` / `t` | Historial de trades con métricas |
+| Logs | `5` / `l` | Logs en vivo con filtros por nivel |
+
+**Comandos de control:**
+- `p` — Pausar el bot (envía señal IPC via `logs/pause_signal.json`)
+- `r` — Reanudar el bot
+- `scan` — Disparar scanner manual
+- `i` / `w` / `e` — Filtrar logs por INFO / WARNING / ERROR
+- `a` — Quitar filtro de log
+- `q` — Salir de la consola
+
+### One-shot: status y logs
 
 ```bash
-# Instalar dependencias de frontend
-pip install -r requirements/fase6.txt
-
-# Iniciar
-streamlit run src/royaltdn/frontend/app.py --server.port 8501
+python -m royaltdn status    # Imprime dashboard una vez y sale
+python -m royaltdn logs      # Últimas 50 líneas con syntax highlighting
 ```
-
-6 páginas:
-- **📊 Dashboard** — Métricas, equity curve, drawdown, posiciones abiertas, estado del bot
-- **🔍 Scanner** — Resultados del escaneo multi-estrategia
-- **⚙️ Estrategias** — Estado de estrategias activas
-- **📈 Trades** — Historial de trades
-- **📋 Logs** — Logs del bot en tiempo real
-- **🛠️ Builder** — Constructor visual de estrategias (Fase 7)
 
 ## Strategy Builder (Fase 7)
 
@@ -178,11 +212,14 @@ user_strategies/
 # Dependencias base
 pip install alpaca-py redis python-dotenv pandas numpy
 
-# Fase 5-6 (Scanner + Frontend)
+# Fase 5-6 (Scanner)
 pip install -r requirements/fase6.txt
 
 # Fase 7 (Builder + Backtesting)
 pip install -r requirements/fase7.txt
+
+# Fase 8 (Consola Rich + Loguru)
+pip install -r requirements/fase8_console.txt
 
 # Variables de entorno (ver .env.example)
 export ALPACA_API_KEY="tu_key"
@@ -190,11 +227,11 @@ export ALPACA_SECRET_KEY="tu_secret"
 export REDIS_URL="redis://localhost:6379/0"    # Opcional — fallback legacy sin Redis
 export DATABASE_URL=""                          # Opcional — TimescaleDB
 
-# Ejecutar bot
+# Ejecutar bot con consola interactiva
 python -m royaltdn run
 
-# Ejecutar frontend
-streamlit run src/royaltdn/frontend/app.py
+# One-shot status
+python -m royaltdn status
 ```
 
 ## Tests
@@ -203,7 +240,14 @@ streamlit run src/royaltdn/frontend/app.py
 pytest tests/ -v
 ```
 
-88 tests en total cubriendo: SMA, BollingerRSI, MomentumATR, FactorRotation, Scanner, Orchestrator, TCA, indicadores, rule_engine, schema, StrategyStore, DynamicStrategy, backtesting, integración.
+~75 tests en total cubriendo: SMA, BollingerRSI, MomentumATR, FactorRotation, Scanner, Orchestrator, TCA, indicadores, rule_engine, schema, StrategyStore, DynamicStrategy, backtesting, integración, **StateLoader, LogBuffer, widgets, commands, screens, key handling** (Fase 8).
+
+Los tests de la consola (30 tests nuevos en `tests/test_console.py`) cubren:
+- StateLoader: carga, cache TTL, archivos faltantes, JSON corrupto
+- LogBuffer: add, trim, filtros, thread-safety
+- Widgets: cada función con datos mock y vacíos
+- Commands: pause/resume/scanner signals
+- Key handling: cambio de pantalla, comandos inválidos
 
 ## Roadmap
 
@@ -215,4 +259,5 @@ pytest tests/ -v
 | Fase 4 | ✅ | Arquitectura modular: ingestor → Redis → strategy → orchestrator + auto-fallback |
 | Fase 5 | ✅ | Scanner multi-estrategia, estrategias avanzadas (BollingerRSI, MomentumATR, FactorRotation) |
 | Fase 6 | ✅ | Frontend Streamlit: Dashboard, Scanner, Estrategias, Trades, Logs + status publishing |
-| **Fase 7** | **✅** | **Constructor visual de estrategias: 16 indicadores, reglas lógicas, backtesting, watcher automático** |
+| Fase 7 | ✅ | Constructor visual de estrategias: 16 indicadores, reglas lógicas, backtesting, watcher automático |
+| **Fase 8** | **✅** | **Consola interactiva Rich: reemplazo de Streamlit por TUI, Loguru, 6 CLI subcomandos, IPC por señales** |

@@ -48,6 +48,7 @@ def render_logs(
     level_filter: Optional[str] = None,
     module_filter: Optional[str] = None,
     text_filter: Optional[str] = None,
+    status_message: str | None = None,
 ) -> Layout:
     """Render the logs screen.
 
@@ -57,6 +58,7 @@ def render_logs(
         level_filter: Optional log level to show (e.g. ``"INFO"``).
         module_filter: Optional module name filter.
         text_filter: Optional free-text filter.
+        status_message: Optional message shown in the footer bar.
 
     Returns:
         A ``Layout`` with header, filter bar, log panel, and footer.
@@ -76,6 +78,6 @@ def render_logs(
     layout["log_panel"].update(
         create_log_panel(log_buffer, level_filter, module_filter, text_filter)
     )
-    layout["footer"].update(create_footer(active_screen=5))
+    layout["footer"].update(create_footer(active_screen=5, status_message=status_message))
 
     return layout

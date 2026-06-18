@@ -11,12 +11,13 @@ from royaltdn.frontend.console.components.widgets import (
 )
 
 
-def render_estrategias(state: dict, log_buffer: Any) -> Layout:
+def render_estrategias(state: dict, log_buffer: Any, status_message: str | None = None) -> Layout:
     """Render the estrategias (strategies) screen.
 
     Args:
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance (passed but not used here).
+        status_message: Optional message shown in the footer bar.
 
     Returns:
         A ``Layout`` with header, strategies tables, and footer.
@@ -33,7 +34,7 @@ def render_estrategias(state: dict, log_buffer: Any) -> Layout:
     )
 
     layout["header"].update(create_header(state))
-    layout["footer"].update(create_footer(active_screen=3))
+    layout["footer"].update(create_footer(active_screen=3, status_message=status_message))
 
     body = Layout()
     body.update(create_strategies_table(strategies_data, user_strategies))

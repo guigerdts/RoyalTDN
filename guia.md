@@ -139,7 +139,7 @@ Aquí se detalla la arquitectura utilizada en mesas profesionales y adaptada par
   · Orquestación con Docker Compose para entornos locales/staging, y Kubernetes si se necesita alta disponibilidad en la nube.
   · CI/CD (GitHub Actions / GitLab CI): Pipeline que, al hacer push, ejecuta tests unitarios y un backtest rápido. Si pasa, construye la imagen Docker y despliega automáticamente en el entorno de paper trading.
 · Monitorización:
-  · Logs: Estructurados en formato JSON y centralizados en Elasticsearch, visualizándolos con Kibana.
+   · Logs: Con Loguru (logging moderno con rotación y sinks personalizados), estructurados en formato JSON y centralizados en Elasticsearch para visualización con Kibana. También visibles en vivo en la consola interactiva Rich.
   · Métricas en tiempo real: Prometheus para recolectar y Grafana para visualizar dashboards con latencia de señal, P&L, exposición, órdenes rechazadas, drawdown intradiario.
   · Alertas: Sistema de notificaciones por Telegram, Slack o email para eventos críticos: desconexión del broker, drawdown superior al umbral, errores en API, discrepancia de posición.
 · Simulador de caídas y Chaos Engineering: Pruebas periódicas que desconectan la red, saturan la CPU o inyectan datos corruptos para verificar que el sistema falla de forma controlada (cierres de emergencia, cancelación de órdenes) y no causa pérdidas descontroladas.
@@ -494,6 +494,10 @@ python-dotenv
   · Prometheus
   · Grafana
   · Elasticsearch / Kibana (Logs)
+  · Loguru (Logging moderno con rotación y sinks)
+· Terminal UI & Consola:
+  · Rich (Terminal UI con tablas, paneles, layouts, Live display)
+  · colorama (Soporte de colores multiplataforma)
 · Control de Versiones de Modelos:
   · DVC (Data Version Control)
   · MLflow

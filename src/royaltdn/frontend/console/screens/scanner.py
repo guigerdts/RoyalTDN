@@ -29,12 +29,13 @@ def _fmt_time(ts: Any) -> str:
         return str(ts)
 
 
-def render_scanner(state: dict, log_buffer: Any) -> Layout:
+def render_scanner(state: dict, log_buffer: Any, status_message: str | None = None) -> Layout:
     """Render the scanner screen.
 
     Args:
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance (passed but not used here).
+        status_message: Optional message shown in the footer bar.
 
     Returns:
         A ``Layout`` with header, scan info, signals table, history, and footer.
@@ -51,7 +52,7 @@ def render_scanner(state: dict, log_buffer: Any) -> Layout:
     )
 
     layout["header"].update(create_header(state))
-    layout["footer"].update(create_footer(active_screen=2))
+    layout["footer"].update(create_footer(active_screen=2, status_message=status_message))
 
     # Body
     if not last_scan and not scan_history:

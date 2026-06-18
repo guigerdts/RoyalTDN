@@ -13,12 +13,13 @@ from royaltdn.frontend.console.components.widgets import (
 )
 
 
-def render_trades(state: dict, log_buffer: Any) -> Layout:
+def render_trades(state: dict, log_buffer: Any, status_message: str | None = None) -> Layout:
     """Render the trades screen.
 
     Args:
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance (passed but not used here).
+        status_message: Optional message shown in the footer bar.
 
     Returns:
         A ``Layout`` with header, metrics panel, trades table, and footer.
@@ -35,7 +36,7 @@ def render_trades(state: dict, log_buffer: Any) -> Layout:
     )
 
     layout["header"].update(create_header(state))
-    layout["footer"].update(create_footer(active_screen=4))
+    layout["footer"].update(create_footer(active_screen=4, status_message=status_message))
 
     if not trades_list:
         layout["metrics"].update(

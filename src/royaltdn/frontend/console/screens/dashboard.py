@@ -28,12 +28,13 @@ def _get_terminal_size() -> tuple[int, int]:
         return 80, 24
 
 
-def render_dashboard(state: dict, log_buffer: Any) -> Layout:
+def render_dashboard(state: dict, log_buffer: Any, status_message: str | None = None) -> Layout:
     """Render the main dashboard.
 
     Args:
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance for the log panel.
+        status_message: Optional message shown in the footer bar.
 
     Returns:
         A ``Layout`` with header, body (60/40 split), and footer.
@@ -90,6 +91,6 @@ def render_dashboard(state: dict, log_buffer: Any) -> Layout:
     layout["body"].update(body_layout)
 
     # ── Footer ──
-    layout["footer"].update(create_footer(active_screen=1))
+    layout["footer"].update(create_footer(active_screen=1, status_message=status_message))
 
     return layout

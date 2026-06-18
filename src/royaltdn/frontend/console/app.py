@@ -31,62 +31,70 @@ def handle_command(
     level_filter: Optional[str],
     module_filter: Optional[str],
     text_filter: Optional[str],
-) -> tuple[bool, str, Optional[str], Optional[str], Optional[str]]:
+) -> tuple[bool, str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Process a text command and return updated state.
 
     Returns:
-        Tuple of ``(running, current_screen, level_filter, module_filter, text_filter)``.
+        Tuple of ``(running, current_screen, level_filter, module_filter,
+        text_filter, status_message)``.
     """
     new_screen = current_screen
+    status_message: Optional[str] = None
 
     if cmd in ("1", "d", "dashboard"):
         new_screen = "dashboard"
+        status_message = "📊 Dashboard"
     elif cmd in ("2", "s", "scanner"):
         new_screen = "scanner"
+        status_message = "🔍 Scanner"
     elif cmd in ("3", "e", "estrategias", "strategies"):
         new_screen = "estrategias"
+        status_message = "⚙️ Estrategias"
     elif cmd in ("4", "t", "trades"):
         new_screen = "trades"
+        status_message = "📈 Trades"
     elif cmd in ("5", "l", "logs"):
         new_screen = "logs"
+        status_message = "📋 Logs"
 
     elif cmd in ("p", "pause"):
         pause_bot()
-        print("✅ Señal de pausa enviada")
         logger.info("Pause command executed")
+        status_message = "✅ Bot PAUSADO"
     elif cmd in ("r", "resume"):
         resume_bot()
-        print("✅ Señal de reanudación enviada")
         logger.info("Resume command executed")
+        status_message = "▶️ Bot REANUDADO"
     elif cmd in ("scan",):
         trigger_scanner()
-        print("✅ Scanner disparado")
         logger.info("Scan command executed")
+        status_message = "🔍 Scanner disparado"
 
     elif cmd == "i":
         level_filter = None if level_filter == "INFO" else "INFO"
-        print(f"Filtro: {level_filter or 'TODOS'}")
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
     elif cmd == "w":
         level_filter = None if level_filter == "WARNING" else "WARNING"
-        print(f"Filtro: {level_filter or 'TODOS'}")
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
     elif cmd == "e":
         level_filter = None if level_filter == "ERROR" else "ERROR"
-        print(f"Filtro: {level_filter or 'TODOS'}")
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
     elif cmd == "a":
         level_filter = None
-        print("Filtro: TODOS")
+        status_message = "Filtro: TODOS"
 
     elif cmd in ("h", "help"):
-        print(
-            "Comandos: [1]Dashboard [2]Scanner [3]Estrategias [4]Trades [5]Logs | "
-            "[p]Pausar [r]Reanudar [scan]Scan [i]INFO [w]WARN [e]ERROR [a]ALL [q]Salir"
+        status_message = (
+            "[1]D [2]S [3]E [4]T [5]L  |  "
+            "[p]Pausar [r]Reanudar [scan]Scan  |  "
+            "[i]INFO [w]WARN [e]ERROR [a]ALL  |  [q]Salir"
         )
 
     elif cmd in ("q", "exit", "quit"):
         logger.info("Quit command — stopping console")
-        return (False, new_screen, level_filter, module_filter, text_filter)
+        return (False, new_screen, level_filter, module_filter, text_filter, None)
 
-    return (True, new_screen, level_filter, module_filter, text_filter)
+    return (True, new_screen, level_filter, module_filter, text_filter, status_message)
 
 
 # ── Screen dispatch ───────────────────────────────────────────────────────
@@ -99,6 +107,7 @@ def render_screen(
     level_filter: Optional[str] = None,
     module_filter: Optional[str] = None,
     text_filter: Optional[str] = None,
+    status_message: Optional[str] = None,
 ):
     """Dispatch rendering to the correct screen function.
 
@@ -110,24 +119,28 @@ def render_screen(
         level_filter: Optional log level filter.
         module_filter: Optional module name filter.
         text_filter: Optional free-text filter.
+        status_message: Optional message shown in the footer bar.
     """
+    kwargs = {"state": state, "log_buffer": log_buffer, "status_message": status_message}
     if screen_id == "dashboard":
-        return render_dashboard(state, log_buffer)
+        return render_dashboard(**kwargs)
     elif screen_id == "scanner":
-        return render_scanner(state, log_buffer)
+        return render_scanner(**kwargs)
     elif screen_id == "estrategias":
-        return render_estrategias(state, log_buffer)
+        return render_estrategias(**kwargs)
     elif screen_id == "trades":
-        return render_trades(state, log_buffer)
+        return render_trades(**kwargs)
     elif screen_id == "logs":
         return render_logs(
-            state,
-            log_buffer,
+            state=state,
+            log_buffer=log_buffer,
             level_filter=level_filter,
             module_filter=module_filter,
             text_filter=text_filter,
+            status_message=status_message,
         )
-    return render_dashboard(state, log_buffer)
+    kwargs["state"] = state
+    return render_dashboard(**kwargs)
 
 
 # ── Main entry ────────────────────────────────────────────────────────────
@@ -166,12 +179,13 @@ def run_console(logs_dir: str = "logs") -> None:
     level_filter: Optional[str] = None
     module_filter: Optional[str] = None
     text_filter: Optional[str] = None
+    status_message: Optional[str] = None
     running = True
 
     try:
         initial = render_screen(
             current_screen, loader.load_all(), log_buffer,
-            level_filter, module_filter, text_filter,
+            level_filter, module_filter, text_filter, status_message,
         )
 
         with Live(initial, refresh_per_second=2, screen=True) as live:
@@ -180,16 +194,19 @@ def run_console(logs_dir: str = "logs") -> None:
                 state = loader.load_all()
                 layout = render_screen(
                     current_screen, state, log_buffer,
-                    level_filter, module_filter, text_filter,
+                    level_filter, module_filter, text_filter, status_message,
                 )
                 live.update(layout)
+
+                # Auto-clear status message after one render cycle
+                status_message = None
 
                 # ── Wait for command with standard input() ──
                 try:
                     cmd = input(">> ").strip().lower()
                     if cmd:
                         running, current_screen, level_filter, module_filter, \
-                            text_filter = handle_command(
+                            text_filter, status_message = handle_command(
                                 cmd, current_screen,
                                 level_filter, module_filter, text_filter,
                             )

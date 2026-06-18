@@ -38,6 +38,8 @@ Este documento cierra el roadmap con un compendio de todas las herramientas menc
 - **[Pyfolio](https://github.com/quantopian/pyfolio)** – Análisis de portfolio y factores.
 - **[Pandas](https://pandas.pydata.org/) / [Polars](https://www.pola.rs/)** – Manipulación de datos.
 - **[NumPy](https://numpy.org/)** – Computación numérica.
+- **[Rich](https://github.com/Textualize/rich)** – Terminal UI con tablas, paneles, layouts y Live display. Ideal para dashboards en consola.
+- **[Loguru](https://github.com/Delgan/loguru)** – Logging moderno con rotación, formato estructurado y sinks personalizables. Reemplaza a `logging`.
 
 ### Bases de Datos
 

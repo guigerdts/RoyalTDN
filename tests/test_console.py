@@ -294,38 +294,43 @@ class TestCommands:
 class TestHandleCommand:
     def test_cmd_1_sets_dashboard(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("1", "scanner", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("1", "scanner", None, None, None)
         assert screen == "dashboard"
+        assert sm == "📊 Dashboard"
 
     def test_cmd_dashboard_alias(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("dashboard", "scanner", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("dashboard", "scanner", None, None, None)
         assert screen == "dashboard"
 
     def test_cmd_scan(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("2", "dashboard", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("2", "dashboard", None, None, None)
         assert screen == "scanner"
+        assert sm == "🔍 Scanner"
 
     def test_cmd_q_stops(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("q", "dashboard", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("q", "dashboard", None, None, None)
         assert running is False
 
     def test_cmd_exit_stops(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("exit", "dashboard", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("exit", "dashboard", None, None, None)
         assert running is False
 
     def test_cmd_invalid_does_not_crash(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("xyzzy", "dashboard", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("xyzzy", "dashboard", None, None, None)
         assert running is True
         assert screen == "dashboard"
+        assert sm is None  # unknown command → no status message
 
     def test_pause_resume(self):
         from royaltdn.frontend.console.app import handle_command
-        running, screen, lf, mf, tf = handle_command("p", "dashboard", None, None, None)
+        running, screen, lf, mf, tf, sm = handle_command("p", "dashboard", None, None, None)
         assert running is True
-        running, screen, lf, mf, tf = handle_command("r", "dashboard", None, None, None)
+        assert sm == "✅ Bot PAUSADO"
+        running, screen, lf, mf, tf, sm = handle_command("r", "dashboard", None, None, None)
         assert running is True
+        assert sm == "▶️ Bot REANUDADO"

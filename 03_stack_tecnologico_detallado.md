@@ -269,7 +269,30 @@ B. ELK Stack / Grafana Loki (Logs)
 · Grafana Loki: Alternativa ligera inspirada en Prometheus para logs. Integración nativa con Grafana, lo que permite tener dashboards con métricas y logs en una sola interfaz.
 · Práctica recomendada: Emitir logs en formato JSON estructurado desde Python. Incluir siempre timestamp, level, logger, message y cualquier contexto relevante (ej. symbol, order_id). Ejemplo: {"timestamp": "2024-...", "level": "INFO", "logger": "risk.manager", "message": "Signal rejected", "symbol": "SPY", "reason": "daily_loss_limit"}.
 
-C. Alertas
+C. Loguru (Logging Moderno)
+
+· **Loguru** es una librería de logging que reemplaza el módulo estándar `logging` con una API más simple y potente.
+· **Ventajas:**
+  - Sin boilerplate: `from loguru import logger` y ya está listo para usar.
+  - Rotación y retención automáticas: `logger.add("logs/bot.log", rotation="10 MB", retention="7 days")`.
+  - Sinks personalizables: se puede agregar un sink a una cola, buffer circular (para mostrar en consola), archivo, stderr, etc.
+  - Formato estructurado con colores por nivel.
+  - Migración sencilla: `logger.info()`, `logger.warning()`, `logger.error()` son compatibles con la API estándar.
+· **Uso en producción:** Configuración centralizada en el entry point del bot. Todos los módulos importan `from loguru import logger`.
+
+C. Consola Interactiva con Rich (Alternativa a Streamlit)
+
+· **Rich** es una librería para terminales que permite construir interfaces de usuario ricas (tablas, paneles, layouts, barras de progreso) sin salir de la terminal.
+· **Rich Live**: Mantiene un display en vivo que se actualiza periódicamente (útil para dashboards de trading en tiempo real).
+· **Ventajas frente a Streamlit:**
+  - Sin servidor web: corre directamente en la terminal donde se ejecuta el bot.
+  - Sin dependencias pesadas: streamlit + plotly suman ~300MB; Rich + Loguru suman ~10MB.
+  - Compatible con SSH, Termux, proot, VPS sin navegador.
+  - Menor latencia: el dashboard se actualiza a 2-4 FPS sin round-trips HTTP.
+· **Arquitectura típica:** StateLoader (lee JSON del disco con cache TTL) → Widgets (funciones renderable de Rich) → Live loop (refresca cada 250ms).
+· **Comunicación con el bot:** Archivos JSON de señal en un directorio compartido (IPC por filesystem). El bot escribe `logs/status.json` periódicamente; la consola lo lee e interpreta.
+
+D. Alertas
 
 · Grafana Alerting: Definir reglas en Grafana (ej. "si bot_drawdown_current > 5 envía alerta"). Soporta múltiples canales: Telegram, Slack, email, PagerDuty.
 · Alertas desde el código: Para condiciones críticas que requieren notificación inmediata sin esperar al ciclo de scrapeo de Prometheus, enviar un mensaje directamente desde el código del bot usando python-telegram-bot o un webhook de Slack.
