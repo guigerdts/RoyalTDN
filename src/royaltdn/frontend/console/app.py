@@ -3,12 +3,12 @@
 Entry point: ``run_console()``
 """
 
-import select
 import sys
 from typing import Any, Optional
 
 import colorama
 from loguru import logger
+from rich.console import Console
 from rich.live import Live
 from rich.layout import Layout
 
@@ -23,6 +23,10 @@ from royaltdn.frontend.console.screens import (
     render_trades,
 )
 
+# ── Console instance ──────────────────────────────────────────────────────
+
+_console = Console()
+
 # ── Constants ─────────────────────────────────────────────────────────────
 
 REFRESH_RATE = 4  # FPS — matches 0.25 s key-poll timeout
@@ -32,16 +36,15 @@ KEY_TIMEOUT = 1.0 / REFRESH_RATE
 
 
 def get_key(timeout: float = KEY_TIMEOUT) -> Optional[str]:
-    """Non-blocking single-character read from stdin.
+    """Read one key press using ``Console.input`` with timeout.
 
-    Uses ``select.select`` with *timeout* seconds.  Returns the character
-    read, or ``None`` if no key was pressed.
+    Falls back to ``None`` silently on timeout or error.
     """
     try:
-        rlist, _, _ = select.select([sys.stdin], [], [], timeout)
-        if rlist:
-            return sys.stdin.read(1)
-    except (ValueError, KeyboardInterrupt):
+        key = _console.input(timeout=timeout)
+        if key:
+            return key[-1] if len(key) > 1 else key
+    except Exception:
         pass
     return None
 
