@@ -17,6 +17,7 @@ from royaltdn.frontend.console.log_handler import LogBuffer, setup_console_log_h
 from royaltdn.frontend.console.screens import (
     render_dashboard,
     render_estrategias,
+    render_help,
     render_logs,
     render_scanner,
     render_trades,
@@ -84,11 +85,8 @@ def handle_command(
         status_message = "Filtro: TODOS"
 
     elif cmd in ("h", "help"):
-        status_message = (
-            "[1]D [2]S [3]E [4]T [5]L  |  "
-            "[p]Pausar [r]Reanudar [scan]Scan  |  "
-            "[i]INFO [w]WARN [e]ERROR [a]ALL  |  [q]Salir"
-        )
+        new_screen = "help"
+        status_message = "📖 Ayuda"
 
     elif cmd in ("q", "exit", "quit"):
         logger.info("Quit command — stopping console")
@@ -113,7 +111,7 @@ def render_screen(
 
     Args:
         screen_id: ``"dashboard"``, ``"scanner"``, ``"estrategias"``,
-            ``"trades"``, or ``"logs"``.
+            ``"trades"``, ``"logs"``, or ``"help"``.
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance.
         level_filter: Optional log level filter.
@@ -139,7 +137,9 @@ def render_screen(
             text_filter=text_filter,
             status_message=status_message,
         )
-    kwargs["state"] = state
+    elif screen_id == "help":
+        return render_help(**kwargs)
+    # Fallback to dashboard
     return render_dashboard(**kwargs)
 
 
@@ -153,21 +153,19 @@ def run_console(logs_dir: str = "logs") -> None:
     blocks on ``input()`` to read a command from the user.  Once a command
     is processed the display updates and waits for the next command.
 
-    Commands:
-        1/d/dashboard → Dashboard screen
-        2/s/scanner   → Scanner screen
-        3/e/estrategias → Estrategias screen
-        4/t/trades    → Trades screen
-        5/l/logs      → Logs screen
-        p/pause       → Pause bot
-        r/resume      → Resume bot
-        scan          → Trigger scanner
-        i             → Filter logs: INFO
-        w             → Filter logs: WARNING
-        e             → Filter logs: ERROR
-        a             → Clear log level filter
-        h/help        → Show help
-        q/exit/quit   → Quit console
+    Screens:
+        1/d/dashboard    → Dashboard
+        2/s/scanner      → Scanner
+        3/e/estrategias  → Estrategias
+        4/t/trades       → Trades
+        5/l/logs         → Logs (filters: i=INFO w=WARN e=ERROR a=ALL)
+        h/help           → Help screen with full command list
+
+    Controls:
+        p/pause          → Pause bot
+        r/resume         → Resume bot
+        scan             → Trigger scanner
+        q/exit/quit      → Quit console
     """
     colorama.init()
 
