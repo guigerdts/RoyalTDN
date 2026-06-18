@@ -10,13 +10,11 @@ Variables de entorno requeridas (.env):
 """
 
 import asyncio
-import logging
 import os
 from typing import Optional
 
+from loguru import logger
 import httpx
-
-logger = logging.getLogger("royaltdn.alerts")
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
@@ -44,10 +42,10 @@ async def send_telegram_message_async(message: str) -> bool:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
-        logger.info("📨 Telegram enviado: %s...", message[:60])
+        logger.info("📨 Telegram enviado: {}...", message[:60])
         return True
     except Exception as e:
-        logger.error("Error enviando Telegram: %s", e)
+        logger.error("Error enviando Telegram: {}", e)
         return False
 
 
@@ -72,7 +70,7 @@ def send_telegram_message(message: str) -> bool:
     try:
         return asyncio.run(send_telegram_message_async(message))
     except Exception as e:
-        logger.error("Error en send_telegram_message: %s", e)
+        logger.error("Error en send_telegram_message: {}", e)
         return False
 
 

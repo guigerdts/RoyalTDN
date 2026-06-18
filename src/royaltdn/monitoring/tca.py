@@ -21,10 +21,9 @@ Uso:
     # → 33.33 bps (0.33% de deslizamiento)
 """
 
-import logging
 from typing import Optional
 
-logger = logging.getLogger("royaltdn.tca")
+from loguru import logger
 
 
 def calculate_slippage(
@@ -45,13 +44,13 @@ def calculate_slippage(
         None si alguno de los precios es inválido.
     """
     if not arrival_price or arrival_price <= 0:
-        logger.debug("Arrival price inválido: %s", arrival_price)
+        logger.debug("Arrival price inválido: {}", arrival_price)
         return None
 
     if not execution_price or execution_price <= 0:
-        logger.debug("Execution price inválido: %s", execution_price)
+        logger.debug("Execution price inválido: {}", execution_price)
         return None
 
     slippage = (execution_price - arrival_price) / arrival_price * 10_000
-    logger.debug("Slippage: %.2f bps (exec=%.2f, arrival=%.2f)", slippage, execution_price, arrival_price)
+    logger.debug("Slippage: {:.2f} bps (exec={:.2f}, arrival={:.2f})", slippage, execution_price, arrival_price)
     return round(slippage, 2)

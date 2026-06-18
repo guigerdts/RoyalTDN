@@ -9,14 +9,12 @@ está controlada. Sale cuando el momentum de corto plazo se vuelve negativo.
 Indicadores calculados con pandas (sin dependencias externas).
 """
 
-import logging
 from typing import Any, Dict, Optional
 
 import pandas as pd
+from loguru import logger
 
 from royaltdn.strategy.base import BaseStrategy
-
-logger = logging.getLogger("royaltdn.strategy.momentum_atr")
 
 
 def compute_atr(

@@ -1,11 +1,14 @@
-"""Builder state management — session_state getters/setters for the Strategy Builder.
+"""Builder state management — pure data definitions for the Strategy Builder.
 
-All state lives in st.session_state under the ``builder_`` prefix.
-Exported functions are the ONLY way to mutate builder state.
+This module contains ONLY pure data/logic: indicator definitions, operator
+groups, tree builders, and flatten helpers. No Streamlit dependencies.
+
+Extracted from the original ``frontend/components/builder_state.py`` during
+the Fase 8 Streamlit removal. All Streamlit-dependent functions were removed.
 """
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 
 # ── Indicator definitions ──────────────────────────────────────────────
@@ -156,171 +159,6 @@ _INDICATOR_COUNTER = [0]
 def _next_id() -> str:
     _INDICATOR_COUNTER[0] += 1
     return f"ind_{_INDICATOR_COUNTER[0]}"
-
-
-# ── Public API (to be called inside Streamlit pages) ────────────────────
-
-
-def init_builder_state() -> None:
-    """Initialize all builder session state keys if missing."""
-    import streamlit as st
-    for key, default in DEFAULT_STATE.items():
-        if key not in st.session_state:
-            st.session_state[key] = default
-
-
-def add_indicator(indicator_type: str, params: dict, source: str = "close") -> None:
-    """Add an indicator to the builder list."""
-    import streamlit as st
-    entry = {
-        "id": _next_id(),
-        "type": indicator_type,
-        "params": params,
-        "source": source,
-    }
-    st.session_state.builder_indicators.append(entry)
-
-
-def remove_indicator(indicator_id: str) -> None:
-    """Remove an indicator by its ID."""
-    import streamlit as st
-    st.session_state.builder_indicators = [
-        i for i in st.session_state.builder_indicators
-        if i["id"] != indicator_id
-    ]
-
-
-def add_entry_condition(condition_dict: dict) -> None:
-    """Add an entry condition."""
-    import streamlit as st
-    st.session_state.builder_entry_conditions.append(condition_dict)
-
-
-def remove_entry_condition(index: int) -> None:
-    """Remove entry condition by list index."""
-    import streamlit as st
-    if 0 <= index < len(st.session_state.builder_entry_conditions):
-        st.session_state.builder_entry_conditions.pop(index)
-
-
-def add_exit_condition(condition_dict: dict) -> None:
-    """Add an exit condition."""
-    import streamlit as st
-    st.session_state.builder_exit_conditions.append(condition_dict)
-
-
-def remove_exit_condition(index: int) -> None:
-    """Remove exit condition by list index."""
-    import streamlit as st
-    if 0 <= index < len(st.session_state.builder_exit_conditions):
-        st.session_state.builder_exit_conditions.pop(index)
-
-
-def build_config() -> dict:
-    """Build the full strategy config dict from session state.
-
-    Returns the config dict and updates ``st.session_state.builder_config``.
-    """
-    import streamlit as st
-
-    from royaltdn.strategy.schema import VALID_TIMEFRAMES
-
-    s = st.session_state
-    name = s.get("builder_name", "").strip()
-    symbol = s.get("builder_symbol", "SPY")
-    timeframe = s.get("builder_timeframe", "1D")
-    if timeframe not in VALID_TIMEFRAMES:
-        timeframe = "1D"
-
-    # Indicators list
-    indicators_list: list[dict] = []
-    for ind in s.get("builder_indicators", []):
-        entry: dict = {"name": ind["type"], "params": dict(ind["params"]), "source": ind.get("source", "close")}
-        indicators_list.append(entry)
-
-    # Entry rules
-    entry_conds = s.get("builder_entry_conditions", [])
-    entry_logic = s.get("builder_entry_logic", "AND")
-    entry_rules = _build_tree(entry_logic, entry_conds)
-
-    # Exit rules
-    exit_conds = s.get("builder_exit_conditions", [])
-    exit_logic = s.get("builder_exit_logic", "OR")
-    exit_rules = _build_tree(exit_logic, exit_conds)
-
-    config = {
-        "version": 1,
-        "name": name or "unnamed_strategy",
-        "description": f"{'Custom' if name else 'Unnamed'} strategy built with RoyalTDN Builder",
-        "symbols": [symbol],
-        "timeframe": timeframe,
-        "indicators": indicators_list,
-        "entry_rules": entry_rules,
-        "exit_rules": exit_rules,
-        "risk_management": {
-            "stop_loss_pct": s.get("builder_stop_loss", 2.0),
-            "take_profit_pct": s.get("builder_take_profit", 5.0),
-            "max_position_size": s.get("builder_max_pos", 1.0),
-            "max_daily_loss": s.get("builder_max_loss", 0.1),
-        },
-    }
-
-    st.session_state.builder_config = config
-    return config
-
-
-def update_json_view() -> None:
-    """Update builder_json_str with formatted JSON of the current config."""
-    import streamlit as st
-    build_config()
-    st.session_state.builder_json_str = json.dumps(
-        st.session_state.builder_config, indent=2, ensure_ascii=False
-    )
-
-
-def reset_builder() -> None:
-    """Reset all builder state to defaults."""
-    import streamlit as st
-    for key, default in DEFAULT_STATE.items():
-        st.session_state[key] = default
-
-
-def load_config_into_state(config: dict) -> None:
-    """Populate session state from an existing config dict (for editing)."""
-    import streamlit as st
-    st.session_state.builder_name = config.get("name", "")
-    st.session_state.builder_symbol = (config.get("symbols") or ["SPY"])[0]
-    st.session_state.builder_timeframe = config.get("timeframe", "1D")
-
-    # Indicators
-    st.session_state.builder_indicators = []
-    for ind in config.get("indicators", []):
-        st.session_state.builder_indicators.append({
-            "id": _next_id(),
-            "type": ind["name"],
-            "params": dict(ind.get("params", {})),
-            "source": ind.get("source", "close"),
-        })
-
-    # Rules
-    entry_rules = config.get("entry_rules", {})
-    st.session_state.builder_entry_logic = entry_rules.get("operator", "AND")
-    st.session_state.builder_entry_conditions = _flatten_conditions(entry_rules.get("conditions", []))
-
-    exit_rules = config.get("exit_rules", {})
-    st.session_state.builder_exit_logic = exit_rules.get("operator", "OR")
-    st.session_state.builder_exit_conditions = _flatten_conditions(exit_rules.get("conditions", []))
-
-    # Risk
-    rm = config.get("risk_management", {})
-    st.session_state.builder_stop_loss = rm.get("stop_loss_pct", 2.0)
-    st.session_state.builder_take_profit = rm.get("take_profit_pct", 5.0)
-    st.session_state.builder_max_pos = rm.get("max_position_size", 1.0)
-    st.session_state.builder_max_loss = rm.get("max_daily_loss", 0.1)
-
-    # Update JSON view
-    st.session_state.builder_config = config
-    st.session_state.builder_json_str = json.dumps(config, indent=2, ensure_ascii=False)
 
 
 # ── Internal helpers ────────────────────────────────────────────────────

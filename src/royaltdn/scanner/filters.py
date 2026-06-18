@@ -9,10 +9,9 @@ Filtra símbolos por:
 - Spread máximo (opcional)
 """
 
-import logging
 from typing import List, Any
 
-logger = logging.getLogger("royaltdn.scanner.filters")
+from loguru import logger
 
 
 class LiquidityFilter:
@@ -79,5 +78,5 @@ class LiquidityFilter:
                 # Silenciosamente saltar símbolos que fallen
                 continue
 
-        logger.info("LiquidityFilter: %d/%d símbolos pasaron", len(passed), len(symbols))
+        logger.info("LiquidityFilter: {}/{} símbolos pasaron", len(passed), len(symbols))
         return passed

@@ -19,18 +19,16 @@ Uso:
 """
 
 import asyncio
-import logging
 import math
 from datetime import datetime
 from typing import List, Optional
 
+from loguru import logger
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
-
-logger = logging.getLogger("royaltdn.twap")
 
 
 async def get_midpoint(
@@ -96,7 +94,7 @@ async def execute_twap(
              "price": float|None, "error": str|None}
     """
     if total_shares <= 0 or duration_minutes <= 0:
-        logger.warning("TWAP: shares=%d, duration=%d — inválido", total_shares, duration_minutes)
+        logger.warning("TWAP: shares={}, duration={} — inválido", total_shares, duration_minutes)
         return []
 
     # Calcular tamaño de cada lote
@@ -105,7 +103,7 @@ async def execute_twap(
     results: List[dict] = []
 
     logger.info(
-        "🧠 TWAP: %s %d %s en %d min (%d lotes de ~%d acc)",
+        "🧠 TWAP: {} {} {} en {} min ({} lotes de ~{} acc)",
         side.name, total_shares, symbol, duration_minutes, chunks, shares_per_chunk,
     )
 
@@ -120,7 +118,7 @@ async def execute_twap(
         if use_limit:
             midpoint = await get_midpoint(symbol, api_key, secret_key, feed)
             if midpoint is None:
-                logger.warning("Sin midpoint — usando market order para lote %d", chunk_num)
+                logger.warning("Sin midpoint — usando market order para lote {}", chunk_num)
                 order = _submit_market(trading_client, symbol, chunk_shares, side)
                 price = None
             else:
@@ -142,7 +140,7 @@ async def execute_twap(
         remaining -= chunk_shares
 
         logger.info(
-            "  Lote %d/%d: %s %d %s → ID=%s",
+            "  Lote {}/{}: {} {} {} → ID={}",
             chunk_num, chunks, side.name, chunk_shares, symbol, order_id,
         )
 
@@ -151,7 +149,7 @@ async def execute_twap(
             await asyncio.sleep(60)
 
     logger.info(
-        "✅ TWAP completado: %d/%d acciones ejecutadas en %d lotes",
+        "✅ TWAP completado: {}/{} acciones ejecutadas en {} lotes",
         total_shares - remaining, total_shares, len(results),
     )
     return results

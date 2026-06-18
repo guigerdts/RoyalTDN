@@ -17,15 +17,13 @@ Uso desde el bot (tarea asyncio):
 import os
 import sys
 import asyncio
-import logging
 import traceback
 from typing import List, Optional
 
+from loguru import logger
 from alpaca.data.live import StockDataStream
 from alpaca.data.enums import DataFeed
 import redis.asyncio as aioredis
-
-logger = logging.getLogger("royaltdn.ingestor")
 
 
 class DataIngestor:
@@ -59,7 +57,7 @@ class DataIngestor:
             try:
                 self.feed = DataFeed(feed)
             except ValueError:
-                logger.warning("Feed '%s' no reconocido, usando IEX", feed)
+                logger.warning("Feed '{}' no reconocido, usando IEX", feed)
                 self.feed = DataFeed.IEX
         else:
             self.feed = feed
@@ -105,10 +103,10 @@ class DataIngestor:
                 maxlen=self.MAXLEN,
                 approximate=True,
             )
-            logger.debug("Bar %s %s -> %s", data["symbol"], data["timestamp"], msg_id)
+            logger.debug("Bar {} {} -> {}", data["symbol"], data["timestamp"], msg_id)
 
         except Exception as e:
-            logger.error("Error procesando barra: %s\n%s", e, traceback.format_exc())
+            logger.error("Error procesando barra: {}\n{}", e, traceback.format_exc())
 
     # ── Conexión Redis ──────────────────────────────────────────────────
 
@@ -121,10 +119,10 @@ class DataIngestor:
                 socket_connect_timeout=5,
             )
             await self._redis.ping()
-            logger.info("Conectado a Redis: %s", self.redis_url)
+            logger.info("Conectado a Redis: {}", self.redis_url)
             return True
         except Exception as e:
-            logger.warning("Redis no disponible (%s) — funciona sin persistencia", e)
+            logger.warning("Redis no disponible ({}) — funciona sin persistencia", e)
             self._redis = None
             return False
 
@@ -140,7 +138,7 @@ class DataIngestor:
 
         # ── Configurar WebSocket Alpaca ──
         logger.info(
-            "Iniciando StockDataStream(feed=%s, raw_data=False, symbols=%s)",
+            "Iniciando StockDataStream(feed={}, raw_data=False, symbols={})",
             self.feed.value if hasattr(self.feed, 'value') else self.feed,
             self.symbols,
         )
@@ -187,18 +185,12 @@ class DataIngestor:
             try:
                 self._stream.stop()
             except Exception as e:
-                logger.debug("Error al detener stream: %s", e)
+                logger.debug("Error al detener stream: {}", e)
 
 
 # ── Entry point standalone ────────────────────────────────────────────
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
-    logger.setLevel(logging.DEBUG)
-
     api_key = os.getenv("ALPACA_API_KEY", "")
     secret_key = os.getenv("ALPACA_SECRET_KEY", "")
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -212,7 +204,7 @@ def main():
         )
         sys.exit(1)
 
-    logger.info("Arrancando DataIngestor: feed=%s symbols=%s", feed, symbols)
+    logger.info("Arrancando DataIngestor: feed={} symbols={}", feed, symbols)
     ingestor = DataIngestor(api_key, secret_key, redis_url, symbols, feed)
 
     async def _run():
@@ -223,7 +215,7 @@ def main():
     except KeyboardInterrupt:
         logger.info("Detenido por usuario.")
     except Exception as e:
-        logger.error("Error fatal: %s\n%s", e, traceback.format_exc())
+        logger.error("Error fatal: {}\n{}", e, traceback.format_exc())
         sys.exit(1)
 
 

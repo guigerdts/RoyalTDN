@@ -10,14 +10,12 @@ para que el scanner/orchestrador decida el ranking.
 Indicadores calculados con pandas (sin dependencias externas).
 """
 
-import logging
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from loguru import logger
 
 from royaltdn.strategy.base import BaseStrategy
-
-logger = logging.getLogger("royaltdn.strategy.factor_rotation")
 
 
 class FactorRotationStrategy(BaseStrategy):
@@ -129,7 +127,7 @@ class FactorRotationStrategy(BaseStrategy):
             return False
         if len(self.etf_universe) < self.top_n:
             logger.error(
-                "etf_universe (%d) debe tener al menos top_n (%d) ETFs",
+                "etf_universe ({}) debe tener al menos top_n ({}) ETFs",
                 len(self.etf_universe), self.top_n,
             )
             return False

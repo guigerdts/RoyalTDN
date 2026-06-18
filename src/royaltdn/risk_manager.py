@@ -9,15 +9,13 @@ Funciones:
 - get_atr: Cálculo de ATR(14) desde datos Alpaca
 """
 
-import logging
 from datetime import datetime, timedelta
 
+from loguru import logger
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-
-logger = logging.getLogger("royaltdn.risk")
 
 
 def get_atr(

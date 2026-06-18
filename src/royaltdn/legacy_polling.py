@@ -12,11 +12,11 @@ Equivalente al comando ``royaltdn run`` original antes de la Fase 4.
 """
 
 import asyncio
-import logging
 import os
 import sys
 from datetime import datetime, timedelta
 
+from loguru import logger
 from dotenv import load_dotenv
 
 import pandas as pd
@@ -43,12 +43,6 @@ SYMBOL = "SPY"
 FAST_MA = 5
 SLOW_MA = 20
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("royaltdn.legacy")
 
 
 class BotState:
@@ -80,10 +74,10 @@ def cmd_check():
     account = client.get_account()
 
     logger.info("=== Conexión Alpaca Paper exitosa ===")
-    logger.info("  Estado:       %s", account.status.value)
-    logger.info("  Capital:      $%.2f", float(account.equity))
-    logger.info("  Poder compra: $%.2f", float(account.buying_power))
-    logger.info("  PDT:          %s", account.pattern_day_trader)
+    logger.info("  Estado:       {}", account.status.value)
+    logger.info("  Capital:      ${:.2f}", float(account.equity))
+    logger.info("  Poder compra: ${:.2f}", float(account.buying_power))
+    logger.info("  PDT:          {}", account.pattern_day_trader)
     return account
 
 
@@ -109,7 +103,7 @@ async def get_signal(data_client: StockHistoricalDataClient) -> int:
     df["SMA20"] = df["close"].rolling(SLOW_MA).mean()
 
     if len(df) < SLOW_MA:
-        logger.warning("Pocos datos (%d bars) para SMA%d", len(df), SLOW_MA)
+        logger.warning("Pocos datos ({} bars) para SMA{}", len(df), SLOW_MA)
         return 0
 
     if df["SMA5"].iloc[-1] > df["SMA20"].iloc[-1]:
@@ -156,7 +150,7 @@ async def submit_order(
 ) -> object | None:
     """Envía orden de mercado y la registra en DB."""
     if qty <= 0:
-        logger.warning("Qty %d inválida — orden cancelada", qty)
+        logger.warning("Qty {} inválida — orden cancelada", qty)
         return None
 
     order = trading_client.submit_order(
@@ -167,7 +161,7 @@ async def submit_order(
             time_in_force=TimeInForce.DAY,
         )
     )
-    logger.info("📤 Orden: %s %d %s — ID: %s", side.name, qty, SYMBOL, order.id)
+    logger.info("📤 Orden: {} {} {} — ID: {}", side.name, qty, SYMBOL, order.id)
 
     if db and db.is_connected:
         await db.insert_order({
@@ -211,8 +205,8 @@ async def run_bot():
     state.position_qty = qty
     state.killed = False
 
-    logger.info("Bot legacy iniciado — Capital: $%.2f", state.initial_equity)
-    logger.info("Posición inicial: %s (%d acc)", state.position, state.position_qty)
+    logger.info("Bot legacy iniciado — Capital: ${:.2f}", state.initial_equity)
+    logger.info("Posición inicial: {} ({} acc)", state.position, state.position_qty)
 
     while not state.killed:
         try:
@@ -225,7 +219,7 @@ async def run_bot():
             )
             if kill:
                 await notify_kill_switch(reason)
-                logger.error("🛑 %s", reason)
+                logger.error("🛑 {}", reason)
                 if state.position == "long" and state.position_qty > 0:
                     await submit_order(trading_client, OrderSide.SELL, state.position_qty, state.db)
                 state.killed = True
@@ -290,7 +284,7 @@ async def run_bot():
             await asyncio.sleep(60)
 
         except Exception as e:
-            logger.error("Error en bucle principal: %s", e, exc_info=True)
+            logger.error("Error en bucle principal: {}", e, exc_info=True)
             await notify_error(str(e))
             await asyncio.sleep(10)
 
@@ -302,11 +296,11 @@ async def run_bot():
     pnl_total = final_equity - state.initial_equity
     logger.info("=" * 50)
     logger.info("BOT LEGACY DETENIDO")
-    logger.info("  Capital inicial: $%.2f", state.initial_equity)
-    logger.info("  Capital final:   $%.2f", final_equity)
-    logger.info("  P&L total:       $%.2f", pnl_total)
-    logger.info("  Trades:          %d", state.trades_count)
-    logger.info("  Losses seguidas: %d", state.consecutive_losses)
+    logger.info("  Capital inicial: ${:.2f}", state.initial_equity)
+    logger.info("  Capital final:   ${:.2f}", final_equity)
+    logger.info("  P&L total:       ${:.2f}", pnl_total)
+    logger.info("  Trades:          {}", state.trades_count)
+    logger.info("  Losses seguidas: {}", state.consecutive_losses)
     logger.info("=" * 50)
 
 

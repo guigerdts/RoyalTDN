@@ -10,14 +10,12 @@ o tras un máximo de barras en hold.
 Indicadores calculados con pandas (sin dependencias externas).
 """
 
-import logging
 from typing import Any, Dict, Optional
 
 import pandas as pd
+from loguru import logger
 
 from royaltdn.strategy.base import BaseStrategy
-
-logger = logging.getLogger("royaltdn.strategy.bollinger_rsi")
 
 
 def compute_sma(series: pd.Series, window: int) -> pd.Series:
@@ -183,7 +181,7 @@ class BollingerRSIStrategy(BaseStrategy):
             return False
         if not (0 < self.rsi_oversold < self.rsi_overbought < 100):
             logger.error(
-                "0 < rsi_oversold(%d) < rsi_overbought(%d) < 100",
+                "0 < rsi_oversold({}) < rsi_overbought({}) < 100",
                 self.rsi_oversold, self.rsi_overbought,
             )
             return False

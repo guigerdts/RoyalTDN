@@ -16,11 +16,10 @@ Uso:
 """
 
 import asyncio
-import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-logger = logging.getLogger("royaltdn.db")
+from loguru import logger
 
 # ── DDL de respaldo ───────────────────────────────────────────────────────────
 

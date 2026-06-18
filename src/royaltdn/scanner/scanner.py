@@ -8,12 +8,12 @@ señales rankeadas across múltiples símbolos.
 """
 
 import json
-import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+from loguru import logger
 import pandas as pd
 
 # ── Atomic write helper (same pattern as orchestrator) ────────────────
@@ -30,14 +30,12 @@ def _atomic_write(path: Path, data: dict) -> bool:
         os.replace(str(tmp_path), str(path))
         return True
     except (OSError, TypeError, ValueError) as e:
-        logger.warning("Error writing %s: %s", path, e)
+        logger.warning("Error writing {}: {}", path, e)
         return False
 
 from royaltdn.strategy.base import BaseStrategy
 from royaltdn.scanner.universe import AssetUniverse
 from royaltdn.scanner.filters import LiquidityFilter
-
-logger = logging.getLogger("royaltdn.scanner.scanner")
 
 
 class Scanner:
@@ -112,11 +110,11 @@ class Scanner:
                             signals.append(signal_dict)
 
                     except Exception as e:
-                        logger.debug("Scanner: estrategia %s falló para %s: %s", strategy_name, symbol, e)
+                        logger.debug("Scanner: estrategia {} falló para {}: {}", strategy_name, symbol, e)
                         continue
 
             except Exception as e:
-                logger.debug("Scanner: error procesando %s: %s", symbol, e)
+                logger.debug("Scanner: error procesando {}: {}", symbol, e)
                 continue
 
         # 4. Rankear señales
@@ -151,7 +149,7 @@ class Scanner:
             pass
 
         logger.info(
-            "Scanner: %d símbolos → %d pasaron filtro → %d señales generadas",
+            "Scanner: {} símbolos → {} pasaron filtro → {} señales generadas",
             total_symbols, passed_count, len(ranked)
         )
         return ranked
@@ -192,7 +190,7 @@ class Scanner:
             return df
 
         except Exception as e:
-            logger.debug("Scanner: error descargando datos para %s: %s", symbol, e)
+            logger.debug("Scanner: error descargando datos para {}: {}", symbol, e)
             return None
 
     def _rank_signals(self, signals: List[dict]) -> List[dict]:

@@ -9,11 +9,10 @@ Provee:
 - Combinación deduplicada
 """
 
-import logging
-import requests
 from typing import List, Optional
 
-logger = logging.getLogger("royaltdn.scanner.universe")
+from loguru import logger
+import requests
 
 
 class AssetUniverse:
@@ -77,11 +76,11 @@ class AssetUniverse:
             ][:500]
 
             self._sp500_cache = symbols
-            logger.info("AssetUniverse: %d símbolos S&P 500 obtenidos", len(symbols))
+            logger.info("AssetUniverse: {} símbolos S&P 500 obtenidos", len(symbols))
             return symbols
 
         except Exception as e:
-            logger.warning("AssetUniverse: error obteniendo S&P 500: %s", e)
+            logger.warning("AssetUniverse: error obteniendo S&P 500: {}", e)
             self._sp500_cache = []
             return []
 
@@ -101,7 +100,7 @@ class AssetUniverse:
             return self._etf_cache
 
         self._etf_cache = self.DEFAULT_ETFS.copy()
-        logger.info("AssetUniverse: %d ETFs por defecto", len(self._etf_cache))
+        logger.info("AssetUniverse: {} ETFs por defecto", len(self._etf_cache))
         return self._etf_cache
 
     def get_all_symbols(self) -> List[str]:
@@ -125,5 +124,5 @@ class AssetUniverse:
                 all_symbols.append(sym)
 
         self._all_cache = all_symbols
-        logger.info("AssetUniverse: %d símbolos totales (S&P 500 + ETFs)", len(all_symbols))
+        logger.info("AssetUniverse: {} símbolos totales (S&P 500 + ETFs)", len(all_symbols))
         return all_symbols

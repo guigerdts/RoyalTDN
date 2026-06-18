@@ -18,17 +18,15 @@ Uso desde el bot (tarea asyncio):
 import os
 import json
 import asyncio
-import logging
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from loguru import logger
 import pandas as pd
 import redis.asyncio as aioredis
 
 from royaltdn.strategy.base import BaseStrategy
-
-logger = logging.getLogger("royaltdn.strategy.sma")
 
 # ── Cálculo de SMA (puro, sin dependencias externas) ──────────────────
 
@@ -233,7 +231,7 @@ class SMAStrategy(BaseStrategy):
                 socket_connect_timeout=5,
             )
             await self._redis.ping()
-            logger.info("Conectado a Redis: %s", self.redis_url)
+            logger.info("Conectado a Redis: {}", self.redis_url)
 
             # Crear consumer group (ignora si ya existe)
             try:
@@ -244,7 +242,7 @@ class SMAStrategy(BaseStrategy):
                     mkstream=True,
                 )
                 logger.info(
-                    "Consumer group '%s' creado en '%s'",
+                    "Consumer group '{}' creado en '{}'",
                     self.CONSUMER_GROUP,
                     self.INPUT_STREAM,
                 )
@@ -256,7 +254,7 @@ class SMAStrategy(BaseStrategy):
 
             return True
         except Exception as e:
-            logger.error("Error conectando a Redis: %s", e)
+            logger.error("Error conectando a Redis: {}", e)
             self._redis = None
             return False
 
@@ -274,14 +272,14 @@ class SMAStrategy(BaseStrategy):
                 approximate=True,
             )
             logger.info(
-                "🚦 SEÑAL %s %s @ %.2f → %s",
+                "🚦 SEÑAL {} {} @ {:.2f} → {}",
                 signal["action"],
                 signal["symbol"],
                 signal["price"],
                 msg_id,
             )
         except Exception as e:
-            logger.error("Error publicando señal: %s", e)
+            logger.error("Error publicando señal: {}", e)
 
     # ── Loop principal ──────────────────────────────────────────────────
 
@@ -297,7 +295,7 @@ class SMAStrategy(BaseStrategy):
 
         self._running = True
         logger.info(
-            "SMAStrategy iniciada: %s SMA%s/%s",
+            "SMAStrategy iniciada: {} SMA{}/{}",
             self.symbol,
             self.sma_fast,
             self.sma_slow,
@@ -326,7 +324,7 @@ class SMAStrategy(BaseStrategy):
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.error("Error en loop principal: %s", e)
+                    logger.error("Error en loop principal: {}", e)
                     await asyncio.sleep(1)
         finally:
             await self._cleanup()
@@ -361,16 +359,10 @@ class SMAStrategy(BaseStrategy):
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
-    logger.setLevel(logging.DEBUG)
-
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     symbol = os.getenv("STRATEGY_SYMBOL", "SPY")
 
-    logger.info("Arrancando SMAStrategy para %s...", symbol)
+    logger.info("Arrancando SMAStrategy para {}...", symbol)
     engine = SMAStrategy(redis_url=redis_url, symbol=symbol)
 
     async def _run():
