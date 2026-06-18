@@ -553,8 +553,9 @@ def _colorize_log_line(line: str) -> Text:
     return Text(line, style=WHITE)
 
 
-def create_footer(active_screen: int = 1) -> Panel:
-    """Render keyboard shortcut bar with active screen indicator."""
+def create_footer(active_screen: int = 1,
+                  status_message: Optional[str] = None) -> Panel:
+    """Render command bar with active screen indicator and optional status."""
 
     def _screen_btn(num: int, label: str) -> str:
         if num == active_screen:
@@ -564,14 +565,19 @@ def create_footer(active_screen: int = 1) -> Panel:
     shortcuts = (
         f"  {_screen_btn(1, 'Dashboard')}  "
         f"{_screen_btn(2, 'Scanner')}  "
-        f"{_screen_btn(3, 'Strategies')}  "
+        f"{_screen_btn(3, 'Estrategias')}  "
         f"{_screen_btn(4, 'Trades')}  "
         f"{_screen_btn(5, 'Logs')}  |  "
-        "[p][dim]Pause[/] [r][dim]Resume[/] [s][dim]Scan[/]  |  "
-        "[q][dim]Quit[/]"
+        "[p][dim]Pause[/] [r][dim]Resume[/] [scan][dim]Scan[/]  |  "
+        "[q][dim]Salir[/]"
     )
 
-    return Panel(shortcuts, border_style=CYAN)
+    if status_message:
+        content = f"{shortcuts}  │  [bold white]{status_message}[/]"
+    else:
+        content = f"{shortcuts}  │  Escribí comando + Enter >>"
+
+    return Panel(content, border_style=CYAN)
 
 
 def create_empty_state(message: str) -> Panel:

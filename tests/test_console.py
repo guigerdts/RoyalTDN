@@ -288,24 +288,32 @@ class TestCommands:
             os.chdir(original_cwd)
 
 
-# ── HandleKey Tests ────────────────────────────────────────────────────
+# ── HandleCommand Tests ────────────────────────────────────────────────
 
 
-class TestHandleKey:
-    def test_key_1_sets_dashboard(self):
-        from royaltdn.frontend.console.app import handle_key
-        state = {"current_screen": 0, "running": True, "filters": {}}
-        state = handle_key("1", state)
-        assert state["current_screen"] == 0  # dashboard index
+class TestHandleCommand:
+    def test_cmd_1_sets_dashboard(self):
+        from royaltdn.frontend.console.app import handle_command
+        running, screen, lf, mf, tf, msg = handle_command("1", 1, None, None, None)
+        assert screen == 0
 
-    def test_key_q_stops(self):
-        from royaltdn.frontend.console.app import handle_key
-        state = {"current_screen": 0, "running": True, "filters": {}}
-        state = handle_key("q", state)
-        assert state["running"] is False
+    def test_cmd_dashboard_sets_dashboard(self):
+        from royaltdn.frontend.console.app import handle_command
+        running, screen, lf, mf, tf, msg = handle_command("dashboard", 2, None, None, None)
+        assert screen == 0
 
-    def test_key_invalid_does_not_crash(self):
-        from royaltdn.frontend.console.app import handle_key
-        state = {"current_screen": 0, "running": True, "filters": {}}
-        state = handle_key("x", state)
-        assert state["running"] is True  # no change
+    def test_cmd_q_stops(self):
+        from royaltdn.frontend.console.app import handle_command
+        running, screen, lf, mf, tf, msg = handle_command("q", 0, None, None, None)
+        assert running is False
+
+    def test_cmd_exit_stops(self):
+        from royaltdn.frontend.console.app import handle_command
+        running, screen, lf, mf, tf, msg = handle_command("exit", 0, None, None, None)
+        assert running is False
+
+    def test_cmd_invalid_does_not_crash(self):
+        from royaltdn.frontend.console.app import handle_command
+        running, screen, lf, mf, tf, msg = handle_command("xyzzy", 0, None, None, None)
+        assert running is True
+        assert screen == 0

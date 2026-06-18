@@ -1,12 +1,12 @@
-"""Console application — Rich Live loop, keyboard input, screen dispatch.
+"""Console application — Rich Live loop, command-based navigation via text input.
 
 Entry point: ``run_console()``
+
+Uses ``Console.input()`` with Enter for broad Termux/proot/Android compatibility.
 """
 
-import sys
 from typing import Any, Optional
 
-import colorama
 from loguru import logger
 from rich.console import Console
 from rich.live import Live
@@ -22,95 +22,79 @@ from royaltdn.frontend.console.screens import (
     render_scanner,
     render_trades,
 )
+from royaltdn.frontend.console.components.widgets import create_footer
 
 # ── Console instance ──────────────────────────────────────────────────────
 
 _console = Console()
 
-# ── Constants ─────────────────────────────────────────────────────────────
-
-REFRESH_RATE = 4  # FPS — matches 0.25 s key-poll timeout
-KEY_TIMEOUT = 1.0 / REFRESH_RATE
-
-# ── Key helpers ───────────────────────────────────────────────────────────
+# ── Command handler ──────────────────────────────────────────────────────
 
 
-def get_key(timeout: float = KEY_TIMEOUT) -> Optional[str]:
-    """Read one key press using ``Console.input`` with timeout.
-
-    Falls back to ``None`` silently on timeout or error.
-    """
-    try:
-        key = _console.input(timeout=timeout)
-        if key:
-            return key[-1] if len(key) > 1 else key
-    except Exception:
-        pass
-    return None
-
-
-# ── Key handler ───────────────────────────────────────────────────────────
-
-
-def handle_key(key: str, state: dict) -> dict:
-    """Process a single key press and return updated state dict.
-
-    Args:
-        key: The key that was pressed (lowercase string).
-        state: Current state dict with keys ``current_screen``, ``running``,
-            ``filters``.
+def handle_command(
+    cmd: str,
+    current_screen: int,
+    level_filter: Optional[str],
+    module_filter: Optional[str],
+    text_filter: Optional[str],
+) -> tuple[bool, int, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Process a text command and return updated state.
 
     Returns:
-        Updated state dict (never mutated in place).
+        Tuple of ``(running, current_screen, level_filter, module_filter,
+                     text_filter, status_message)``.
     """
-    new_state = {
-        "current_screen": state["current_screen"],
-        "running": state["running"],
-        "filters": dict(state["filters"]),
-    }
+    status_message: Optional[str] = None
+    new_screen = current_screen
 
-    if key in ("1", "2", "3", "4", "5"):
-        new_state["current_screen"] = int(key) - 1  # 0-indexed
+    if cmd in ("1", "d", "dashboard"):
+        new_screen = 0
+    elif cmd in ("2", "s", "scanner"):
+        new_screen = 1
+    elif cmd in ("3", "e", "estrategias", "strategies"):
+        new_screen = 2
+    elif cmd in ("4", "t", "trades"):
+        new_screen = 3
+    elif cmd in ("5", "l", "logs"):
+        new_screen = 4
 
-    elif key == "p":
+    elif cmd in ("p", "pause"):
         pause_bot()
-        logger.info("Pause signal sent")
-
-    elif key == "r":
+        status_message = "✅ Señal de pausa enviada"
+        logger.info("Pause command executed")
+    elif cmd in ("r", "resume"):
         resume_bot()
-        logger.info("Resume signal sent")
-
-    elif key == "s":
+        status_message = "✅ Señal de reanudación enviada"
+        logger.info("Resume command executed")
+    elif cmd in ("scan",):
         trigger_scanner()
-        logger.info("Scanner trigger sent")
+        status_message = "✅ Scanner disparado"
+        logger.info("Scan command executed")
 
-    elif key == "i":
-        new_state["filters"]["level_filter"] = (
-            None if new_state["filters"]["level_filter"] == "INFO" else "INFO"
+    elif cmd == "i":
+        level_filter = None if level_filter == "INFO" else "INFO"
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
+    elif cmd == "w":
+        level_filter = None if level_filter == "WARNING" else "WARNING"
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
+    elif cmd == "e":
+        level_filter = None if level_filter == "ERROR" else "ERROR"
+        status_message = f"Filtro: {level_filter or 'TODOS'}"
+    elif cmd == "a":
+        level_filter = None
+        status_message = "Filtro: TODOS"
+
+    elif cmd in ("h", "help"):
+        status_message = (
+            "Comandos: [1]Dashboard [2]Scanner [3]Estrategias [4]Trades [5]Logs | "
+            "[p]Pausar [r]Reanudar [scan]Scan [i]INFO [w]WARN [e]ERROR [a]ALL [q]Salir"
         )
-        logger.info("Log level filter toggled: {}", new_state["filters"]["level_filter"])
 
-    elif key == "w":
-        new_state["filters"]["level_filter"] = (
-            None if new_state["filters"]["level_filter"] == "WARNING" else "WARNING"
-        )
-        logger.info("Log level filter toggled: {}", new_state["filters"]["level_filter"])
+    elif cmd in ("q", "exit", "quit"):
+        logger.info("Quit command — stopping console")
+        return (False, new_screen, level_filter, module_filter, text_filter, None)
 
-    elif key == "e":
-        new_state["filters"]["level_filter"] = (
-            None if new_state["filters"]["level_filter"] == "ERROR" else "ERROR"
-        )
-        logger.info("Log level filter toggled: {}", new_state["filters"]["level_filter"])
-
-    elif key == "a":
-        new_state["filters"]["level_filter"] = None
-        logger.info("Log level filter cleared")
-
-    elif key == "q":
-        logger.info("Quit key pressed — stopping console")
-        new_state["running"] = False
-
-    return new_state
+    return (True, new_screen, level_filter, module_filter, text_filter, status_message)
 
 
 # ── Screen dispatch ───────────────────────────────────────────────────────
@@ -120,7 +104,10 @@ def render_screen(
     screen_id: int,
     state: dict,
     log_buffer: LogBuffer,
-    filters: dict[str, Optional[str]],
+    level_filter: Optional[str] = None,
+    module_filter: Optional[str] = None,
+    text_filter: Optional[str] = None,
+    status_message: Optional[str] = None,
 ) -> Layout:
     """Dispatch rendering to the correct screen function.
 
@@ -128,94 +115,121 @@ def render_screen(
         screen_id: 0–4 for Dashboard / Scanner / Estrategias / Trades / Logs.
         state: The full ``StateLoader.load_all()`` dict.
         log_buffer: ``LogBuffer`` instance.
-        filters: Dict with optional keys ``level_filter``, ``module_filter``,
-            ``text_filter``.
+        level_filter: Optional log level filter.
+        module_filter: Optional module name filter.
+        text_filter: Optional free-text filter.
+        status_message: Optional message shown in footer (confirmation, help).
 
     Returns:
         A ``Layout`` ready for ``Live.update()``.
     """
     if screen_id == 0:
-        return render_dashboard(state, log_buffer)
+        layout = render_dashboard(state, log_buffer)
     elif screen_id == 1:
-        return render_scanner(state, log_buffer)
+        layout = render_scanner(state, log_buffer)
     elif screen_id == 2:
-        return render_estrategias(state, log_buffer)
+        layout = render_estrategias(state, log_buffer)
     elif screen_id == 3:
-        return render_trades(state, log_buffer)
+        layout = render_trades(state, log_buffer)
     elif screen_id == 4:
-        return render_logs(
+        layout = render_logs(
             state,
             log_buffer,
-            level_filter=filters.get("level_filter"),
-            module_filter=filters.get("module_filter"),
-            text_filter=filters.get("text_filter"),
+            level_filter=level_filter,
+            module_filter=module_filter,
+            text_filter=text_filter,
         )
-    return render_dashboard(state, log_buffer)
+    else:
+        layout = render_dashboard(state, log_buffer)
+
+    # Overlay status message on footer if present
+    if status_message:
+        try:
+            current_footer = layout["footer"]
+            layout["footer"].update(
+                create_footer(
+                    active_screen=screen_id + 1,
+                    status_message=status_message,
+                )
+            )
+        except (KeyError, AttributeError):
+            pass
+
+    return layout
 
 
 # ── Main entry ────────────────────────────────────────────────────────────
 
 
 def run_console(logs_dir: str = "logs") -> None:
-    """Launch the interactive Rich console.
+    """Launch the interactive Rich console with command-based navigation.
 
     Initialises ``StateLoader``, ``LogBuffer``, hooks it as a Loguru sink,
-    and starts a ``Live`` render loop at 4 FPS with keyboard navigation.
+    and starts a ``Live`` render loop at 2 FPS.  Instead of single-key
+    capture (incompatible with Termux/proot/Android), the user types short
+    commands and presses Enter.
 
-    Key bindings:
-        1-5 → switch screen
-        p   → pause bot
-        r   → resume bot
-        s   → trigger scanner
-        i   → filter logs: INFO
-        w   → filter logs: WARNING
-        e   → filter logs: ERROR
-        a   → filter logs: ALL (clear level filter)
-        q   → quit console
-        Ctrl+C → quit console
+    Commands:
+        1/d/dashboard → Dashboard screen
+        2/s/scanner   → Scanner screen
+        3/e/estrategias → Estrategias screen
+        4/t/trades    → Trades screen
+        5/l/logs      → Logs screen
+        p/pause       → Pause bot
+        r/resume      → Resume bot
+        scan          → Trigger scanner
+        i             → Filter logs: INFO
+        w             → Filter logs: WARNING
+        e             → Filter logs: ERROR
+        a             → Clear log level filter
+        h/help        → Show help
+        q/exit/quit   → Quit console
     """
-    colorama.init()
-
     loader = StateLoader(logs_dir=logs_dir)
     log_buffer = LogBuffer(max_lines=200)
     setup_console_log_handler(log_buffer)
 
-    state = {
-        "current_screen": 0,
-        "running": True,
-        "filters": {
-            "level_filter": None,
-            "module_filter": None,
-            "text_filter": None,
-        },
-    }
+    current_screen = 0  # 0=Dashboard, 1=Scanner, 2=Estrategias, 3=Trades, 4=Logs
+    level_filter: Optional[str] = None
+    module_filter: Optional[str] = None
+    text_filter: Optional[str] = None
+    running = True
+    status_message: Optional[str] = None
 
-    # Initial renderable
     try:
-        data = loader.load_all()
-        renderable = render_screen(
-            state["current_screen"], data, log_buffer, state["filters"]
+        state = loader.load_all()
+        layout = render_screen(
+            current_screen, state, log_buffer,
+            level_filter, module_filter, text_filter, status_message,
         )
 
-        with Live(renderable, refresh_per_second=REFRESH_RATE, screen=True) as live:
-            while state["running"]:
-                # ── Key capture ──
-                key = get_key(timeout=KEY_TIMEOUT)
-
-                if key is not None:
-                    key = key.lower()
-                    state = handle_key(key, state)
-
+        with Live(layout, refresh_per_second=2, screen=True) as live:
+            while running:
                 # ── Re-read state and re-render ──
-                data = loader.load_all()
-                live.update(
-                    render_screen(
-                        state["current_screen"], data, log_buffer, state["filters"]
-                    )
+                state = loader.load_all()
+                layout = render_screen(
+                    current_screen, state, log_buffer,
+                    level_filter, module_filter, text_filter, status_message,
                 )
+                live.update(layout)
+
+                # ── Text command input ──
+                try:
+                    cmd = _console.input("[bold cyan]>> [/bold cyan]", timeout=1.0)
+                    cmd = cmd.strip().lower()
+                    if cmd:
+                        running, current_screen, level_filter, module_filter, \
+                            text_filter, status_message = handle_command(
+                                cmd, current_screen,
+                                level_filter, module_filter, text_filter,
+                            )
+                    else:
+                        # Empty input (timeout) → clear transient status message
+                        status_message = None
+                except Exception:
+                    pass
 
     except KeyboardInterrupt:
         logger.info("Ctrl+C received — stopping console")
     finally:
-        colorama.deinit()
         print("\n🛑 Consola detenida.")
