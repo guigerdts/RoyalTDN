@@ -1,10 +1,14 @@
-"""Console application — Rich Live display + standard ``input()`` for commands.
+"""Console application — Rich Live display with threaded input.
 
-Compatible with every terminal (Termux, proot, Android, Windows, Linux, macOS)
-because command input uses Python's built-in ``input()``, not Rich console or
-select-based key capture.
+Compatible with every terminal (Termux, proot, Android, Windows, Linux, macOS).
+
+``input()`` runs in a **dedicated daemon thread** so it never blocks the Rich
+``Live`` render loop.  Commands are pushed through a ``queue.Queue`` and
+consumed non-blockingly on each render tick.
 """
 
+import queue
+import threading
 from typing import Optional
 
 import colorama
@@ -146,12 +150,35 @@ def render_screen(
 # ── Main entry ────────────────────────────────────────────────────────────
 
 
-def run_console(logs_dir: str = "logs") -> None:
-    """Launch the Rich console display with terminal-based command input.
+# ── Input thread ────────────────────────────────────────────────────────
 
-    The dashboard renders with Rich Live in a loop.  At each iteration it
-    blocks on ``input()`` to read a command from the user.  Once a command
-    is processed the display updates and waits for the next command.
+
+def _input_worker(cmd_queue: "queue.Queue[str]", stop_event: threading.Event) -> None:
+    """Daemon thread: reads ``input()`` and pushes commands to a queue.
+
+    Runs until ``stop_event`` is set.  Exceptions (``EOFError``,
+    ``KeyboardInterrupt``) set the event and exit cleanly.
+    """
+    while not stop_event.is_set():
+        try:
+            raw = input(">> ")
+            cmd = raw.strip().lower()
+            if cmd:
+                cmd_queue.put_nowait(cmd)
+        except (EOFError, KeyboardInterrupt):
+            stop_event.set()
+            break
+
+
+# ── Main entry ──────────────────────────────────────────────────────────
+
+
+def run_console(logs_dir: str = "logs") -> None:
+    """Launch the Rich console with threaded input.
+
+    ``input()`` runs in a **separate daemon thread** so it never blocks the
+    ``Live`` render loop.  Commands are consumed non-blockingly on each tick.
+    This design is compatible with every terminal including Termux/proot.
 
     Screens:
         1/d/dashboard    → Dashboard
@@ -180,6 +207,17 @@ def run_console(logs_dir: str = "logs") -> None:
     status_message: Optional[str] = None
     running = True
 
+    # Thread synchronisation
+    cmd_queue: "queue.Queue[str]" = queue.Queue()
+    stop_event = threading.Event()
+
+    input_t = threading.Thread(
+        target=_input_worker,
+        args=(cmd_queue, stop_event),
+        daemon=True,
+    )
+    input_t.start()
+
     try:
         initial = render_screen(
             current_screen, loader.load_all(), log_buffer,
@@ -188,6 +226,18 @@ def run_console(logs_dir: str = "logs") -> None:
 
         with Live(initial, refresh_per_second=2, screen=True) as live:
             while running:
+                # ── Process queued commands (non-blocking) ──
+                try:
+                    while True:
+                        cmd = cmd_queue.get_nowait()
+                        running, current_screen, level_filter, module_filter, \
+                            text_filter, status_message = handle_command(
+                                cmd, current_screen,
+                                level_filter, module_filter, text_filter,
+                            )
+                except queue.Empty:
+                    pass
+
                 # ── Re-read state and re-render ──
                 state = loader.load_all()
                 layout = render_screen(
@@ -196,23 +246,12 @@ def run_console(logs_dir: str = "logs") -> None:
                 )
                 live.update(layout)
 
-                # Auto-clear status message after one render cycle
+                # Auto-clear transient feedback after one render cycle
                 status_message = None
-
-                # ── Wait for command with standard input() ──
-                try:
-                    cmd = input(">> ").strip().lower()
-                    if cmd:
-                        running, current_screen, level_filter, module_filter, \
-                            text_filter, status_message = handle_command(
-                                cmd, current_screen,
-                                level_filter, module_filter, text_filter,
-                            )
-                except (EOFError, KeyboardInterrupt):
-                    running = False
 
     except KeyboardInterrupt:
         logger.info("Ctrl+C received — stopping console")
     finally:
+        stop_event.set()
         colorama.deinit()
         print("\n🛑 Consola detenida.")
