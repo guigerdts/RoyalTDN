@@ -4,7 +4,7 @@ Bot de trading algorítmico de grado profesional construido sobre **Python + Alp
 
 **Stack**: Python 3.13 (asyncio), Alpaca API (paper + live), Redis Streams, TimescaleDB, Grafana, Docker, **Rich TUI**, **Loguru**, pandas-ta.
 
-**Estado**: Fase 8 — Consola interactiva Rich + Loguru + 6 CLI subcomandos + IPC por señales.
+**Estado**: Fase 11 — Menú interactivo Rich con 8 opciones, Simulación What-if, Registro de Actividad, Alertas configurables.
 
 ## Arquitectura
 
@@ -46,16 +46,19 @@ Bot de trading algorítmico de grado profesional construido sobre **Python + Alp
 └──────────────────┘               │
                                    ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                   Rich Console TUI (Fase 8)                       │
+│                   Menú Interactivo Rich (Fase 11)                 │
 │                                                                   │
-│  StateLoader → Widgets → Rich Live render loop @ 2 FPS           │
+│  run_menu() → StateLoader → 8 opciones por número                │
 │                                                                   │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
 │  │Dashboard │ │ Scanner  │ │Estrategias│ │  Trades  │ │  Logs  │ │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘ │
+│  ┌──────────┐ ┌────────────┐ ┌──────────┐                        │
+│  │ Control  │ │Simulación★│ │Actividad★│                        │
+│  └──────────┘ └────────────┘ └──────────┘                        │
 │                                                                   │
-│  Comandos: p=pausar  r=reanudar  scan=scanner  q=salir           │
-│  Filtros:   i=INFO   w=WARNING   e=ERROR     a=todos             │
+│  Badges: 🔔 señales nuevas  💰 trades nuevos                     │
+│  PAUSADO en amarillo en header/Control/Dashboard KPI             │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -123,25 +126,26 @@ REDIS_URL=redis://noexiste:6379/0 python -m royaltdn run
 
 En modo legacy, el risk manager, TWAP, alertas Telegram, **y las estrategias de usuario** siguen activos — solo cambia la fuente de datos (REST polling cada 60s en vez de WebSocket).
 
-### Consola Interactiva (Fase 8)
+### Menú Interactivo (Fase 11)
 
-Al ejecutar `python -m royaltdn run`, la consola Rich se inicia automáticamente con 5 pantallas navegables por teclado:
+Al ejecutar `python -m royaltdn run`, se inicia el menú interactivo Rich con **8 opciones** navegables por número:
 
-| Pantalla | Comando | Descripción |
-|----------|---------|-------------|
-| Dashboard | `1` / `d` | KPIs, equity curve, posiciones abiertas, señales |
-| Scanner | `2` / `s` | Resultados del escaneo multi-estrategia |
-| Estrategias | `3` / `e` | Estado de estrategias activas y de usuario |
-| Trades | `4` / `t` | Historial de trades con métricas |
-| Logs | `5` / `l` | Logs en vivo con filtros por nivel |
+| Opción | Pantalla | Descripción |
+|--------|----------|-------------|
+| `1` | Dashboard | KPIs, posiciones, señales, trades, logs con auto-refresh configurable |
+| `2` | Scanner | Resultados del escaneo multi-estrategia (badge 🔔 si hay señales nuevas) |
+| `3` | Estrategias | Vista unificada predefinidas + usuario con CRUD completo |
+| `4` | Trades | Historial con filtros (símbolo + fecha), export CSV/JSON, estadísticas avanzadas |
+| `5` | Logs | Logs con filtros por nivel y búsqueda de texto |
+| `6` | Control | Pausar/reanudar bot, forzar scanner, configurar alertas de riesgo |
+| `7` | Simulación ★ | What-if: modificar riesgo, re-backtest, comparar resultados |
+| `8` | Actividad ★ | Registro de acciones del usuario con búsqueda |
 
-**Comandos de control:**
-- `p` — Pausar el bot (envía señal IPC via `logs/pause_signal.json`)
-- `r` — Reanudar el bot
-- `scan` — Disparar scanner manual
-- `i` / `w` / `e` — Filtrar logs por INFO / WARNING / ERROR
-- `a` — Quitar filtro de log
-- `q` — Salir de la consola
+**Badges de notificación:** 🔔 señales nuevas, 💰 trades nuevos — aparecen automáticamente en el menú principal.
+
+**Estrategias (opción 3):** CRUD completo — activar/desactivar, editar con precarga, eliminar (usuario), backtest rápido, builder visual de 12 etapas.
+
+**Control (opción 6):** Bot PAUSADO se muestra en amarillo en header + Control + Dashboard. Alertas configurables (drawdown, pérdidas consecutivas).
 
 ### One-shot: status y logs
 
@@ -240,14 +244,14 @@ python -m royaltdn status
 pytest tests/ -v
 ```
 
-~75 tests en total cubriendo: SMA, BollingerRSI, MomentumATR, FactorRotation, Scanner, Orchestrator, TCA, indicadores, rule_engine, schema, StrategyStore, DynamicStrategy, backtesting, integración, **StateLoader, LogBuffer, widgets, commands, screens, key handling** (Fase 8).
+~80 tests en total cubriendo: SMA, BollingerRSI, MomentumATR, FactorRotation, Scanner, Orchestrator, TCA, indicadores, rule_engine, schema, StrategyStore, DynamicStrategy, backtesting, integración, **StateLoader, LogBuffer, widgets, commands, screens, menú interactivo** (Fases 8-11).
 
-Los tests de la consola (30 tests nuevos en `tests/test_console.py`) cubren:
+Los tests del menú (`tests/test_menu.py`) cubren:
 - StateLoader: carga, cache TTL, archivos faltantes, JSON corrupto
 - LogBuffer: add, trim, filtros, thread-safety
-- Widgets: cada función con datos mock y vacíos
-- Commands: pause/resume/scanner signals
-- Key handling: cambio de pantalla, comandos inválidos
+- Dashboard: render con datos vacíos y reales
+- Builder flow: creación completa de estrategia
+- Ctrl+C: salida graceful del menú
 
 ## Roadmap
 
@@ -261,3 +265,6 @@ Los tests de la consola (30 tests nuevos en `tests/test_console.py`) cubren:
 | Fase 6 | ✅ | Frontend Streamlit: Dashboard, Scanner, Estrategias, Trades, Logs + status publishing |
 | Fase 7 | ✅ | Constructor visual de estrategias: 16 indicadores, reglas lógicas, backtesting, watcher automático |
 | **Fase 8** | **✅** | **Consola interactiva Rich: reemplazo de Streamlit por TUI, Loguru, 6 CLI subcomandos, IPC por señales** |
+| **Fase 9** | **✅** | **Textual TUI: BuilderScreen + HelpScreen + refactor a Textual** |
+| **Fase 10** | **✅** | **Menú texto interactivo: Rich puro sin Textual (compatibilidad Termux)** |
+| **Fase 11** | **✅** | **Menú profesional: 15 mejoras + PAUSADO + Simulación + Actividad + Alertas** |
