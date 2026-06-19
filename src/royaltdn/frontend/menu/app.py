@@ -837,6 +837,7 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
     Shows timestamped entries with:
       - timestamp in dim white
       - message in white
+    Supports optional text search filter.
 
     If the file doesn't exist or is empty, shows a dim placeholder.
     """
@@ -847,42 +848,64 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
 
         try:
             with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+                all_lines = f.readlines()
         except (FileNotFoundError, OSError):
-            lines = []
+            all_lines = []
 
         _clear_screen()
         _print_header(console)
         console.print()
 
-        if not lines:
+        if not all_lines:
             console.print("[dim]No hay actividad registrada aún.[/]")
+            console.print("\n[dim]Presiona Enter para volver[/]")
+            _wait_enter()
+            return
+
+        # Optional text search
+        console.print("[dim]Enter para ver todo, o texto para buscar: [/]", end="")
+        try:
+            search = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        # Filter lines
+        if search:
+            filtered = [l for l in all_lines if search.lower() in l.lower()]
         else:
-            # Show last 20
-            from rich.text import Text
+            filtered = all_lines
 
-            display = lines[-20:]
-            for line in display:
-                line = line.strip()
-                if not line:
-                    continue
-                # Split timestamp from message
-                if line.startswith("[") and "]" in line:
-                    ts_end = line.index("]") + 1
-                    ts = line[:ts_end]
-                    msg = line[ts_end:].strip()
-                    console.print(Text.assemble(
-                        (ts, "dim white"),
-                        (" ", ""),
-                        (msg, "white"),
-                    ))
-                else:
-                    console.print(line)
+        if not filtered:
+            console.print("[dim]No hay entradas que coincidan con la búsqueda.[/]")
+            console.print("\n[dim]Presiona Enter para volver[/]")
+            _wait_enter()
+            return
 
-            if len(lines) > 20:
-                console.print(
-                    "\n[dim]Mostrando últimas 20 entradas[/]"
-                )
+        # Show last 20 of filtered
+        from rich.text import Text
+
+        display = filtered[-20:]
+        for line in display:
+            line = line.strip()
+            if not line:
+                continue
+            # Split timestamp from message
+            if line.startswith("[") and "]" in line:
+                ts_end = line.index("]") + 1
+                ts = line[:ts_end]
+                msg = line[ts_end:].strip()
+                console.print(Text.assemble(
+                    (ts, "dim white"),
+                    (" ", ""),
+                    (msg, "white"),
+                ))
+            else:
+                console.print(line)
+
+        if len(filtered) > 20:
+            console.print(
+                f"\n[dim]Mostrando últimas 20 de {len(filtered)} entradas[/]"
+            )
 
         console.print("\n[dim]Presiona Enter para volver[/]")
         _wait_enter()
