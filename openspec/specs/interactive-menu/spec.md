@@ -2,28 +2,42 @@
 
 ## Purpose
 
-`input()`+Rich text menu — 6 screens (Dashboard, Scanner, Estrategias, Trades, Logs, Control) + strategy Builder wizard. Reuses StateLoader, LogBuffer, commands.py, builder_state.py. Replaces Textual TUI as default for Termux/SSH/desktop.
+`input()`+Rich text menu — 8 screens (Dashboard, Scanner, Estrategias, Trades, Logs, Control, Simulación, Actividad) + strategy Builder wizard. Reuses StateLoader, LogBuffer, commands.py, builder_state.py. Replaces Textual TUI as default for Termux/SSH/desktop.
 
 ## Requirements
 
 ### Requirement: Main Menu Loop
 
-SHALL display ASCII-box header + 6 numbered options + 0 exit. Input via `input(">> ")`, strip. Invalid: error + "Presiona Enter", loop. Ctrl+C: "¿Salir? (s/n):", break on 's', call `orch.stop()`.
+SHALL display ASCII-box header + PAUSADO status (bold yellow when paused) + 8 numbered options + notification badges + 0 exit. Input via `input(">> ")`, strip. Invalid: error + re-prompt. Ctrl+C: "¿Salir? (s/n):", break on 's', call `orch.stop()`.
 
 | Scenario | WHEN | THEN |
 |----------|------|------|
-| Navigate | user enters "1" | Dashboard screen renders |
-| Invalid | user enters "9" | error + re-prompt |
-| Ctrl+C exit | Ctrl+C + "s" | orch.stop() + loop ends |
+| Navigate | "1" | Dashboard |
+| Option 7 | "7" | What-If |
+| Option 8 | "8" | Activity Log |
+| Invalid | "9" | error + re-prompt |
+| Ctrl+C exit | Ctrl+C+"s" | orch.stop() |
 
 ### Requirement: Dashboard
 
-SHALL load `StateLoader.load_all()`, render KPIs via `Table.grid(padding=(0,2))` + `Text.assemble()`, then Positions table, Signals, Trade Summary, Logs (20 lines). Prompt: "¿Actualizar? (Enter = sí, 0 = volver, número = segundos)". Enter re-renders, 0 returns, N auto-refresh until key.
+SHALL load `StateLoader.load_all()`, render KPIs via `Table.grid(padding=(0,2))` + `Text.assemble()` (PAUSADO bold yellow when paused), then Positions table, Signals, Trade Summary, Logs (20 lines). Auto-refresh via configurable countdown loop: prompt "¿Auto-refresh? (Enter=5s, número=N, 0=manual)". Enter/num → loop with countdown, Ctrl+C exits.
 
 #### Scenario: Empty state
 - GIVEN StateLoader returns empty dicts
 - WHEN Dashboard renders
 - THEN KPIs show "—" AND tables show "[dim]No data[/]"
+
+#### Scenario: Paused KPI
+- GIVEN `bot_status: "PAUSADO"`
+- WHEN Dashboard renders
+- THEN KPI status shows "PAUSADO" bold yellow
+
+| Scenario | WHEN | THEN |
+|----------|------|------|
+| Timer | Enter | 5s loop |
+| Custom | "10" | 10s loop |
+| Cancel | 0 | manual |
+| Exit | Ctrl+C | menu |
 
 ### Requirement: Scanner
 
@@ -36,24 +50,37 @@ SHOW `state["scanner_results"]` or "No hay resultados aún." Prompt "¿Forzar es
 
 ### Requirement: Estrategias & Builder
 
-SHOW loaded strategies from state. Submenu: 1. Ver / 2. Builder / 3. Cargar / 0. Volver.
+SHALL display loaded strategies in unified table: Nombre, Tipo, Símbolo, Timeframe, Activa, Parámetros. Sorted alphabetically. Parámetros: compact, trunc 40 chars.
 
-Builder (10-step): Name (alphanumeric) → Pick indicator from 16 `INDICATOR_DEFS` → Param values → Loop indicators → Entry rule (indicator + operator from `OPERATOR_GROUPS` + value) → Exit rule → Symbol/timeframe/period → `validate_config()` → `run_backtest()` → "¿Guardar?" calls `StrategyStore().save()`.
+Submenu: [N] select → Toggle/Editar(user)/Eliminar(user)/Backtest, [B] Builder, [C] Cargar, [0] Volver. All ops call `_log_activity()`. Toggle writes `active` field to strategies.json; orchestrator skips inactive. Eliminar: confirm → `StrategyStore.delete()`. Predefined strategies: no Delete.
+
+Builder (10-step): Name (alphanumeric) → Pick indicator from 16 `INDICATOR_DEFS` → Param values → Loop indicators → Entry rule (indicator + operator from `OPERATOR_GROUPS` + value) → Exit rule → Symbol/timeframe/period → `validate_config()` → `run_backtest()` → Save. When editing (`existing_config` provided): preload values, show "Valor actual: X. Enter para mantener", skippable with Enter.
 
 | Scenario | WHEN | THEN |
 |----------|------|------|
 | Full flow | user completes 10 steps | strategy saved to user_strategies/ |
 | Invalid indicator | enters "99" at pick | error + re-prompt |
 | Param type error | enters "abc" for numeric | error + re-prompt |
+| Toggle | select + Toggle | `active` field updated |
+| Delete user | Eliminar + "s" | StrategyStore.delete() |
+| Edit | builder with config | preloaded values |
+| Quick backtest | Backtest + Enter | metrics table |
 
 ### Requirement: Trades
 
-SHOW `state["trades"]` table + metrics (total_trades, win_rate, profit_factor, total_pnl). Prompt "Filtrar por símbolo (Enter = todos):" → filter + show filtered.
+SHOW `state["trades"]` table + metrics (total_trades, win_rate, profit_factor, total_pnl). Symbol → period filter (1 Hoy, 2 Semana, 3 Mes, 4 Todo, 5 Custom). Metrics recalculated. Submenu: Rendimiento por estrategia (group by `strategy`), Exportar (CSV/JSON), Estadísticas (streaks, avg duration, best/worst day).
 
 #### Scenario: Filter
 - GIVEN 10 trades across 3 symbols
 - WHEN user enters "SPY"
 - THEN only SPY trades shown
+
+| Scenario | GIVEN | WHEN | THEN |
+|----------|-------|------|------|
+| Date filter | 50 trades | "1 Hoy" | today only, recalc'd |
+| Per-strategy | `strategy` field | Rendimiento | grouped by P&L |
+| Export | filtered set | Exportar+CSV | exports/trades.csv |
+| No data | 0 matches | period filter | "[dim]No trades[/]" |
 
 ### Requirement: Logs
 
@@ -66,12 +93,38 @@ SHOW last 20 lines from `log_buffer.get_lines()` with Rich colors. Submenu: 1. I
 
 ### Requirement: Control
 
-SHOW status (Estado, Modo, Uptime). Submenu: 1. Pausar / 2. Reanudar / 3. Forzar scanner / 0. Volver. Action calls `commands.pause_bot/resume_bot/trigger_scanner()`, shows confirmation.
+SHOW status (Estado, PAUSADO bold yellow when paused, Modo, Uptime). Submenu: 1. Pausar / 2. Reanudar / 3. Forzar scanner / 4. Alertas / 0. Volver. Action calls `commands.pause_bot/resume_bot/trigger_scanner()`, shows confirmation. Read `logs/alert_thresholds.json` (defaults: drawdown 3%, max losses 5). Edit-by-number, validate, write.
 
 #### Scenario: Pause
 - GIVEN bot ONLINE
 - WHEN user selects "1"
-- THEN pause_bot() called + confirmation shown
+- THEN pause_bot() called + `_log_activity()` logged
+
+| Scenario | GIVEN | WHEN | THEN |
+|----------|-------|------|------|
+| Alert config | — | "4" | thresholds shown |
+| Update | — | edit→"5" | file updated |
+| Invalid | — | "abc" | error+retry |
+| Corrupt file | invalid JSON | open | defaults silently |
+
+### Requirement: PAUSADO Status Display
+
+MUST render `bot_status` in header, Control, Dashboard KPI. `_log_activity()` on pause/resume.
+
+| Scenario | GIVEN | WHEN | THEN |
+|----------|-------|------|------|
+| Pause → PAUSADO | ONLINE | user pauses | header "PAUSADO" bold yellow, Control "Bot: PAUSADO", Dashboard KPI "PAUSADO" |
+| Resume → ONLINE | PAUSADO | user resumes | header + Control "ONLINE" |
+| Immediate switch | ONLINE | pause_signal.json `action:"pause"` | status.json `bot_status` → "PAUSADO" |
+
+### Requirement: Menu Badges
+
+Detect signals/trades via mtime vs `_last_menu_visit`. Badges: "2 Scanner 🔔 (N)", "4 Trades 💰 (N)". First visit: skip.
+
+| Scenario | GIVEN | THEN |
+|----------|-------|------|
+| New signals | 3 since last visit | badge on option 2 |
+| First visit | no baseline | none |
 
 ### Requirement: Rendering
 
