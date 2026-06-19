@@ -42,7 +42,7 @@ def run_menu(logs_dir: str = "logs") -> None:
             elif cmd == "2":
                 _show_scanner(state_loader, console, logs_dir)
             elif cmd == "3":
-                _show_estrategias(state_loader, console)
+                _show_estrategias(state_loader, console, logs_dir)
             elif cmd == "4":
                 _show_trades(state_loader, console)
             elif cmd == "5":
@@ -228,6 +228,92 @@ def _check_notifications(state_loader) -> dict:
         paused = True
 
     return {"signals": new_signals, "trades": new_trades, "paused": paused}
+
+
+def _get_strategy_params_summary(config: dict) -> str:
+    """Build a compact parameter summary string (≤50 chars) for a strategy config.
+
+    For predefined strategies, params come from ``config["params"]``.
+    For user strategies, params come from ``config["indicators"]`` list.
+    Truncated at 50 characters with "…".
+    """
+    parts: list[str] = []
+    if "indicators" in config:
+        # User strategy
+        for ind in config.get("indicators", []):
+            name = ind.get("name", "?")
+            p = ind.get("params", {})
+            if p:
+                inner = ", ".join(f"{k}={v}" for k, v in p.items())
+                parts.append(f"{name}({inner})")
+            else:
+                parts.append(name)
+    else:
+        # Predefined strategy
+        params = config.get("params", {})
+        for k, v in params.items():
+            parts.append(f"{k}={v}")
+    result = ", ".join(parts)
+    if len(result) > 50:
+        result = result[:47] + "\u2026"
+    return result
+
+
+def _toggle_strategy(
+    name: str, active: bool, is_user: bool, logs_dir: str = "logs",
+) -> bool:
+    """Toggle a strategy's ``active`` field.
+
+    For predefined strategies: update ``logs/strategies.json`` in-place.
+    For user strategies: load latest config from ``StrategyStore``, set
+    ``active``, and save a new timestamped version (the watcher will
+    pick it up).
+
+    Returns ``True`` on success, ``False`` on error.
+    """
+    import json
+    import os as _os
+
+    if is_user:
+        from royaltdn.strategy.strategy_store import StrategyStore as _SS
+
+        store = _SS()
+        cfg = store.load(name)
+        if cfg is None:
+            return False
+        cfg["active"] = active
+        try:
+            store.save(cfg)
+            return True
+        except Exception:
+            return False
+
+    # Predefined: mutate logs/strategies.json
+    path = _os.path.join(logs_dir, "strategies.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+
+    updated = False
+    for s in data.get("strategies", []):
+        if s.get("name") == name:
+            s["active"] = active
+            updated = True
+            break
+
+    if not updated:
+        return False
+
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        _os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────
@@ -681,8 +767,8 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
 # ── Estrategias ───────────────────────────────────────────────────────
 
 
-def _show_estrategias(state_loader, console) -> None:
-    """Screen 3: List strategies from state + StrategyStore, or launch builder."""
+def _show_estrategias(state_loader, console, logs_dir: str = "logs") -> None:
+    """Screen 3: Unified strategies table with submenu for each strategy."""
     from rich.table import Table
     from rich.panel import Panel
 
@@ -691,67 +777,67 @@ def _show_estrategias(state_loader, console) -> None:
             _clear_screen()
             _print_header(console)
 
+            # ── Load both sources ─────────────────────────────────────
             state_strategies = state_loader.load_strategies()
-
             try:
-                from royaltdn.strategy.strategy_store import StrategyStore
+                from royaltdn.strategy.strategy_store import StrategyStore as _SS
 
-                user_strategies = StrategyStore().load_all()
+                user_configs = _SS().load_all()
             except Exception:
-                user_strategies = []
+                user_configs = []
 
-            console.print(
-                Panel(
-                    "[bold]Estrategias Cargadas[/]",
-                    border_style="white",
-                )
-            )
-
-            # Show predefined strategies from state
+            # ── Merge into unified sorted list ────────────────────────
+            entries: list[dict] = []
             predefined = state_strategies.get("strategies", [])
-            if isinstance(predefined, list) and predefined:
+            if isinstance(predefined, list):
+                for s in predefined:
+                    if isinstance(s, dict):
+                        entries.append({
+                            "name": str(s.get("name", "")),
+                            "type": "Predefinida",
+                            "active": bool(s.get("active", False)),
+                            "config": s,
+                            "is_user": False,
+                        })
+            if isinstance(user_configs, list):
+                for cfg in user_configs:
+                    if isinstance(cfg, dict):
+                        entries.append({
+                            "name": str(cfg.get("name", "")),
+                            "type": "Usuario",
+                            "active": bool(cfg.get("active", True)),
+                            "config": cfg,
+                            "is_user": True,
+                        })
+            entries.sort(key=lambda e: e["name"].lower())
+
+            # ── Render unified table ──────────────────────────────────
+            console.print(Panel("[bold]Estrategias[/]", border_style="white"))
+            if entries:
                 table = Table(
-                    title="Predefinidas",
+                    title=None,
                     border_style="white",
                     header_style="bold white",
+                    show_edge=False,
                 )
+                table.add_column("#", style="bold cyan", width=3)
                 table.add_column("Nombre", style="bold white")
                 table.add_column("Tipo")
                 table.add_column("Activa")
-                for strat in predefined:
-                    if isinstance(strat, dict):
-                        table.add_row(
-                            str(strat.get("name", "\u2014")),
-                            str(strat.get("type", "\u2014")),
-                            "Sí" if strat.get("active") else "No",
-                        )
+                table.add_column("Par\u00e1metros")
+                for idx, e in enumerate(entries, start=1):
+                    active_label = "S\u00ed" if e["active"] else "No"
+                    params = _get_strategy_params_summary(e["config"])
+                    table.add_row(str(idx), e["name"], e["type"], active_label, params)
                 console.print(table)
             else:
-                console.print("[dim]No hay estrategias predefinidas cargadas.[/]")
+                console.print("[dim]No hay estrategias cargadas.[/dim]")
 
-            # Show user-defined strategies from StrategyStore
-            if user_strategies:
-                table2 = Table(
-                    title="Usuario",
-                    border_style="white",
-                    header_style="bold white",
-                )
-                table2.add_column("Nombre", style="bold white")
-                table2.add_column("Símbolo")
-                table2.add_column("Timeframe")
-                for cfg in user_strategies:
-                    if isinstance(cfg, dict):
-                        table2.add_row(
-                            str(cfg.get("name", "\u2014")),
-                            str(cfg.get("symbol", "\u2014")),
-                            str(cfg.get("timeframe", "\u2014")),
-                        )
-                console.print(table2)
-
+            # ── Prompt ────────────────────────────────────────────────
             console.print()
             console.print(
-                "[bold cyan]1[/] Ver estrategias cargadas  "
-                "[bold cyan]2[/] Crear nueva estrategia  "
+                "[bold cyan]N[/] Seleccionar (n\u00famero)  "
+                "[bold cyan]B[/] Crear nueva  "
                 "[bold cyan]0[/] Volver"
             )
             try:
@@ -761,24 +847,198 @@ def _show_estrategias(state_loader, console) -> None:
 
             if sub == "0":
                 return
-            elif sub == "1":
-                # Already shown above, just wait
-                _wait_enter()
-            elif sub == "2":
-                _builder_flow(console)
-            else:
-                console.print("[bold red]Opción inválida.[/]")
-                _wait_enter()
+            if sub.lower() == "b":
+                _builder_flow(console, logs_dir=logs_dir)
+                continue
+
+            if sub.isdigit():
+                idx = int(sub)
+                if 1 <= idx <= len(entries):
+                    _strategy_submenu(entries[idx - 1], console, logs_dir)
+                    continue
+
+            console.print("[bold red]Opci\u00f3n inv\u00e1lida.[/]")
+            _wait_enter()
 
     except KeyboardInterrupt:
         return
 
 
+def _strategy_submenu(entry: dict, console, logs_dir: str) -> None:
+    """Submenu for a single strategy: toggle, edit (user), delete (user), backtest."""
+    from rich.panel import Panel
+
+    name = entry["name"]
+    is_user = entry["is_user"]
+    config = entry["config"]
+    active = entry["active"]
+
+    while True:
+        _clear_screen()
+        _print_header(console)
+
+        console.print(Panel(f"[bold]{name}[/]", border_style="white"))
+        console.print(f"  Tipo: {entry['type']}")
+        console.print(f"  Activa: {'S\u00ed' if active else 'No'}")
+        console.print(f"  Par\u00e1metros: {_get_strategy_params_summary(config)}")
+        console.print()
+
+        toggle_label = "Desactivar" if active else "Activar"
+        parts = [f"[bold cyan]T[/] {toggle_label}"]
+        if is_user:
+            parts.append("[bold cyan]E[/] Editar")
+            parts.append("[bold cyan]D[/] Eliminar")
+        parts.append("[bold cyan]B[/] Backtest r\u00e1pido")
+        parts.append("[bold cyan]0[/] Volver")
+        console.print("  ".join(parts))
+
+        try:
+            sub = input(">> ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if sub == "0":
+            return
+        if sub == "t":
+            new_active = not active
+            ok = _toggle_strategy(name, new_active, is_user, logs_dir)
+            if ok:
+                action = "activ\u00f3" if new_active else "desactiv\u00f3"
+                _log_activity(f"Usuario {action} '{name}'", logs_dir)
+                console.print(
+                    f"[green]Estrategia {'activada' if new_active else 'desactivada'}.[/]"
+                )
+            else:
+                console.print("[red]Error al cambiar estado de la estrategia.[/]")
+            _wait_enter()
+            return  # back to parent to refresh the list
+        if sub == "e" and is_user:
+            _builder_flow(console, existing_config=config, logs_dir=logs_dir)
+            _log_activity(f"Usuario edit\u00f3 '{name}'", logs_dir)
+            _wait_enter()
+            return
+        if sub == "d" and is_user:
+            confirm = _input_confirm(f"\u00bfEliminar '{name}'? (s/n): ")
+            if confirm == "s":
+                from royaltdn.strategy.strategy_store import StrategyStore as _SS
+
+                try:
+                    ok = _SS().delete(name)
+                except Exception:
+                    ok = False
+                if ok:
+                    _log_activity(f"Usuario elimin\u00f3 '{name}'", logs_dir)
+                    console.print(f"[green]Estrategia '{name}' eliminada.[/]")
+                else:
+                    console.print(f"[red]Error al eliminar '{name}'.[/]")
+                _wait_enter()
+            return
+        if sub == "b":
+            _quick_backtest(config, console, logs_dir)
+            _log_activity(
+                f"Usuario ejecut\u00f3 backtest r\u00e1pido de '{name}'", logs_dir
+            )
+            _wait_enter()
+            return
+
+        console.print("[bold red]Opci\u00f3n inv\u00e1lida.[/]")
+        _wait_enter()
+
+
+def _input_confirm(prompt: str) -> str:
+    """Read a single confirmation character, handling Ctrl+C cleanly."""
+    try:
+        return input(prompt).strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return "n"
+
+
+def _quick_backtest(config: dict, console, logs_dir: str) -> None:
+    """Run a quick backtest from the strategy submenu — no save option."""
+    from rich.table import Table
+
+    # Determine defaults from config
+    default_symbol = ""
+    if "symbol" in config:
+        default_symbol = config["symbol"]
+    elif "symbols" in config:
+        syms = config["symbols"]
+        if isinstance(syms, list) and syms:
+            default_symbol = syms[0]
+    if not default_symbol:
+        default_symbol = "SPY"
+
+    default_timeframe = config.get("timeframe", "1D")
+    default_period = "2y"
+
+    try:
+        raw_sym = input(f"S\u00edmbolo (default: {default_symbol}): ").strip().upper()
+        symbol = raw_sym if raw_sym else default_symbol
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    try:
+        raw_per = input(f"Per\u00edodo (default: {default_period}): ").strip()
+        period = raw_per if raw_per else default_period
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    from royaltdn.strategy.backtesting import run_backtest as _run_bt
+    from royaltdn.strategy.schema import validate_config
+
+    ok, err = validate_config(config)
+    if not ok:
+        console.print(f"[red]Configuraci\u00f3n inv\u00e1lida: {err}[/]")
+        return
+
+    console.print("[yellow]Ejecutando backtest...[/]")
+    try:
+        result = _run_bt(
+            config, symbol=symbol, timeframe=default_timeframe, period=period,
+        )
+    except Exception as e:
+        console.print(f"[red]Error en backtest: {e}[/]")
+        return
+
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/]")
+        return
+
+    metrics = result.get("metrics", {})
+    table = Table(
+        title="Resultados del Backtest R\u00e1pido",
+        border_style="green",
+        header_style="bold white",
+    )
+    table.add_column("M\u00e9trica", style="bold cyan")
+    table.add_column("Valor", justify="right")
+    table.add_row("Sharpe", f"{metrics.get('sharpe', 0):.2f}")
+    table.add_row("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
+    table.add_row("Win Rate", f"{metrics.get('win_rate', 0)*100:.1f}%")
+    table.add_row("Max Drawdown", f"{metrics.get('max_drawdown', 0)*100:.2f}%")
+    table.add_row("CAGR", f"{metrics.get('cagr', 0)*100:.2f}%")
+    table.add_row("Total Return", f"{metrics.get('total_return', 0)*100:.2f}%")
+    table.add_row("Num Trades", str(metrics.get('num_trades', 0)))
+    console.print(table)
+
+
 # ── Builder (12 stages) ──────────────────────────────────────────────
 
 
-def _builder_flow(console) -> None:
-    """Interactive strategy builder — 12 stages, Rich console, no Textual."""
+def _builder_flow(
+    console,
+    existing_config: dict | None = None,
+    logs_dir: str = "logs",
+) -> None:
+    """Interactive strategy builder — 12 stages, Rich console, no Textual.
+
+    When ``existing_config`` is provided the builder runs in **edit mode**:
+    each stage pre-fills from the existing config and lets the user skip
+    with Enter to keep the current value.
+
+    Backward-compatible: when ``existing_config`` is ``None`` all stages
+    behave as before (no defaults).
+    """
     # ── Lazy imports (builder_state, schema, backtesting, store) ─────
     from royaltdn.frontend.console.builder_state import (
         INDICATOR_DEFS,
@@ -790,56 +1050,130 @@ def _builder_flow(console) -> None:
     from royaltdn.strategy.backtesting import run_backtest
     from royaltdn.strategy.strategy_store import StrategyStore
 
-    try:
-        indicators_list: list[dict] = []
+    # ── Pre-fill from existing_config when editing ───────────────────
+    is_edit = existing_config is not None
+    if is_edit:
+        strategy_name = existing_config.get("name", "")
+        indicators_list = list(existing_config.get("indicators", []))
+        entry_tree = existing_config.get(
+            "entry_rules", {"operator": "AND", "conditions": []}
+        )
+        exit_tree = existing_config.get(
+            "exit_rules", {"operator": "AND", "conditions": []}
+        )
+        pre_symbol = (
+            existing_config.get("symbols", ["SPY"])[0]
+            if existing_config.get("symbols")
+            else "SPY"
+        )
+        pre_timeframe = existing_config.get("timeframe", "1D")
+        pre_period = "2y"  # not persisted in config
+        risk_mgmt = existing_config.get(
+            "risk_management",
+            {
+                "stop_loss_pct": 2,
+                "take_profit_pct": 5,
+                "max_position_size": 1000,
+                "max_daily_loss": 500,
+            },
+        )
+    else:
+        strategy_name = ""
+        indicators_list = []
+        entry_tree = {"operator": "AND", "conditions": []}
+        exit_tree = {"operator": "AND", "conditions": []}
+        pre_symbol = "SPY"
+        pre_timeframe = "1D"
+        pre_period = "2y"
+        risk_mgmt = {
+            "stop_loss_pct": 2,
+            "take_profit_pct": 5,
+            "max_position_size": 1000,
+            "max_daily_loss": 500,
+        }
 
+    import re as _re
+
+    try:
         # ── Stage 1: Name ─────────────────────────────────────────────
         console.print("\n[bold]Stage 1/12 — Nombre de la estrategia[/]")
         while True:
             try:
-                raw = input("Nombre de la estrategia: ").strip()
+                if is_edit and strategy_name:
+                    prompt = (
+                        f"Valor actual: {strategy_name}. Enter para mantener: "
+                    )
+                else:
+                    prompt = "Nombre de la estrategia: "
+                raw = input(prompt).strip()
             except (KeyboardInterrupt, EOFError):
                 return
+
+            if is_edit and not raw:
+                # Keep existing name
+                break
             if not raw:
-                console.print("[red]El nombre no puede estar vacío.[/]")
+                console.print("[red]El nombre no puede estar vac\u00edo[/]")
                 continue
-            import re
-            if not re.match(r"^[a-zA-Z0-9 _]+$", raw):
+            if not _re.match(r"^[a-zA-Z0-9 _]+$", raw):
                 console.print(
-                    "[red]Solo se permiten letras, números, espacios y guiones bajos.[/]"
+                    "[red]Solo se permiten letras, n\u00fameros, espacios y guiones bajos.[/]"
                 )
                 continue
             strategy_name = raw
             break
 
         # ── Stages 2-4: Indicator loop ────────────────────────────────
+        # Show existing indicators first (edit mode)
+        if is_edit and indicators_list:
+            console.print(
+                f"\nIndicadores actuales ({len(indicators_list)}):"
+            )
+            for idx, ind in enumerate(indicators_list, start=1):
+                params = ind.get("params", {})
+                param_str = ", ".join(f"{k}={v}" for k, v in params.items())
+                console.print(f"  {idx}. {ind['name']}  ({param_str})")
+
+        # Add new indicators
         while True:
-            # Stage 2: Pick indicator
-            console.print(f"\n[bold]Stage 2/12 — Seleccionar indicador ({len(indicators_list) + 1})[/]")
+            console.print(
+                f"\n[bold]Stage 2/12 — "
+                f"{'Agregar' if is_edit else 'Seleccionar'} indicador "
+                f"({len(indicators_list) + 1})[/]"
+            )
             for idx, idef in enumerate(INDICATOR_DEFS, start=1):
                 console.print(f"  [bold cyan]{idx}[/]  {idef['label']}")
-            console.print("  [bold cyan]0[/]  Terminar selección")
+            console.print("  [bold cyan]0[/]  Terminar selecci\u00f3n")
 
             try:
-                pick = input("Seleccione indicador (número) o 0 para terminar: ").strip()
+                pick = input(
+                    "Seleccione indicador (n\u00famero) o 0 para terminar: "
+                ).strip()
             except (KeyboardInterrupt, EOFError):
                 return
 
             if pick == "0":
                 if not indicators_list:
-                    console.print("[red]Debe agregar al menos un indicador.[/]")
+                    console.print(
+                        "[red]Debe agregar al menos un indicador.[/]"
+                    )
                     continue
                 break
 
             if not pick.isdigit() or int(pick) < 1 or int(pick) > len(INDICATOR_DEFS):
-                console.print(f"[red]Ingrese un número entre 1 y {len(INDICATOR_DEFS)}.[/]")
+                console.print(
+                    f"[red]Ingrese un n\u00famero entre 1 y {len(INDICATOR_DEFS)}.[/]"
+                )
                 continue
 
             selected = INDICATOR_DEFS[int(pick) - 1]
             indicator: dict = {"name": selected["name"], "params": {}}
 
             # Stage 3: Configure params
-            console.print(f"\n[bold]Stage 3/12 — Parámetros: {selected['label']}[/]")
+            console.print(
+                f"\n[bold]Stage 3/12 — "
+                f"Par\u00e1metros: {selected['label']}[/]"
+            )
             for pdef in selected.get("params", []):
                 key = pdef["key"]
                 label = pdef["label"]
@@ -848,8 +1182,8 @@ def _builder_flow(console) -> None:
 
                 while True:
                     try:
-                        prompt = f"  {label} ({default}): "
-                        val_raw = input(prompt).strip()
+                        pr = f"  {label} ({default}): "
+                        val_raw = input(pr).strip()
                     except (KeyboardInterrupt, EOFError):
                         return
 
@@ -858,16 +1192,18 @@ def _builder_flow(console) -> None:
 
                     if ptype == "int":
                         if not val_raw.lstrip("-").isdigit():
-                            console.print("[red]Debe ingresar un número entero.[/]")
+                            console.print(
+                                "[red]Debe ingresar un n\u00famero entero.[/]"
+                            )
                             continue
                         val = int(val_raw)
                         pmin = pdef.get("min")
                         pmax = pdef.get("max")
                         if pmin is not None and val < pmin:
-                            console.print(f"[red]Mínimo: {pmin}[/]")
+                            console.print(f"[red]M\u00ednimo: {pmin}[/]")
                             continue
                         if pmax is not None and val > pmax:
-                            console.print(f"[red]Máximo: {pmax}[/]")
+                            console.print(f"[red]M\u00e1ximo: {pmax}[/]")
                             continue
                         indicator["params"][key] = val
                         break
@@ -875,26 +1211,33 @@ def _builder_flow(console) -> None:
                         try:
                             val = float(val_raw)
                         except ValueError:
-                            console.print("[red]Debe ingresar un número decimal.[/]")
+                            console.print(
+                                "[red]Debe ingresar un n\u00famero decimal.[/]"
+                            )
                             continue
                         pmin = pdef.get("min")
                         pmax = pdef.get("max")
                         if pmin is not None and val < pmin:
-                            console.print(f"[red]Mínimo: {pmin}[/]")
+                            console.print(f"[red]M\u00ednimo: {pmin}[/]")
                             continue
                         if pmax is not None and val > pmax:
-                            console.print(f"[red]Máximo: {pmax}[/]")
+                            console.print(f"[red]M\u00e1ximo: {pmax}[/]")
                             continue
                         indicator["params"][key] = val
                         break
                     elif ptype == "select":
                         options = pdef.get("options", [])
-                        console.print(f"    Opciones: {', '.join(options)}")
+                        console.print(
+                            f"    Opciones: {', '.join(options)}"
+                        )
                         if val_raw in options:
                             indicator["params"][key] = val_raw
                             break
                         else:
-                            console.print(f"[red]Seleccione una de: {', '.join(options)}[/]")
+                            console.print(
+                                f"[red]Seleccione una de: "
+                                f"{', '.join(options)}[/]"
+                            )
                             continue
                     else:
                         indicator["params"][key] = val_raw
@@ -903,10 +1246,15 @@ def _builder_flow(console) -> None:
             indicators_list.append(indicator)
 
             # Stage 4: Add more?
-            console.print(f"\n[bold]Stage 4/12 — Indicador '{selected['name']}' agregado.[/]")
+            console.print(
+                f"\n[bold]Stage 4/12 — "
+                f"Indicador '{selected['name']}' agregado.[/]"
+            )
             while True:
                 try:
-                    more = input("¿Agregar otro indicador? (s/n): ").strip().lower()
+                    more = input(
+                        "\u00bfAgregar otro indicador? (s/n): "
+                    ).strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     return
                 if more in ("s", "n"):
@@ -915,30 +1263,122 @@ def _builder_flow(console) -> None:
             if more == "n":
                 break
 
+        # ── Remove indicators (edit mode only) ────────────────────────
+        if is_edit and len(indicators_list) > 1:
+            while True:
+                try:
+                    rm = input(
+                        "\u00bfEliminar alg\u00fan indicador? (s/n): "
+                    ).strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if rm in ("s", "n"):
+                    break
+                console.print("[red]Responda 's' o 'n'.[/]")
+            if rm == "s":
+                while len(indicators_list) > 1:
+                    console.print(
+                        "\nIndicadores (seleccione n\u00famero a eliminar):"
+                    )
+                    for idx, ind in enumerate(indicators_list, start=1):
+                        console.print(f"  [bold cyan]{idx}[/]  {ind['name']}")
+                    console.print("  [bold cyan]0[/]  Terminar")
+                    try:
+                        rm_pick = input(">> ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        break
+                    if rm_pick == "0":
+                        break
+                    if (
+                        rm_pick.isdigit()
+                        and 1 <= int(rm_pick) <= len(indicators_list)
+                    ):
+                        removed = indicators_list.pop(int(rm_pick) - 1)
+                        console.print(
+                            f"[green]Indicador '{removed['name']}' eliminado.[/]"
+                        )
+                    else:
+                        console.print("[red]N\u00famero inv\u00e1lido.[/]")
+
         # ── Stage 5: Entry rule ───────────────────────────────────────
-        console.print(f"\n[bold]Stage 5/12 — Regla de ENTRADA[/]")
-        entry_tree = _build_rule_conditions(console, indicators_list, "ENTRADA")
+        if is_edit and entry_tree.get("conditions"):
+            console.print(
+                f"\n[bold]Stage 5/12 — "
+                f"Regla de ENTRADA actual "
+                f"({len(entry_tree['conditions'])} condicion(es))[/]"
+            )
+            try:
+                mod = input(
+                    "\u00bfModificar regla de entrada? (s/n): "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if mod == "s":
+                entry_tree = _build_rule_conditions(
+                    console, indicators_list, "ENTRADA"
+                )
+        else:
+            console.print(f"\n[bold]Stage 5/12 — Regla de ENTRADA[/]")
+            entry_tree = _build_rule_conditions(
+                console, indicators_list, "ENTRADA"
+            )
         if entry_tree is None:
             return  # Ctrl+C during entry rule
 
         # ── Stage 6: Exit rule ────────────────────────────────────────
-        console.print(f"\n[bold]Stage 6/12 — Regla de SALIDA[/]")
-        exit_tree = _build_rule_conditions(console, indicators_list, "SALIDA")
+        if is_edit and exit_tree.get("conditions"):
+            console.print(
+                f"\n[bold]Stage 6/12 — "
+                f"Regla de SALIDA actual "
+                f"({len(exit_tree['conditions'])} condicion(es))[/]"
+            )
+            try:
+                mod = input(
+                    "\u00bfModificar regla de salida? (s/n): "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if mod == "s":
+                exit_tree = _build_rule_conditions(
+                    console, indicators_list, "SALIDA"
+                )
+        else:
+            console.print(f"\n[bold]Stage 6/12 — Regla de SALIDA[/]")
+            exit_tree = _build_rule_conditions(
+                console, indicators_list, "SALIDA"
+            )
         if exit_tree is None:
             return  # Ctrl+C during exit rule
 
         # ── Stage 7: Symbol ───────────────────────────────────────────
-        console.print(f"\n[bold]Stage 7/12 — Símbolo[/]")
-        import re as _re
+        console.print(f"\n[bold]Stage 7/12 — S\u00edmbolo[/]")
         while True:
             try:
-                symbol = input("Símbolo para backtesting (default: SPY): ").strip().upper()
+                if is_edit:
+                    sym_prompt = (
+                        f"Valor actual: {pre_symbol}. "
+                        f"Enter para mantener: "
+                    )
+                else:
+                    sym_prompt = (
+                        "S\u00edmbolo para backtesting (default: SPY): "
+                    )
+                raw_sym = input(sym_prompt).strip().upper()
             except (KeyboardInterrupt, EOFError):
                 return
-            if not symbol:
+
+            if is_edit and not raw_sym:
+                symbol = pre_symbol
+                break
+            if not raw_sym:
                 symbol = "SPY"
-            if not _re.match(r"^[A-Z0-9]{1,10}$", symbol):
-                console.print("[red]Símbolo inválido. Use 1-10 caracteres alfanuméricos.[/]")
+            elif _re.match(r"^[A-Z0-9]{1,10}$", raw_sym):
+                symbol = raw_sym
+            else:
+                console.print(
+                    "[red]S\u00edmbolo inv\u00e1lido. "
+                    "Use 1-10 caracteres alfanum\u00e9ricos.[/]"
+                )
                 continue
             break
 
@@ -949,9 +1389,20 @@ def _builder_flow(console) -> None:
             console.print(f"  [bold cyan]{idx}[/]  {tf}")
         while True:
             try:
-                tf_raw = input("Timeframe (default: 1D): ").strip()
+                if is_edit:
+                    tf_prompt = (
+                        f"Valor actual: {pre_timeframe}. "
+                        f"Enter para mantener: "
+                    )
+                else:
+                    tf_prompt = "Timeframe (default: 1D): "
+                tf_raw = input(tf_prompt).strip()
             except (KeyboardInterrupt, EOFError):
                 return
+
+            if is_edit and not tf_raw:
+                timeframe = pre_timeframe
+                break
             if not tf_raw:
                 tf_raw = "1D"
             if tf_raw.isdigit():
@@ -962,18 +1413,32 @@ def _builder_flow(console) -> None:
             if tf_raw in VALID_TIMEFRAMES:
                 timeframe = tf_raw
                 break
-            console.print(f"[red]Timeframe inválido. Use un número (1-{len(sorted_tfs)}) o un valor válido.[/]")
+            console.print(
+                f"[red]Timeframe inv\u00e1lido. Use un n\u00famero "
+                f"(1-{len(sorted_tfs)}) o un valor v\u00e1lido.[/]"
+            )
 
         # ── Stage 9: Period ───────────────────────────────────────────
-        console.print(f"\n[bold]Stage 9/12 — Período[/]")
+        console.print(f"\n[bold]Stage 9/12 — Per\u00edodo[/]")
         period_options = ["1m", "3m", "6m", "1y", "2y", "5y"]
         for idx, po in enumerate(period_options, start=1):
             console.print(f"  [bold cyan]{idx}[/]  {po}")
         while True:
             try:
-                period_raw = input("Período (default: 2y): ").strip()
+                if is_edit:
+                    per_prompt = (
+                        f"Valor actual: {pre_period}. "
+                        f"Enter para mantener: "
+                    )
+                else:
+                    per_prompt = "Per\u00edodo (default: 2y): "
+                period_raw = input(per_prompt).strip()
             except (KeyboardInterrupt, EOFError):
                 return
+
+            if is_edit and not period_raw:
+                period = pre_period
+                break
             if not period_raw:
                 period = "2y"
                 break
@@ -985,7 +1450,10 @@ def _builder_flow(console) -> None:
             if period_raw in period_options:
                 period = period_raw
                 break
-            console.print(f"[red]Período inválido. Use un número (1-{len(period_options)}) o un valor válido.[/]")
+            console.print(
+                f"[red]Per\u00edodo inv\u00e1lido. Use un n\u00famero "
+                f"(1-{len(period_options)}) o un valor v\u00e1lido.[/]"
+            )
 
         # ── Stage 10: Backtest ────────────────────────────────────────
         console.print(f"\n[bold]Stage 10/12 — Backtest[/]")
@@ -997,20 +1465,20 @@ def _builder_flow(console) -> None:
             "indicators": indicators_list,
             "entry_rules": entry_tree,
             "exit_rules": exit_tree,
-            "risk_management": {
-                "stop_loss_pct": 2,
-                "take_profit_pct": 5,
-                "max_position_size": 1000,
-                "max_daily_loss": 500,
-            },
+            "risk_management": risk_mgmt,
         }
 
         backtest_ok = False
         while not backtest_ok:
             ok, err = validate_config(config)
             if not ok:
-                console.print(f"[red]Configuración inválida: {err}[/]")
-                console.print("[dim]Presiona Enter para volver al menú de estrategias.[/]")
+                console.print(
+                    f"[red]Configuraci\u00f3n inv\u00e1lida: {err}[/]"
+                )
+                console.print(
+                    "[dim]Presiona Enter para volver "
+                    "al men\u00fa de estrategias.[/]"
+                )
                 _wait_enter()
                 return
 
@@ -1025,7 +1493,9 @@ def _builder_flow(console) -> None:
             except Exception as e:
                 console.print(f"[red]Error en backtest: {e}[/]")
                 try:
-                    retry = input("¿Reintentar? (s/n): ").strip().lower()
+                    retry = input(
+                        "\u00bfReintentar? (s/n): "
+                    ).strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     return
                 if retry != "s":
@@ -1034,9 +1504,11 @@ def _builder_flow(console) -> None:
 
             if "error" in result:
                 err_msg = result["error"]
-                console.print(f"[red]Backtest falló: {err_msg}[/]")
+                console.print(f"[red]Backtest fall\u00f3: {err_msg}[/]")
                 try:
-                    retry = input("¿Reintentar? (s/n): ").strip().lower()
+                    retry = input(
+                        "\u00bfReintentar? (s/n): "
+                    ).strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     return
                 if retry != "s":
@@ -1052,15 +1524,29 @@ def _builder_flow(console) -> None:
                 border_style="green",
                 header_style="bold white",
             )
-            bt_table.add_column("Métrica", style="bold cyan")
+            bt_table.add_column("M\u00e9trica", style="bold cyan")
             bt_table.add_column("Valor", justify="right")
             bt_table.add_row("Sharpe", f"{metrics.get('sharpe', 0):.2f}")
-            bt_table.add_row("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
-            bt_table.add_row("Win Rate", f"{metrics.get('win_rate', 0)*100:.1f}%")
-            bt_table.add_row("Max Drawdown", f"{metrics.get('max_drawdown', 0)*100:.2f}%")
-            bt_table.add_row("CAGR", f"{metrics.get('cagr', 0)*100:.2f}%")
-            bt_table.add_row("Total Return", f"{metrics.get('total_return', 0)*100:.2f}%")
-            bt_table.add_row("Num Trades", str(metrics.get('num_trades', 0)))
+            bt_table.add_row(
+                "Profit Factor", f"{metrics.get('profit_factor', 0):.2f}"
+            )
+            bt_table.add_row(
+                "Win Rate", f"{metrics.get('win_rate', 0)*100:.1f}%"
+            )
+            bt_table.add_row(
+                "Max Drawdown",
+                f"{metrics.get('max_drawdown', 0)*100:.2f}%",
+            )
+            bt_table.add_row(
+                "CAGR", f"{metrics.get('cagr', 0)*100:.2f}%"
+            )
+            bt_table.add_row(
+                "Total Return",
+                f"{metrics.get('total_return', 0)*100:.2f}%",
+            )
+            bt_table.add_row(
+                "Num Trades", str(metrics.get('num_trades', 0))
+            )
             console.print(bt_table)
             backtest_ok = True
 
@@ -1068,7 +1554,9 @@ def _builder_flow(console) -> None:
         console.print(f"\n[bold]Stage 11/12 — Guardar[/]")
         while True:
             try:
-                save = input("¿Guardar estrategia? (s/n): ").strip().lower()
+                save = input(
+                    "\u00bfGuardar estrategia? (s/n): "
+                ).strip().lower()
             except (KeyboardInterrupt, EOFError):
                 return
             if save in ("s", "n"):
@@ -1081,7 +1569,9 @@ def _builder_flow(console) -> None:
             except Exception as e:
                 console.print(f"[red]Error al guardar: {e}[/]")
             else:
-                console.print(f"[green]Estrategia guardada en: {path}[/]")
+                console.print(
+                    f"[green]Estrategia guardada en: {path}[/]"
+                )
 
         # ── Stage 12: Return ──────────────────────────────────────────
         console.print(f"\n[bold]Stage 12/12 — Listo[/]")

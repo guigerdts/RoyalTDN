@@ -30,12 +30,12 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: Estrategias Improvements
 
-- [ ] 3.1 `app.py` — `_get_strategy_params_summary(config)` → compact param string (≤40 chars)
-- [ ] 3.2 `app.py` — `_show_estrategias()`: unified table (Nombre, Tipo, Símbolo, Timeframe, Activa, Parámetros), sorted
-- [ ] 3.3 `app.py` — `_toggle_strategy(name, active, is_user, logs_dir)` writes `active` field to strategies.json
-- [ ] 3.4 `orchestrator.py` — `_build_strategies_list()` skips user strategies with `active: false`
-- [ ] 3.5 `app.py` — Strategy submenu: Toggle, Delete (user-only), Quick Backtest options; call `_log_activity()`
-- [ ] 3.6 `app.py` — `_builder_flow(existing_config=None)`: preload on edit, Enter=keep, saves as new version
+- [x] 3.1 `app.py` — `_get_strategy_params_summary(config)` → compact param string (≤50 chars)
+- [x] 3.2 `app.py` — `_show_estrategias()`: unified table (Nombre, Tipo, Activa, Parámetros), sorted alphabetically
+- [x] 3.3 `app.py` — `_toggle_strategy(name, active, is_user, logs_dir)` writes `active` field to strategies.json / StrategyStore
+- [x] 3.4 `orchestrator.py` — `_build_strategies_list()` + `_run_legacy_loop()` skip strategies with `active: false`
+- [x] 3.5 `app.py` — Strategy submenu: Toggle, Edit (user-only), Delete (user-only), Quick Backtest; all call `_log_activity()`
+- [x] 3.6 `app.py` — `_builder_flow(console, existing_config=None, logs_dir="logs")`: preload on edit, Enter=keep, saves as new version
 
 ## Phase 4: Dashboard Auto-refresh + Badges
 
