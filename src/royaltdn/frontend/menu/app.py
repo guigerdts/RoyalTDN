@@ -567,11 +567,11 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
         return
 
 
-# ── Estrategias (NO BUILDER) ──────────────────────────────────────────
+# ── Estrategias ───────────────────────────────────────────────────────
 
 
 def _show_estrategias(state_loader, console) -> None:
-    """Screen 3: List strategies from state + StrategyStore (no Builder)."""
+    """Screen 3: List strategies from state + StrategyStore, or launch builder."""
     from rich.table import Table
     from rich.panel import Panel
 
@@ -654,16 +654,451 @@ def _show_estrategias(state_loader, console) -> None:
                 # Already shown above, just wait
                 _wait_enter()
             elif sub == "2":
-                console.print(
-                    "[dim]Builder disponible en próxima versión[/]"
-                )
-                _wait_enter()
+                _builder_flow(console)
             else:
                 console.print("[bold red]Opción inválida.[/]")
                 _wait_enter()
 
     except KeyboardInterrupt:
         return
+
+
+# ── Builder (12 stages) ──────────────────────────────────────────────
+
+
+def _builder_flow(console) -> None:
+    """Interactive strategy builder — 12 stages, Rich console, no Textual."""
+    # ── Lazy imports (builder_state, schema, backtesting, store) ─────
+    from royaltdn.frontend.console.builder_state import (
+        INDICATOR_DEFS,
+        OPERATOR_GROUPS,
+        NEEDS_VALUE,
+        _build_tree,
+    )
+    from royaltdn.strategy.schema import validate_config, VALID_TIMEFRAMES
+    from royaltdn.strategy.backtesting import run_backtest
+    from royaltdn.strategy.strategy_store import StrategyStore
+
+    try:
+        indicators_list: list[dict] = []
+
+        # ── Stage 1: Name ─────────────────────────────────────────────
+        console.print("\n[bold]Stage 1/12 — Nombre de la estrategia[/]")
+        while True:
+            try:
+                raw = input("Nombre de la estrategia: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not raw:
+                console.print("[red]El nombre no puede estar vacío.[/]")
+                continue
+            import re
+            if not re.match(r"^[a-zA-Z0-9 _]+$", raw):
+                console.print(
+                    "[red]Solo se permiten letras, números, espacios y guiones bajos.[/]"
+                )
+                continue
+            strategy_name = raw
+            break
+
+        # ── Stages 2-4: Indicator loop ────────────────────────────────
+        while True:
+            # Stage 2: Pick indicator
+            console.print(f"\n[bold]Stage 2/12 — Seleccionar indicador ({len(indicators_list) + 1})[/]")
+            for idx, idef in enumerate(INDICATOR_DEFS, start=1):
+                console.print(f"  [bold cyan]{idx}[/]  {idef['label']}")
+            console.print("  [bold cyan]0[/]  Terminar selección")
+
+            try:
+                pick = input("Seleccione indicador (número) o 0 para terminar: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+
+            if pick == "0":
+                if not indicators_list:
+                    console.print("[red]Debe agregar al menos un indicador.[/]")
+                    continue
+                break
+
+            if not pick.isdigit() or int(pick) < 1 or int(pick) > len(INDICATOR_DEFS):
+                console.print(f"[red]Ingrese un número entre 1 y {len(INDICATOR_DEFS)}.[/]")
+                continue
+
+            selected = INDICATOR_DEFS[int(pick) - 1]
+            indicator: dict = {"name": selected["name"], "params": {}}
+
+            # Stage 3: Configure params
+            console.print(f"\n[bold]Stage 3/12 — Parámetros: {selected['label']}[/]")
+            for pdef in selected.get("params", []):
+                key = pdef["key"]
+                label = pdef["label"]
+                default = pdef.get("default", "")
+                ptype = pdef.get("type", "str")
+
+                while True:
+                    try:
+                        prompt = f"  {label} ({default}): "
+                        val_raw = input(prompt).strip()
+                    except (KeyboardInterrupt, EOFError):
+                        return
+
+                    if not val_raw:
+                        val_raw = str(default)
+
+                    if ptype == "int":
+                        if not val_raw.lstrip("-").isdigit():
+                            console.print("[red]Debe ingresar un número entero.[/]")
+                            continue
+                        val = int(val_raw)
+                        pmin = pdef.get("min")
+                        pmax = pdef.get("max")
+                        if pmin is not None and val < pmin:
+                            console.print(f"[red]Mínimo: {pmin}[/]")
+                            continue
+                        if pmax is not None and val > pmax:
+                            console.print(f"[red]Máximo: {pmax}[/]")
+                            continue
+                        indicator["params"][key] = val
+                        break
+                    elif ptype == "float":
+                        try:
+                            val = float(val_raw)
+                        except ValueError:
+                            console.print("[red]Debe ingresar un número decimal.[/]")
+                            continue
+                        pmin = pdef.get("min")
+                        pmax = pdef.get("max")
+                        if pmin is not None and val < pmin:
+                            console.print(f"[red]Mínimo: {pmin}[/]")
+                            continue
+                        if pmax is not None and val > pmax:
+                            console.print(f"[red]Máximo: {pmax}[/]")
+                            continue
+                        indicator["params"][key] = val
+                        break
+                    elif ptype == "select":
+                        options = pdef.get("options", [])
+                        console.print(f"    Opciones: {', '.join(options)}")
+                        if val_raw in options:
+                            indicator["params"][key] = val_raw
+                            break
+                        else:
+                            console.print(f"[red]Seleccione una de: {', '.join(options)}[/]")
+                            continue
+                    else:
+                        indicator["params"][key] = val_raw
+                        break
+
+            indicators_list.append(indicator)
+
+            # Stage 4: Add more?
+            console.print(f"\n[bold]Stage 4/12 — Indicador '{selected['name']}' agregado.[/]")
+            while True:
+                try:
+                    more = input("¿Agregar otro indicador? (s/n): ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if more in ("s", "n"):
+                    break
+                console.print("[red]Responda 's' o 'n'.[/]")
+            if more == "n":
+                break
+
+        # ── Stage 5: Entry rule ───────────────────────────────────────
+        console.print(f"\n[bold]Stage 5/12 — Regla de ENTRADA[/]")
+        entry_tree = _build_rule_conditions(console, indicators_list, "ENTRADA")
+        if entry_tree is None:
+            return  # Ctrl+C during entry rule
+
+        # ── Stage 6: Exit rule ────────────────────────────────────────
+        console.print(f"\n[bold]Stage 6/12 — Regla de SALIDA[/]")
+        exit_tree = _build_rule_conditions(console, indicators_list, "SALIDA")
+        if exit_tree is None:
+            return  # Ctrl+C during exit rule
+
+        # ── Stage 7: Symbol ───────────────────────────────────────────
+        console.print(f"\n[bold]Stage 7/12 — Símbolo[/]")
+        import re as _re
+        while True:
+            try:
+                symbol = input("Símbolo para backtesting (default: SPY): ").strip().upper()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not symbol:
+                symbol = "SPY"
+            if not _re.match(r"^[A-Z0-9]{1,10}$", symbol):
+                console.print("[red]Símbolo inválido. Use 1-10 caracteres alfanuméricos.[/]")
+                continue
+            break
+
+        # ── Stage 8: Timeframe ────────────────────────────────────────
+        console.print(f"\n[bold]Stage 8/12 — Timeframe[/]")
+        sorted_tfs = sorted(VALID_TIMEFRAMES)
+        for idx, tf in enumerate(sorted_tfs, start=1):
+            console.print(f"  [bold cyan]{idx}[/]  {tf}")
+        while True:
+            try:
+                tf_raw = input("Timeframe (default: 1D): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not tf_raw:
+                tf_raw = "1D"
+            if tf_raw.isdigit():
+                n = int(tf_raw)
+                if 1 <= n <= len(sorted_tfs):
+                    timeframe = sorted_tfs[n - 1]
+                    break
+            if tf_raw in VALID_TIMEFRAMES:
+                timeframe = tf_raw
+                break
+            console.print(f"[red]Timeframe inválido. Use un número (1-{len(sorted_tfs)}) o un valor válido.[/]")
+
+        # ── Stage 9: Period ───────────────────────────────────────────
+        console.print(f"\n[bold]Stage 9/12 — Período[/]")
+        period_options = ["1m", "3m", "6m", "1y", "2y", "5y"]
+        for idx, po in enumerate(period_options, start=1):
+            console.print(f"  [bold cyan]{idx}[/]  {po}")
+        while True:
+            try:
+                period_raw = input("Período (default: 2y): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if not period_raw:
+                period = "2y"
+                break
+            if period_raw.isdigit():
+                n = int(period_raw)
+                if 1 <= n <= len(period_options):
+                    period = period_options[n - 1]
+                    break
+            if period_raw in period_options:
+                period = period_raw
+                break
+            console.print(f"[red]Período inválido. Use un número (1-{len(period_options)}) o un valor válido.[/]")
+
+        # ── Stage 10: Backtest ────────────────────────────────────────
+        console.print(f"\n[bold]Stage 10/12 — Backtest[/]")
+        config = {
+            "version": 1,
+            "name": strategy_name,
+            "symbols": [symbol],
+            "timeframe": timeframe,
+            "indicators": indicators_list,
+            "entry_rules": entry_tree,
+            "exit_rules": exit_tree,
+            "risk_management": {
+                "stop_loss_pct": 2,
+                "take_profit_pct": 5,
+                "max_position_size": 1000,
+                "max_daily_loss": 500,
+            },
+        }
+
+        backtest_ok = False
+        while not backtest_ok:
+            ok, err = validate_config(config)
+            if not ok:
+                console.print(f"[red]Configuración inválida: {err}[/]")
+                console.print("[dim]Presiona Enter para volver al menú de estrategias.[/]")
+                _wait_enter()
+                return
+
+            console.print("[yellow]Ejecutando backtest...[/]")
+            try:
+                result = run_backtest(
+                    config,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    period=period,
+                )
+            except Exception as e:
+                console.print(f"[red]Error en backtest: {e}[/]")
+                try:
+                    retry = input("¿Reintentar? (s/n): ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if retry != "s":
+                    return
+                continue
+
+            if "error" in result:
+                err_msg = result["error"]
+                console.print(f"[red]Backtest falló: {err_msg}[/]")
+                try:
+                    retry = input("¿Reintentar? (s/n): ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if retry != "s":
+                    return
+                continue
+
+            # Show results
+            metrics = result.get("metrics", {})
+            from rich.table import Table as RichTable
+
+            bt_table = RichTable(
+                title="Resultados del Backtest",
+                border_style="green",
+                header_style="bold white",
+            )
+            bt_table.add_column("Métrica", style="bold cyan")
+            bt_table.add_column("Valor", justify="right")
+            bt_table.add_row("Sharpe", f"{metrics.get('sharpe', 0):.2f}")
+            bt_table.add_row("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
+            bt_table.add_row("Win Rate", f"{metrics.get('win_rate', 0)*100:.1f}%")
+            bt_table.add_row("Max Drawdown", f"{metrics.get('max_drawdown', 0)*100:.2f}%")
+            bt_table.add_row("CAGR", f"{metrics.get('cagr', 0)*100:.2f}%")
+            bt_table.add_row("Total Return", f"{metrics.get('total_return', 0)*100:.2f}%")
+            bt_table.add_row("Num Trades", str(metrics.get('num_trades', 0)))
+            console.print(bt_table)
+            backtest_ok = True
+
+        # ── Stage 11: Save ────────────────────────────────────────────
+        console.print(f"\n[bold]Stage 11/12 — Guardar[/]")
+        while True:
+            try:
+                save = input("¿Guardar estrategia? (s/n): ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if save in ("s", "n"):
+                break
+            console.print("[red]Responda 's' o 'n'.[/]")
+
+        if save == "s":
+            try:
+                path = StrategyStore().save(config)
+            except Exception as e:
+                console.print(f"[red]Error al guardar: {e}[/]")
+            else:
+                console.print(f"[green]Estrategia guardada en: {path}[/]")
+
+        # ── Stage 12: Return ──────────────────────────────────────────
+        console.print(f"\n[bold]Stage 12/12 — Listo[/]")
+        console.print("[dim]Presiona Enter para continuar[/]")
+        _wait_enter()
+
+    except KeyboardInterrupt:
+        return
+
+
+def _build_rule_conditions(
+    console,
+    indicators_list: list[dict],
+    rule_name: str,
+) -> dict | None:
+    """Build a rule conditions tree for entry or exit rules.
+    
+    Returns the condition tree dict, or None if user pressed Ctrl+C.
+    """
+    from royaltdn.frontend.console.builder_state import (
+        OPERATOR_GROUPS,
+        NEEDS_VALUE,
+        _build_tree,
+    )
+
+    try:
+        num_conds_raw = input(f"Número de condiciones para {rule_name}: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+    if not num_conds_raw.isdigit() or int(num_conds_raw) < 1:
+        console.print("[red]Debe ingresar al menos 1 condición. Usando 1.[/]")
+        num_conds = 1
+    else:
+        num_conds = int(num_conds_raw)
+
+    conditions: list[dict] = []
+
+    for i in range(1, num_conds + 1):
+        console.print(f"\n[bold]Condición {i} de {num_conds}[/]")
+
+        # Pick indicator from the already-selected list
+        console.print("  Indicadores disponibles:")
+        for idx, ind in enumerate(indicators_list, start=1):
+            console.print(f"    [bold cyan]{idx}[/]  {ind['name']}")
+        while True:
+            try:
+                ind_pick = input(f"  Indicador {i}: seleccione número: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if not ind_pick.isdigit() or int(ind_pick) < 1 or int(ind_pick) > len(indicators_list):
+                console.print(f"[red]Ingrese un número entre 1 y {len(indicators_list)}.[/]")
+                continue
+            break
+
+        selected_indicator = indicators_list[int(ind_pick) - 1]
+        indicator_name = selected_indicator["name"]
+        indicator_params = selected_indicator["params"]
+
+        # Pick operator group
+        console.print("  Grupos de operadores:")
+        for gidx, grp in enumerate(OPERATOR_GROUPS, start=1):
+            ops_list = ", ".join(o["label"] for o in grp["operators"])
+            console.print(f"    [bold cyan]{gidx}[/]  {grp['group']}: {ops_list}")
+        while True:
+            try:
+                g_pick = input("  Grupo de operador: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if not g_pick.isdigit() or int(g_pick) < 1 or int(g_pick) > len(OPERATOR_GROUPS):
+                console.print(f"[red]Ingrese un número entre 1 y {len(OPERATOR_GROUPS)}.[/]")
+                continue
+            break
+
+        selected_group = OPERATOR_GROUPS[int(g_pick) - 1]
+
+        # Pick specific operator within group
+        console.print(f"  Operadores en '{selected_group['group']}':")
+        for oidx, op in enumerate(selected_group["operators"], start=1):
+            console.print(f"    [bold cyan]{oidx}[/]  {op['label']}")
+        while True:
+            try:
+                op_pick = input("  Operador: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if not op_pick.isdigit() or int(op_pick) < 1 or int(op_pick) > len(selected_group["operators"]):
+                console.print(f"[red]Ingrese un número entre 1 y {len(selected_group['operators'])}.[/]")
+                continue
+            break
+
+        selected_op = selected_group["operators"][int(op_pick) - 1]
+        operator_key = selected_op["key"]
+
+        cond: dict = {
+            "indicator": indicator_name,
+            "params": indicator_params,
+            "operator": operator_key,
+        }
+
+        if operator_key in NEEDS_VALUE:
+            while True:
+                try:
+                    val_raw = input("  Valor: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return None
+                try:
+                    cond["value"] = float(val_raw)
+                    break
+                except ValueError:
+                    console.print("[red]Debe ingresar un valor numérico.[/]")
+                    continue
+
+        conditions.append(cond)
+
+    # Logic (AND/OR) if more than 1 condition
+    logic = "AND"
+    if num_conds > 1:
+        while True:
+            try:
+                logic_raw = input("Lógica entre condiciones (AND/OR): ").strip().upper()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if logic_raw in ("AND", "OR"):
+                logic = logic_raw
+                break
+            console.print("[red]Ingrese AND o OR.[/]")
+
+    return _build_tree(logic, conditions)
 
 
 # ── Trades ─────────────────────────────────────────────────────────────
