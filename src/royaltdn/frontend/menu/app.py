@@ -6,6 +6,7 @@ All imports are lazy (function-level) to avoid import errors at module load.
 
 import time
 
+_last_menu_visit: float = 0.0
 
 # ── Entry point ────────────────────────────────────────────────────────
 
@@ -22,11 +23,14 @@ def run_menu(logs_dir: str = "logs") -> None:
     setup_console_log_handler(log_buffer)
     console = Console(color_system="standard")
 
+    _log_activity("Menú iniciado", logs_dir)
+
     try:
         while True:
             _clear_screen()
             _print_header(console)
-            _print_menu(console)
+            badges = _check_notifications(state_loader)
+            _print_menu(console, badges=badges)
             try:
                 cmd = input(">> ").strip()
             except KeyboardInterrupt:
@@ -64,6 +68,8 @@ def run_menu(logs_dir: str = "logs") -> None:
     except KeyboardInterrupt:
         pass  # fall through to stop message
 
+    _last_menu_visit = time.time()
+    _log_activity("Menú finalizado", logs_dir)
     console.print("[bold yellow]Bot detenido.[/]")
 
 
@@ -76,7 +82,7 @@ def _clear_screen() -> None:
 
 
 def _print_header(console) -> None:
-    """Render a Rich Panel header with bot title."""
+    """Render a Rich Panel header with bot title and PAUSADO status."""
     from rich.panel import Panel
     from rich.text import Text
 
@@ -90,9 +96,11 @@ def _print_header(console) -> None:
             padding=(0, 1),
         )
     )
+    if _is_bot_paused():
+        console.print(Text("PAUSADO", style="bold yellow"))
 
 
-def _print_menu(console) -> None:
+def _print_menu(console, badges: dict | None = None) -> None:
     """Render the main menu as a Rich Table."""
     from rich.table import Table
     from rich.text import Text
@@ -110,10 +118,23 @@ def _print_menu(console) -> None:
         ("6", "Control — pausar/reanudar bot"),
         ("0", "Salir"),
     ]
+
+    # Apply badges
+    if badges:
+        if badges.get("signals", 0) > 0:
+            n = badges["signals"]
+            items[1] = ("2", f"Scanner — resultados de escaneo \U0001f514 ({n} nuevas)")
+        if badges.get("trades", 0) > 0:
+            n = badges["trades"]
+            items[3] = ("4", f"Trades — historial y resumen \U0001f4b0 ({n} cerrados)")
+
     for key, desc in items:
         table.add_row(key, desc)
 
     console.print(table)
+
+    if badges and badges.get("paused", False):
+        console.print(Text("⚠ Bot paused — some actions may be limited", style="bold yellow"))
 
 
 def _wait_enter() -> None:
@@ -122,6 +143,91 @@ def _wait_enter() -> None:
         input()
     except (KeyboardInterrupt, EOFError):
         pass
+
+
+# ── Cross-cutting helpers (Fase 11) ────────────────────────────────────
+
+
+def _log_activity(mensaje: str, logs_dir: str = "logs") -> None:
+    """Append a timestamped entry to ``logs/user_activity.log``.
+
+    OSError is silently ignored — the menu must never crash from logging.
+    """
+    import os
+    from datetime import datetime
+
+    try:
+        log_path = os.path.join(logs_dir, "user_activity.log")
+        os.makedirs(logs_dir, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {mensaje}\n")
+    except OSError:
+        pass
+
+
+def _is_bot_paused(logs_dir: str = "logs") -> bool:
+    """Check whether the bot is currently paused by reading ``status.json``.
+
+    Returns ``True`` if ``paused`` is true OR ``bot_status == "PAUSADO"``.
+    FileNotFoundError / JSONDecodeError / OSError → ``False``.
+    """
+    import json
+    import os
+
+    path = os.path.join(logs_dir, "status.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return bool(data.get("paused", False)) or data.get("bot_status") == "PAUSADO"
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+
+
+def _check_notifications(state_loader) -> dict:
+    """Detect new signals, new trades, and pending pause signal.
+
+    Compares JSON timestamps against ``_last_menu_visit``.
+    First visit (``_last_menu_visit == 0.0``) returns all zeros.
+    """
+    from datetime import datetime
+
+    global _last_menu_visit
+
+    signals_data = state_loader._load_file("signals.json", {})
+    trades_data = state_loader._load_file("trades.json", {})
+
+    new_signals = 0
+    if _last_menu_visit > 0:
+        last_signals = signals_data.get("last_signals", [])
+        if isinstance(last_signals, list) and last_signals:
+            ts = last_signals[0].get("timestamp", "")
+            if ts:
+                try:
+                    parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if parsed.timestamp() > _last_menu_visit:
+                        new_signals = 1
+                except (ValueError, TypeError):
+                    pass
+
+    new_trades = 0
+    if _last_menu_visit > 0:
+        trades_list = trades_data.get("trades", [])
+        if isinstance(trades_list, list) and trades_list:
+            ts = trades_list[-1].get("exit_at", "")
+            if ts:
+                try:
+                    parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if parsed.timestamp() > _last_menu_visit:
+                        new_trades = 1
+                except (ValueError, TypeError):
+                    pass
+
+    paused = False
+    pause_data = state_loader._load_file("pause_signal.json", {})
+    if pause_data and pause_data.get("action") == "pause":
+        paused = True
+
+    return {"signals": new_signals, "trades": new_trades, "paused": paused}
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────
@@ -232,8 +338,13 @@ def _build_kpis(
         if isinstance(last, dict) and last.get("timestamp"):
             scanner_info = str(last["timestamp"])[-8:]
 
+    bot_status = status.get("bot_status", "\u2014")
+    is_paused = status.get("paused", False) or bot_status == "PAUSADO"
+    status_style = "bold yellow" if is_paused else "bold white"
+    status_label = "PAUSADO" if is_paused else bot_status
+
     rows = [
-        ("Status", status.get("bot_status", "\u2014"), "bold white"),
+        ("Status", status_label, status_style),
         ("Equity", f"${float(equity.get('current_equity', 0)):,.2f}", "bold cyan"),
         (
             "P&L D\u00eda",
@@ -1336,9 +1447,12 @@ def _show_control(console, logs_dir: str) -> None:
             status = get_bot_status(logs_dir)
             if status:
                 bot_state = status.get("bot_status", "unknown")
+                paused = status.get("paused", False)
+                bot_style = "bold yellow" if (paused or bot_state == "PAUSADO") else "bold green"
+                bot_display = "PAUSADO" if (paused or bot_state == "PAUSADO") else bot_state
                 uptime = status.get("uptime", "\u2014")
                 status_text = (
-                    f"Bot: [bold green]{bot_state}[/]\n"
+                    f"Bot: [{bot_style}]{bot_display}[/]\n"
                     f"Uptime: [cyan]{uptime}[/]\n"
                     f"Última actualización: "
                     f"[dim]{status.get('last_update', '\u2014')}[/]"
@@ -1372,18 +1486,21 @@ def _show_control(console, logs_dir: str) -> None:
                 from royaltdn.frontend.console.commands import pause_bot
 
                 pause_bot(logs_dir)
+                _log_activity("Usuario pausó el bot", logs_dir)
                 console.print("[bold green]✅ Bot pausado[/]")
                 _wait_enter()
             elif sub == "2":
                 from royaltdn.frontend.console.commands import resume_bot
 
                 resume_bot(logs_dir)
+                _log_activity("Usuario reanudó el bot", logs_dir)
                 console.print("[bold green]✅ Bot reanudado[/]")
                 _wait_enter()
             elif sub == "3":
                 from royaltdn.frontend.console.commands import trigger_scanner
 
                 trigger_scanner(logs_dir)
+                _log_activity("Usuario forzó escaneo", logs_dir)
                 console.print("[bold green]✅ Scanner disparado[/]")
                 _wait_enter()
             else:
