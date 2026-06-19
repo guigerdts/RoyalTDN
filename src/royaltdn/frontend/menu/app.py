@@ -38,16 +38,22 @@ def run_menu(logs_dir: str = "logs") -> None:
                 cmd = "_ctrl_c"
 
             if cmd == "1":
+                _last_menu_visit = time.time()
                 _show_dashboard(state_loader, log_buffer, console)
             elif cmd == "2":
+                _last_menu_visit = time.time()
                 _show_scanner(state_loader, console, logs_dir)
             elif cmd == "3":
+                _last_menu_visit = time.time()
                 _show_estrategias(state_loader, console, logs_dir)
             elif cmd == "4":
-                _show_trades(state_loader, console)
+                _last_menu_visit = time.time()
+                _show_trades(state_loader, console, logs_dir)
             elif cmd == "5":
+                _last_menu_visit = time.time()
                 _show_logs(log_buffer, console)
             elif cmd == "6":
+                _last_menu_visit = time.time()
                 _show_control(console, logs_dir)
             elif cmd == "0":
                 break
@@ -320,74 +326,78 @@ def _toggle_strategy(
 
 
 def _show_dashboard(state_loader, log_buffer, console) -> None:
-    """Screen 1: Dashboard with KPIs, positions, signals, summary, logs."""
+    """Screen 1: Dashboard with KPIs, positions, signals, summary, logs.
+
+    Supports auto-refresh countdown: prompts for interval, then re-renders
+    every N seconds with a 1-second countdown and optional early exit (0).
+    """
     from rich.text import Text
     from rich.table import Table
     from rich.panel import Panel
     from rich.console import Group
+    import select
+    import sys as _sys
+
+    def _render() -> None:
+        """Re-render full dashboard — clear, header, all sections."""
+        _clear_screen()
+        _print_header(console)
+
+        state = state_loader.load_all()
+        signals = state_loader._load_file("signals.json", {})
+        state["signals"] = signals
+        log_lines = log_buffer.get_lines()
+
+        sections: list = []
+        _build_kpis(state, sections, Panel, Table, Text)
+        _build_positions(state, sections, Panel, Table, Text)
+        _build_signals(state, sections, Panel, Table, Text)
+        _build_summary(state, sections, Panel, Table, Text)
+        _build_log_section(log_lines, sections, Panel, Text)
+        console.print(Group(*sections))
 
     try:
         while True:
-            _clear_screen()
-            _print_header(console)
+            _render()
 
-            state = state_loader.load_all()
-            # load_all() does NOT include signals; load separately
-            signals = state_loader._load_file("signals.json", {})
-            state["signals"] = signals
-            log_lines = log_buffer.get_lines()
-
-            sections: list = []
-
-            # ── KPIs ─────────────────────────────────────────────────
-            _build_kpis(state, sections, Panel, Table, Text)
-
-            # ── Open Positions ───────────────────────────────────────
-            _build_positions(state, sections, Panel, Table, Text)
-
-            # ── Last Signals ─────────────────────────────────────────
-            _build_signals(state, sections, Panel, Table, Text)
-
-            # ── Trade Summary ────────────────────────────────────────
-            _build_summary(state, sections, Panel, Table, Text)
-
-            # ── Logs (last 20) ──────────────────────────────────────
-            _build_log_section(log_lines, sections, Panel, Text)
-
-            console.print(Group(*sections))
-
-            # Prompt
             try:
-                cmd = input(
-                    "¿Actualizar? (Enter=sí, 0=volver, N=auto cada Ns): "
+                prompt = input(
+                    "\u00bfAuto-refresh? (Enter=5s, n\u00famero=segundos, N=manual): "
                 ).strip()
             except (KeyboardInterrupt, EOFError):
                 return
 
-            if cmd == "0":
-                return
+            if prompt == "":
+                interval = 5
+            elif prompt.upper() == "N":
+                # Manual mode — refresh once and re-prompt
+                continue
+            elif prompt.isdigit() and int(prompt) > 0:
+                interval = int(prompt)
+            else:
+                interval = 5
 
-            if cmd.isdigit() and int(cmd) > 0:
-                interval = int(cmd)
-                while True:
-                    try:
-                        time.sleep(interval)
-                    except KeyboardInterrupt:
-                        return  # Ctrl+C exits dashboard
-                    _clear_screen()
-                    _print_header(console)
-                    state = state_loader.load_all()
-                    signals = state_loader._load_file("signals.json", {})
-                    state["signals"] = signals
-                    log_lines = log_buffer.get_lines()
-                    sections = []
-                    _build_kpis(state, sections, Panel, Table, Text)
-                    _build_positions(state, sections, Panel, Table, Text)
-                    _build_signals(state, sections, Panel, Table, Text)
-                    _build_summary(state, sections, Panel, Table, Text)
-                    _build_log_section(log_lines, sections, Panel, Text)
-                    console.print(Group(*sections))
-            # Enter or anything else → loop and refresh
+            # ── Auto-refresh countdown loop ──────────────────────────
+            try:
+                for remaining in range(interval, 0, -1):
+                    _render()
+                    console.print(
+                        f"Pr\u00f3xima actualizaci\u00f3n en "
+                        f"{remaining}s... (0=volver)"
+                    )
+
+                    # Non-blocking check for "0" to cancel auto-refresh
+                    if select.select([_sys.stdin], [], [], 0)[0]:
+                        try:
+                            check = _sys.stdin.readline().strip()
+                        except (KeyboardInterrupt, EOFError):
+                            return
+                        if check == "0":
+                            break  # back to manual → re-prompt
+
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                return
 
     except KeyboardInterrupt:
         return
@@ -1705,122 +1715,534 @@ def _build_rule_conditions(
 # ── Trades ─────────────────────────────────────────────────────────────
 
 
-def _show_trades(state_loader, console) -> None:
-    """Screen 4: Trade summary + trade list with optional symbol filter."""
+def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
+    """Screen 4: Trade summary + trade list with symbol + date filter + submenu."""
     from rich.table import Table
     from rich.panel import Panel
     from rich.text import Text
 
     try:
-        _clear_screen()
-        _print_header(console)
+        while True:
+            _clear_screen()
+            _print_header(console)
 
-        data = state_loader.load_trades()
+            data = state_loader.load_trades()
+            all_trades = data.get("trades", [])
+            if not isinstance(all_trades, list):
+                all_trades = []
 
-        # Summary
-        total = data.get("total_trades", 0)
-        win_rate = data.get("win_rate", 0)
-        profit_factor = data.get("profit_factor", 0)
-        total_pnl = data.get("total_pnl", 0)
+            # ── Summary (always shows unfiltered totals) ─────────────
+            total = data.get("total_trades", len(all_trades))
+            win_rate = data.get("win_rate", 0)
+            profit_factor = data.get("profit_factor", 0)
+            total_pnl = data.get("total_pnl", 0)
 
-        pnl_style = "green" if float(total_pnl) >= 0 else "red"
-        summary = Table.grid(padding=(0, 3))
-        summary.add_column(justify="center", ratio=1)
-        summary.add_row(
-            Text.assemble(("Total\n", "bold white"), (str(total), "bold white")),
-            Text.assemble(
-                ("Win Rate\n", "bold white"),
-                (f"{float(win_rate):.1f}%", "bold cyan"),
-            ),
-            Text.assemble(
-                ("Profit Factor\n", "bold white"),
-                (f"{float(profit_factor):.2f}", "bold cyan"),
-            ),
-            Text.assemble(
-                ("Total P&L\n", "bold white"),
-                (f"${float(total_pnl):+,.2f}", pnl_style),
-            ),
-        )
-        console.print(Panel(summary, title="Trade Summary", border_style="white"))
-
-        # Filter prompt
-        try:
-            symbol_filter = (
-                input("Filtrar por símbolo (Enter=todos): ").strip().upper()
+            pnl_style = "green" if float(total_pnl) >= 0 else "red"
+            summary = Table.grid(padding=(0, 3))
+            summary.add_column(justify="center", ratio=1)
+            summary.add_row(
+                Text.assemble(("Total\n", "bold white"), (str(total), "bold white")),
+                Text.assemble(
+                    ("Win Rate\n", "bold white"),
+                    (f"{float(win_rate):.1f}%", "bold cyan"),
+                ),
+                Text.assemble(
+                    ("Profit Factor\n", "bold white"),
+                    (f"{float(profit_factor):.2f}", "bold cyan"),
+                ),
+                Text.assemble(
+                    ("Total P&L\n", "bold white"),
+                    (f"${float(total_pnl):+,.2f}", pnl_style),
+                ),
             )
-        except (KeyboardInterrupt, EOFError):
-            return
+            console.print(Panel(summary, title="Trade Summary", border_style="white"))
 
-        trades_list = data.get("trades", [])
-        if not isinstance(trades_list, list):
-            trades_list = []
+            # ── Symbol filter ────────────────────────────────────────
+            try:
+                symbol_filter = (
+                    input("Filtrar por s\u00edmbolo (Enter=todos): ").strip().upper()
+                )
+            except (KeyboardInterrupt, EOFError):
+                return
 
-        if symbol_filter:
-            trades_list = [
-                t
-                for t in trades_list
-                if str(t.get("symbol", "")).upper() == symbol_filter
-            ]
+            filtered = all_trades
+            if symbol_filter:
+                filtered = [
+                    t for t in filtered
+                    if str(t.get("symbol", "")).upper() == symbol_filter
+                ]
 
-        if trades_list:
-            table = Table(
-                title=None, border_style="white", header_style="bold white"
+            # ── Period filter ────────────────────────────────────────
+            console.print()
+            console.print(
+                "[bold cyan]1[/] Hoy   "
+                "[bold cyan]2[/] Semana   "
+                "[bold cyan]3[/] Mes   "
+                "[bold cyan]4[/] Todo   "
+                "[bold cyan]5[/] Personalizado"
             )
-            table.add_column("Symbol", style="bold white")
-            table.add_column("Side")
-            table.add_column("Qty", justify="right")
-            table.add_column("Entry", justify="right")
-            table.add_column("Exit", justify="right")
-            table.add_column("P&L", justify="right")
+            try:
+                period_cmd = input(
+                    "Filtrar por per\u00edodo: "
+                ).strip()
+            except (KeyboardInterrupt, EOFError):
+                return
 
-            for t in trades_list:
-                if not isinstance(t, dict):
-                    continue
-                symbol = str(t.get("symbol", "\u2014"))
-                side = str(t.get("side", "\u2014"))
-                qty_raw = t.get("qty", t.get("quantity", "\u2014"))
-                qty = (
-                    f"{qty_raw:.4f}"
-                    if isinstance(qty_raw, (int, float))
-                    else str(qty_raw)
+            if period_cmd == "1":
+                from datetime import datetime, timedelta
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                filtered = _filter_trades_by_date(
+                    filtered, today.isoformat(), datetime.now().isoformat()
                 )
-                entry_raw = t.get("entry_price", t.get("price", 0))
-                entry = (
-                    f"${float(entry_raw):,.2f}" if entry_raw else "\u2014"
+            elif period_cmd == "2":
+                from datetime import datetime, timedelta
+                start = (datetime.now() - timedelta(days=7)).isoformat()
+                filtered = _filter_trades_by_date(
+                    filtered, start, datetime.now().isoformat()
                 )
-                exit_raw = t.get("exit_price", "")
-                exit_val = (
-                    f"${float(exit_raw):,.2f}" if exit_raw else "\u2014"
+            elif period_cmd == "3":
+                from datetime import datetime, timedelta
+                start = (datetime.now() - timedelta(days=30)).isoformat()
+                filtered = _filter_trades_by_date(
+                    filtered, start, datetime.now().isoformat()
                 )
-                pnl_raw = t.get("pnl", t.get("profit_loss", 0))
-                pnl = (
-                    f"${float(pnl_raw):+,.2f}"
-                    if isinstance(pnl_raw, (int, float))
-                    else "\u2014"
-                )
-                pnl_style = (
-                    "green"
-                    if (isinstance(pnl_raw, (int, float)) and pnl_raw >= 0)
-                    else "red"
-                )
-                table.add_row(
-                    symbol, side, qty, entry, exit_val, f"[{pnl_style}]{pnl}[/]"
-                )
+            elif period_cmd == "5":
+                try:
+                    s = input("Fecha inicio (YYYY-MM-DD): ").strip()
+                    e = input("Fecha fin (YYYY-MM-DD): ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if s and e:
+                    filtered = _filter_trades_by_date(filtered, s, e)
+            # "4" or anything else → no date filter
 
-            console.print(table)
-        else:
-            msg = (
-                f"No trades for symbol '{symbol_filter}'"
-                if symbol_filter
-                else "No trades yet"
+            # ── Recalculate metrics on filtered set ──────────────────
+            if filtered:
+                f_total = len(filtered)
+                wins = sum(1 for t in filtered if float(t.get("pnl", t.get("profit_loss", 0))) > 0)
+                losses = sum(1 for t in filtered if float(t.get("pnl", t.get("profit_loss", 0))) <= 0)
+                f_win_rate = (wins / f_total * 100) if f_total else 0.0
+                f_total_pnl = sum(float(t.get("pnl", t.get("profit_loss", 0))) for t in filtered)
+                winning_pnl = sum(
+                    float(t.get("pnl", t.get("profit_loss", 0)))
+                    for t in filtered
+                    if float(t.get("pnl", t.get("profit_loss", 0))) > 0
+                )
+                losing_pnl = sum(
+                    float(t.get("pnl", t.get("profit_loss", 0)))
+                    for t in filtered
+                    if float(t.get("pnl", t.get("profit_loss", 0))) < 0
+                )
+                f_profit_factor = (winning_pnl / abs(losing_pnl)) if losing_pnl else float("inf")
+
+                pnl_s = "green" if f_total_pnl >= 0 else "red"
+                f_summary = Table.grid(padding=(0, 3))
+                f_summary.add_column(justify="center", ratio=1)
+                f_summary.add_row(
+                    Text.assemble(("Filtrados\n", "bold white"), (str(f_total), "bold white")),
+                    Text.assemble(
+                        ("Win Rate\n", "bold white"),
+                        (f"{f_win_rate:.1f}%", "bold cyan"),
+                    ),
+                    Text.assemble(
+                        ("Profit Factor\n", "bold white"),
+                        (f"{f_profit_factor:.2f}" if f_profit_factor != float("inf") else "\u221e", "bold cyan"),
+                    ),
+                    Text.assemble(
+                        ("Total P&L\n", "bold white"),
+                        (f"${f_total_pnl:+,.2f}", pnl_s),
+                    ),
+                )
+                console.print(Panel(f_summary, title="Filtro", border_style="white"))
+
+                # ── Trade detail table ────────────────────────────────
+                table = Table(
+                    title=None, border_style="white", header_style="bold white"
+                )
+                table.add_column("Symbol", style="bold white")
+                table.add_column("Side")
+                table.add_column("Qty", justify="right")
+                table.add_column("Entry", justify="right")
+                table.add_column("Exit", justify="right")
+                table.add_column("P&L", justify="right")
+
+                for t in filtered:
+                    if not isinstance(t, dict):
+                        continue
+                    symbol = str(t.get("symbol", "\u2014"))
+                    side = str(t.get("side", "\u2014"))
+                    qty_raw = t.get("qty", t.get("quantity", "\u2014"))
+                    qty = (
+                        f"{qty_raw:.4f}"
+                        if isinstance(qty_raw, (int, float))
+                        else str(qty_raw)
+                    )
+                    entry_raw = t.get("entry_price", t.get("price", 0))
+                    entry = f"${float(entry_raw):,.2f}" if entry_raw else "\u2014"
+                    exit_raw = t.get("exit_price", "")
+                    exit_val = f"${float(exit_raw):,.2f}" if exit_raw else "\u2014"
+                    pnl_raw = t.get("pnl", t.get("profit_loss", 0))
+                    pnl = (
+                        f"${float(pnl_raw):+,.2f}"
+                        if isinstance(pnl_raw, (int, float))
+                        else "\u2014"
+                    )
+                    pnl_style = (
+                        "green"
+                        if (isinstance(pnl_raw, (int, float)) and pnl_raw >= 0)
+                        else "red"
+                    )
+                    table.add_row(
+                        symbol, side, qty, entry, exit_val, f"[{pnl_style}]{pnl}[/]"
+                    )
+                console.print(table)
+            else:
+                console.print("[dim]No hay trades para los filtros seleccionados.[/]")
+
+            # ── Submenu ──────────────────────────────────────────────
+            console.print()
+            console.print(
+                "[bold cyan]P[/] Rendimiento por estrategia   "
+                "[bold cyan]E[/] Exportar   "
+                "[bold cyan]S[/] Estad\u00edsticas   "
+                "[bold cyan]0[/] Volver"
             )
-            console.print(f"[dim]{msg}[/]")
+            try:
+                sub = input(">> ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
 
-        console.print("\n[dim]Presiona Enter para volver[/]")
-        _wait_enter()
+            if sub == "0":
+                return
+            if sub == "p":
+                _show_performance_by_strategy(filtered, console)
+                _wait_enter()
+                continue
+            if sub == "e":
+                _export_trades(filtered, console, logs_dir)
+                _wait_enter()
+                continue
+            if sub == "s":
+                _show_advanced_stats(filtered, console)
+                _wait_enter()
+                continue
+            # Anything else → loop (re-prompt with fresh data)
 
     except KeyboardInterrupt:
         return
+
+
+def _filter_trades_by_date(
+    trades: list[dict], start_date: str, end_date: str
+) -> list[dict]:
+    """Filter trades by comparing ``entry_at`` or ``exit_at`` ISO timestamps.
+
+    Returns trades whose entry or exit falls within [start_date, end_date]
+    (inclusive). If the end_date is a date-only string (no time component),
+    it is extended to the end of that day (23:59:59). Trades without
+    timestamp data are excluded.
+    """
+    from datetime import datetime
+
+    def _parse(ts: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
+    start = _parse(start_date)
+    end = _parse(end_date)
+    if start is None or end is None:
+        return trades  # no filter on parse failure
+
+    # If end_date is date-only (no time component), extend to end of day
+    if "T" not in end_date and " " not in end_date:
+        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    result: list[dict] = []
+    for t in trades:
+        entry_ts = t.get("entry_at") or t.get("entry_time") or t.get("timestamp", "")
+        exit_ts = t.get("exit_at") or t.get("exit_time", "")
+        ts = entry_ts or exit_ts
+        if not ts:
+            continue
+        parsed = _parse(str(ts))
+        if parsed and start <= parsed <= end:
+            result.append(t)
+    return result
+
+
+def _show_performance_by_strategy(trades: list[dict], console) -> None:
+    """Group trades by ``strategy`` field and display performance metrics.
+
+    Shows a Rich table with columns: Estrategia, Trades, Win Rate, P&L, Profit Factor.
+    Sorted by P&L descending. Trades without ``strategy`` field are grouped
+    as "Sin estrategia".
+    """
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+
+    groups: dict[str, list[dict]] = {}
+    for t in trades:
+        strategy = t.get("strategy") or t.get("strategy_name") or "Sin estrategia"
+        strategy = str(strategy)
+        groups.setdefault(strategy, []).append(t)
+
+    if not groups:
+        console.print("[dim]No hay trades para agrupar por estrategia.[/]")
+        return
+
+    rows: list[dict] = []
+    for strategy, group in groups.items():
+        n = len(group)
+        wins = sum(1 for t in group if float(t.get("pnl", t.get("profit_loss", 0))) > 0)
+        losses = n - wins
+        win_rate = (wins / n * 100) if n else 0.0
+        total_pnl = sum(float(t.get("pnl", t.get("profit_loss", 0))) for t in group)
+        winning_pnl = sum(
+            float(t.get("pnl", t.get("profit_loss", 0)))
+            for t in group if float(t.get("pnl", t.get("profit_loss", 0))) > 0
+        )
+        losing_pnl = sum(
+            float(t.get("pnl", t.get("profit_loss", 0)))
+            for t in group if float(t.get("pnl", t.get("profit_loss", 0))) < 0
+        )
+        profit_factor = (winning_pnl / abs(losing_pnl)) if losing_pnl else float("inf")
+
+        rows.append({
+            "strategy": strategy,
+            "trades": n,
+            "win_rate": win_rate,
+            "pnl": total_pnl,
+            "profit_factor": profit_factor,
+        })
+
+    rows.sort(key=lambda r: r["pnl"], reverse=True)
+
+    table = Table(
+        title=None,
+        border_style="white",
+        header_style="bold white",
+    )
+    table.add_column("Estrategia", style="bold white")
+    table.add_column("Trades", justify="right")
+    table.add_column("Win Rate", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("Profit Factor", justify="right")
+
+    for r in rows:
+        pnl_style = "green" if r["pnl"] >= 0 else "red"
+        pf_str = (
+            f"{r['profit_factor']:.2f}"
+            if r["profit_factor"] != float("inf")
+            else "\u221e"
+        )
+        table.add_row(
+            r["strategy"],
+            str(r["trades"]),
+            f"{r['win_rate']:.1f}%",
+            f"[{pnl_style}]${r['pnl']:+,.2f}[/]",
+            pf_str,
+        )
+
+    console.print(Panel(table, title="Rendimiento por Estrategia", border_style="white"))
+
+
+def _export_trades(
+    trades: list[dict], console, logs_dir: str = "logs"
+) -> None:
+    """Export filtered trades to CSV or JSON in an ``exports/`` directory.
+
+    Prompts for format (1 CSV, 2 JSON) and filename. Creates ``exports/``
+    if missing. Calls ``_log_activity()`` on success.
+    """
+    import csv
+    import json
+    import os
+
+    try:
+        fmt = input("Formato: 1 CSV, 2 JSON: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    from datetime import datetime
+
+    date_str = datetime.now().strftime("%Y%m%d")
+
+    try:
+        name = input(
+            f"Nombre del archivo (default: trades_export_{date_str}): "
+        ).strip()
+        if not name:
+            name = f"trades_export_{date_str}"
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    exports_dir = os.path.join(logs_dir, "..", "exports") if logs_dir else "exports"
+    exports_dir = os.path.abspath(exports_dir)
+    os.makedirs(exports_dir, exist_ok=True)
+
+    try:
+        if fmt == "1":
+            # CSV
+            filename = f"{name}.csv"
+            path = os.path.join(exports_dir, filename)
+            fieldnames = [
+                "symbol", "side", "qty", "entry_price", "exit_price",
+                "pnl", "entry_at", "exit_at", "strategy",
+            ]
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(trades)
+            _log_activity(f"Usuario export\u00f3 trades a CSV ({filename})", logs_dir)
+            console.print(f"[green]Exportado a exports/{filename}[/]")
+        elif fmt == "2":
+            # JSON
+            filename = f"{name}.json"
+            path = os.path.join(exports_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(trades, f, indent=2, ensure_ascii=False)
+            _log_activity(f"Usuario export\u00f3 trades a JSON ({filename})", logs_dir)
+            console.print(f"[green]Exportado a exports/{filename}[/]")
+        else:
+            console.print("[red]Formato inv\u00e1lido. Use 1 para CSV o 2 para JSON.[/]")
+    except OSError as e:
+        console.print(f"[red]Error al exportar: {e}[/]")
+
+
+def _show_advanced_stats(trades: list[dict], console) -> None:
+    """Compute and display advanced trade statistics.
+
+    Includes: longest win/loss streaks, average duration (hours), best/worst
+    weekday by P&L, average P&L per trade, and monthly profit ratio (last 3
+    months if data available).
+    """
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from datetime import datetime, timedelta
+
+    if not trades:
+        console.print("[dim]No hay trades para calcular estad\u00edsticas.[/]")
+        return
+
+    # ── Consecutive streaks ───────────────────────────────────────────
+    max_win_streak = 0
+    max_loss_streak = 0
+    current_win_streak = 0
+    current_loss_streak = 0
+
+    for t in trades:
+        pnl = float(t.get("pnl", t.get("profit_loss", 0)))
+        if pnl > 0:
+            current_win_streak += 1
+            current_loss_streak = 0
+            max_win_streak = max(max_win_streak, current_win_streak)
+        elif pnl < 0:
+            current_loss_streak += 1
+            current_win_streak = 0
+            max_loss_streak = max(max_loss_streak, current_loss_streak)
+        else:
+            current_win_streak = 0
+            current_loss_streak = 0
+
+    # ── Average duration ──────────────────────────────────────────────
+    durations: list[float] = []
+    for t in trades:
+        entry_ts = t.get("entry_at") or t.get("entry_time") or t.get("timestamp", "")
+        exit_ts = t.get("exit_at") or t.get("exit_time", "")
+        if entry_ts and exit_ts:
+            try:
+                entry_dt = datetime.fromisoformat(str(entry_ts).replace("Z", "+00:00"))
+                exit_dt = datetime.fromisoformat(str(exit_ts).replace("Z", "+00:00"))
+                if exit_dt > entry_dt:
+                    durations.append((exit_dt - entry_dt).total_seconds() / 3600)
+            except (ValueError, TypeError):
+                pass
+
+    avg_duration = (
+        sum(durations) / len(durations) if durations else 0.0
+    )
+
+    # ── Best/worst weekday ────────────────────────────────────────────
+    weekday_pnl: dict[int, float] = {}
+    for t in trades:
+        ts_str = t.get("exit_at") or t.get("exit_time") or t.get("entry_at") or t.get("entry_time") or t.get("timestamp", "")
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                pnl = float(t.get("pnl", t.get("profit_loss", 0)))
+                weekday_pnl[dt.weekday()] = weekday_pnl.get(dt.weekday(), 0.0) + pnl
+            except (ValueError, TypeError):
+                pass
+
+    weekday_names = ["Lunes", "Martes", "Mi\u00e9rcoles", "Jueves", "Viernes", "S\u00e1bado", "Domingo"]
+    best_day = ""
+    worst_day = ""
+    if weekday_pnl:
+        best_wd = max(weekday_pnl, key=weekday_pnl.get)
+        worst_wd = min(weekday_pnl, key=weekday_pnl.get)
+        best_day = f"{weekday_names[best_wd]} (${weekday_pnl[best_wd]:+,.2f})"
+        worst_day = f"{weekday_names[worst_wd]} (${weekday_pnl[worst_wd]:+,.2f})"
+
+    # ── Average P&L per trade ─────────────────────────────────────────
+    total_pnl = sum(float(t.get("pnl", t.get("profit_loss", 0))) for t in trades)
+    avg_pnl = total_pnl / len(trades) if trades else 0.0
+
+    # ── Monthly profit ratio (last 3 months) ──────────────────────────
+    now = datetime.now()
+    monthly_pnl: dict[str, float] = {}
+    for t in trades:
+        ts_str = t.get("exit_at") or t.get("exit_time") or t.get("entry_at") or t.get("entry_time") or t.get("timestamp", "")
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                month_key = dt.strftime("%Y-%m")
+                if dt >= (now - timedelta(days=90)):
+                    pnl = float(t.get("pnl", t.get("profit_loss", 0)))
+                    monthly_pnl[month_key] = monthly_pnl.get(month_key, 0.0) + pnl
+            except (ValueError, TypeError):
+                pass
+
+    monthly_lines = ""
+    if monthly_pnl:
+        parts = []
+        for month in sorted(monthly_pnl.keys(), reverse=True):
+            m_pnl = monthly_pnl[month]
+            m_style = "green" if m_pnl >= 0 else "red"
+            parts.append(f"{month}: [{m_style}]${m_pnl:+,.2f}[/]")
+        monthly_lines = " | ".join(parts)
+
+    # ── Render ────────────────────────────────────────────────────────
+    table = Table.grid(padding=(0, 2))
+    table.add_column(justify="left", ratio=1)
+    table.add_column(justify="left")
+
+    rows_data = [
+        ("Racha m\u00e1s larga de ganancias", f"{max_win_streak} trades"),
+        ("Racha m\u00e1s larga de p\u00e9rdidas", f"{max_loss_streak} trades"),
+        ("Duraci\u00f3n media", f"{avg_duration:.1f} h"),
+        ("Mejor d\u00eda de la semana", best_day or "\u2014"),
+        ("Peor d\u00eda de la semana", worst_day or "\u2014"),
+        ("P&L medio por trade", f"${avg_pnl:+,.2f}"),
+    ]
+    for label, value in rows_data:
+        table.add_row(label, value)
+
+    console.print(Panel(table, title="Estad\u00edsticas Avanzadas", border_style="white"))
+
+    if monthly_lines:
+        console.print(
+            Panel(
+                Text.from_markup(
+                    f"Profit ratio mensual (\u00faltimos 3 meses):\n{monthly_lines}"
+                ),
+                title="Rendimiento Mensual",
+                border_style="white",
+            )
+        )
 
 
 # ── Logs ───────────────────────────────────────────────────────────────

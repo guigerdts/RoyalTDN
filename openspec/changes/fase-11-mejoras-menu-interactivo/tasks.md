@@ -39,16 +39,16 @@ Chain strategy: feature-branch-chain
 
 ## Phase 4: Dashboard Auto-refresh + Badges
 
-- [ ] 4.1 `app.py` — `_show_dashboard()`: countdown loop, `time.sleep(1)`, custom interval, Ctrl+C exit
-- [ ] 4.2 `app.py` — `_print_menu()`: accept `badges: dict | None`, append badge counts to option labels
+- [x] 4.1 `app.py` — `_show_dashboard()`: countdown loop, `time.sleep(1)`, custom interval, Ctrl+C exit
+- [x] 4.2 `app.py` — `_print_menu()`: accept `badges: dict | None`, append badge counts to option labels
 
 ## Phase 5: Trades Improvements
 
-- [ ] 5.1 `app.py` — `_show_trades()`: symbol → period filter (1 Hoy/2 Semana/3 Mes/4 Todo/5 Custom) → submenu
-- [ ] 5.2 `app.py` — `_filter_trades_by_date(trades, period, start, end)` → filtered list
-- [ ] 5.3 `app.py` — `_show_performance_by_strategy(trades, console)`: group by strategy field, show P&L
-- [ ] 5.4 `app.py` — `_export_trades(trades, console)`: CSV/JSON to `exports/`, call `_log_activity()`
-- [ ] 5.5 `app.py` — `_show_advanced_stats(trades, console)`: win/loss streaks, avg duration, best/worst day
+- [x] 5.1 `app.py` — `_show_trades()`: symbol → period filter (1 Hoy/2 Semana/3 Mes/4 Todo/5 Custom) → submenu
+- [x] 5.2 `app.py` — `_filter_trades_by_date(trades, start_date, end_date)` → filtered list
+- [x] 5.3 `app.py` — `_show_performance_by_strategy(trades, console)`: group by strategy field, show P&L
+- [x] 5.4 `app.py` — `_export_trades(trades, console, logs_dir)`: CSV/JSON to `exports/`, call `_log_activity()`
+- [x] 5.5 `app.py` — `_show_advanced_stats(trades, console)`: win/loss streaks, avg duration, best/worst day
 
 ## Phase 6: Control — Alert Thresholds
 
