@@ -38,13 +38,9 @@ class TestDashboard:
                 assert dashboard is not None
                 assert dashboard.display is True
 
-                # KPIs should render without error
-                kpi_grid = app.query_one("#kpi-grid")
-                assert kpi_grid is not None
-
-                # Positions table should exist
-                positions = app.query_one("#positions-table")
-                assert positions is not None
+                # RichLog content widget should exist
+                content = app.query_one("#dashboard-content")
+                assert content is not None
 
         _run_async(_test())
 
