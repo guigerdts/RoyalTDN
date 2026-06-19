@@ -9,6 +9,7 @@ Funciones:
 - get_atr: Cálculo de ATR(14) desde datos Alpaca
 """
 
+import json
 from datetime import datetime, timedelta
 
 from loguru import logger
@@ -132,6 +133,9 @@ def check_risk_limits(
       1. Drawdown diario > max_daily_loss_pct (default 3%) → KILL
       2. Pérdidas consecutivas > max_consecutive_losses (default 5) → KILL
 
+    Lee ``logs/alert_thresholds.json`` al inicio para sobreescribir los
+    valores por defecto si el archivo existe y tiene las claves esperadas.
+
     Args:
         account: Cuenta Alpaca (con .equity).
         initial_equity: Capital al inicio de la sesión.
@@ -143,6 +147,17 @@ def check_risk_limits(
         tuple[bool, str]: (kill_activated, reason).
         kill_activated=True → el bot debe cerrar todo y detenerse.
     """
+    # ── Read user-configured thresholds if available ─────────────────
+    try:
+        with open("logs/alert_thresholds.json", "r") as _f:
+            _thresholds = json.load(_f)
+        if "max_daily_drawdown_pct" in _thresholds:
+            max_daily_loss_pct = float(_thresholds["max_daily_drawdown_pct"]) / 100.0
+        if "max_consecutive_losses" in _thresholds:
+            max_consecutive_losses = int(_thresholds["max_consecutive_losses"])
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
     current_equity = float(account.equity)
     daily_loss_pct = (initial_equity - current_equity) / initial_equity
 

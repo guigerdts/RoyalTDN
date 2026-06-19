@@ -55,6 +55,12 @@ def run_menu(logs_dir: str = "logs") -> None:
             elif cmd == "6":
                 _last_menu_visit = time.time()
                 _show_control(console, logs_dir)
+            elif cmd == "7":
+                _last_menu_visit = time.time()
+                _show_simulation(state_loader, console, logs_dir)
+            elif cmd == "8":
+                _last_menu_visit = time.time()
+                _show_activity(console, logs_dir)
             elif cmd == "0":
                 break
             elif cmd == "_ctrl_c":
@@ -122,6 +128,8 @@ def _print_menu(console, badges: dict | None = None) -> None:
         ("4", "Trades — historial y resumen"),
         ("5", "Logs — registros del sistema"),
         ("6", "Control — pausar/reanudar bot"),
+        ("7", "Simulación — escenarios what-if"),
+        ("8", "Actividad — registro de acciones"),
         ("0", "Salir"),
     ]
 
@@ -398,6 +406,486 @@ def _show_dashboard(state_loader, log_buffer, console) -> None:
                     time.sleep(1)
             except KeyboardInterrupt:
                 return
+
+    except KeyboardInterrupt:
+        return
+
+
+# ── Control: Alert Config ────────────────────────────────────────────
+
+
+def _show_alert_config(console, logs_dir: str = "logs") -> None:
+    """Screen 6 submenu: Configure alert thresholds.
+
+    Reads ``logs/alert_thresholds.json`` with defaults:
+      - max_daily_drawdown_pct: 3.0
+      - max_consecutive_losses: 5
+      - daily_pnl_limit: 0 (0 = no limit)
+
+    User selects a param by number, enters a new value, validates, and
+    writes back to the JSON file.  Calls ``_log_activity()`` on change.
+    """
+    import json
+    import os
+
+    THRESHOLD_DEFS: list[tuple[str, str, float | int, float | int | None, float | int | None, type]] = [
+        ("max_daily_drawdown_pct", "Drawdown máximo diario", 3.0, 0.5, 20.0, float),
+        ("max_consecutive_losses", "Pérdidas consecutivas máximas", 5, 2, 10, int),
+        ("daily_pnl_limit", "P&L diario mínimo", 0, 0, None, float),
+    ]
+
+    config_path = os.path.join(logs_dir, "alert_thresholds.json")
+
+    def _load() -> dict:
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {key: dflt for key, _, dflt, _, _, _ in THRESHOLD_DEFS}
+
+    def _display(key: str, val: float | int) -> str:
+        if key == "max_daily_drawdown_pct":
+            return f"{val:.1f}%"
+        if key == "max_consecutive_losses":
+            return str(val)
+        if key == "daily_pnl_limit":
+            return "sin límite" if val == 0 else f"${val:.2f}"
+        return str(val)
+
+    try:
+        while True:
+            _clear_screen()
+            _print_header(console)
+
+            thresholds = _load()
+
+            console.print()
+            console.print("[bold]Umbrales de alerta[/]")
+            for idx, (key, name, dflt, *_) in enumerate(THRESHOLD_DEFS, start=1):
+                val = thresholds.get(key, dflt)
+                console.print(f"  [bold cyan]{idx}[/] {name}: {_display(key, val)}")
+            console.print("  [bold cyan]0[/] Volver")
+
+            try:
+                cmd = input(">> ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+
+            if cmd == "0":
+                return
+            if not cmd.isdigit() or not (1 <= int(cmd) <= len(THRESHOLD_DEFS)):
+                console.print("[bold red]Opción inválida.[/]")
+                _wait_enter()
+                continue
+
+            idx = int(cmd) - 1
+            key, name, default, vmin, vmax, vtype = THRESHOLD_DEFS[idx]
+            current = thresholds.get(key, default)
+
+            console.print(f"\n[bold]{name}[/]")
+            console.print(f"  Valor actual: {_display(key, current)}")
+
+            while True:
+                try:
+                    raw = input("  Nuevo valor: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    break
+
+                if not raw:
+                    continue
+
+                try:
+                    val = vtype(raw)
+                except ValueError:
+                    hint = "decimal" if vtype is float else "entero"
+                    console.print(f"[red]Ingrese un número {hint}.[/]")
+                    continue
+
+                if vmin is not None and val < vmin:
+                    console.print(
+                        f"[red]El valor mínimo es {vmin}.[/]"
+                    )
+                    continue
+                if vmax is not None and val > vmax:
+                    console.print(
+                        f"[red]El valor máximo es {vmax}.[/]"
+                    )
+                    continue
+
+                thresholds[key] = val
+                try:
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump(thresholds, f, indent=2, ensure_ascii=False)
+                    _log_activity(
+                        f"Usuario cambió umbral de {key} a {val}", logs_dir
+                    )
+                    console.print("[green]Umbral actualizado.[/]")
+                except OSError as e:
+                    console.print(f"[red]Error al guardar: {e}[/]")
+                break
+
+            _wait_enter()
+
+    except KeyboardInterrupt:
+        return
+
+
+# ── Simulation ───────────────────────────────────────────────────────
+
+
+def _show_simulation(
+    state_loader, console, logs_dir: str = "logs",
+) -> None:
+    """Screen 7: What-if simulation — modify a risk param and compare.
+
+    Lists strategies that have at least 1 historical trade, prompts for
+    a risk parameter and new value, runs ``_simulate_trades()``, and
+    displays an original vs simulated comparison table.
+    """
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    import os
+
+    try:
+        # ── Load trades ──────────────────────────────────────────
+        trades_data = state_loader.load_trades()
+        all_trades = trades_data.get("trades", [])
+        if not isinstance(all_trades, list) or not all_trades:
+            console.print("[dim]No hay trades históricos para simular.[/]")
+            _wait_enter()
+            return
+
+        # ── Build strategy list from trades + state ──────────────
+        strategy_names_in_trades: set[str] = set()
+        for t in all_trades:
+            name = t.get("strategy") or t.get("strategy_name") or ""
+            if name:
+                strategy_names_in_trades.add(str(name))
+
+        if not strategy_names_in_trades:
+            console.print(
+                "[dim]No hay trades con estrategia asignada para simular.[/]"
+            )
+            _wait_enter()
+            return
+
+        # Sort for consistent display
+        sorted_names = sorted(strategy_names_in_trades)
+
+        _clear_screen()
+        _print_header(console)
+        console.print()
+        console.print("[bold]Seleccionar estrategia para simular[/]")
+        for idx, name in enumerate(sorted_names, start=1):
+            console.print(f"  [bold cyan]{idx}[/] {name}")
+        console.print("  [bold cyan]0[/] Volver")
+
+        try:
+            pick = input(">> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if pick == "0" or not pick.isdigit():
+            return
+
+        sel_idx = int(pick) - 1
+        if sel_idx < 0 or sel_idx >= len(sorted_names):
+            console.print("[bold red]Selección inválida.[/]")
+            _wait_enter()
+            return
+
+        strategy_name = sorted_names[sel_idx]
+        # Filter trades for this strategy
+        sim_trades = [
+            t for t in all_trades
+            if (t.get("strategy") or t.get("strategy_name") or "") == strategy_name
+        ]
+
+        if not sim_trades:
+            console.print(
+                "[dim]Esta estrategia no tiene trades para simular.[/]"
+            )
+            _wait_enter()
+            return
+
+        # ── Build a minimal config from state ────────────────────
+        # Try to find the strategy config from state / store
+        sim_config: dict = {"risk_management": {}}
+        state_strategies = state_loader.load_strategies()
+        for s in state_strategies.get("strategies", []):
+            if isinstance(s, dict) and s.get("name") == strategy_name:
+                sim_config = dict(s)
+                break
+        if sim_config == {"risk_management": {}}:
+            # Try user strategies
+            try:
+                from royaltdn.strategy.strategy_store import StrategyStore as _SS
+                usr = _SS().load(strategy_name)
+                if usr is not None:
+                    sim_config = usr
+            except Exception:
+                pass
+
+        # ── Param selection ──────────────────────────────────────
+        console.print()
+        console.print("[bold]Modificar parámetro de riesgo[/]")
+        console.print("  [bold cyan]1[/] Stop loss (multiplicador ATR)")
+        console.print("  [bold cyan]2[/] Take profit (ratio)")
+        console.print("  [bold cyan]3[/] Tamaño de posición (% del capital)")
+        console.print("  [bold cyan]0[/] Volver")
+
+        try:
+            param_pick = input(">> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        param_map = {
+            "1": ("stop_loss", "stop_loss_pct"),
+            "2": ("take_profit", "take_profit_pct"),
+            "3": ("position_size", "max_position_size"),
+        }
+        if param_pick not in param_map:
+            return
+
+        param_key, _ = param_map[param_pick]
+
+        # ── Value prompt ─────────────────────────────────────────
+        console.print()
+        while True:
+            try:
+                raw = input("Nuevo valor: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+
+            if not raw:
+                continue
+
+            try:
+                new_val = float(raw)
+            except ValueError:
+                console.print("[red]Ingrese un número decimal.[/]")
+                continue
+
+            if param_key == "position_size":
+                if new_val < 1 or new_val > 100:
+                    console.print(
+                        "[red]El tamaño de posición debe estar entre 1% y 100%.[/]"
+                    )
+                    continue
+            elif new_val <= 0:
+                console.print("[red]El valor debe ser positivo.[/]")
+                continue
+            break
+
+        # ── Run simulation ───────────────────────────────────────
+        result = _simulate_trades(sim_trades, sim_config, param_key, new_val)
+
+        # Log activity
+        _log_activity(
+            f"Usuario ejecutó simulación de '{strategy_name}' "
+            f"cambiando '{param_key}' a {new_val}",
+            logs_dir,
+        )
+
+        # ── Comparison table ─────────────────────────────────────
+        _clear_screen()
+        _print_header(console)
+
+        table = Table(
+            title=f"Simulación: {strategy_name} — {param_key} = {new_val}",
+            border_style="white",
+            header_style="bold white",
+        )
+        table.add_column("Métrica", style="bold cyan")
+        table.add_column("Original", justify="right")
+        table.add_column("Simulado", justify="right")
+
+        pnl_o = result["original_pnl"]
+        pnl_s = result["simulated_pnl"]
+        pnl_o_style = "green" if pnl_o >= 0 else "red"
+        pnl_s_style = "green" if pnl_s >= 0 else "red"
+        table.add_row(
+            "P&L Total",
+            f"[{pnl_o_style}]\u200b${pnl_o:+,.2f}[/]",
+            f"[{pnl_s_style}]\u200b${pnl_s:+,.2f}[/]",
+        )
+        table.add_row(
+            "Drawdown Máx",
+            f"{result['original_dd']:.1f}%",
+            f"{result['simulated_dd']:.1f}%",
+        )
+        table.add_row(
+            "Win Rate",
+            f"{result['original_wr']:.1f}%",
+            f"{result['simulated_wr']:.1f}%",
+        )
+
+        console.print(Panel(table, border_style="white"))
+        console.print("\n[dim]Presiona Enter para volver[/]")
+        _wait_enter()
+
+    except KeyboardInterrupt:
+        return
+
+
+def _simulate_trades(
+    trades: list[dict],
+    config: dict,
+    param: str,
+    new_value: float,
+) -> dict:
+    """Recalculate P&L for historical trades adjusting a single risk param.
+
+    Clones the strategy config, applies the new param value, and
+    computes original vs simulated metrics:
+
+    - P&L Total
+    - Max Drawdown (simplified peak-to-trough)
+    - Win Rate
+
+    Args:
+        trades: List of trade dicts with ``pnl``, ``entry_price``,
+                ``exit_price``, ``qty``.
+        config: Strategy config dict (deep-copied internally).
+        param: ``"stop_loss"`` | ``"take_profit"`` | ``"position_size"``.
+        new_value: New value for the selected param.
+
+    Returns:
+        dict with ``original_pnl``, ``simulated_pnl``, ``original_dd``,
+        ``simulated_dd``, ``original_wr``, ``simulated_wr``.
+    """
+    import copy
+
+    # Clone config
+    sim_config = copy.deepcopy(config)
+
+    # Apply new risk param
+    if param == "stop_loss":
+        sim_config.setdefault("risk_management", {})["stop_loss_pct"] = new_value
+    elif param == "take_profit":
+        sim_config.setdefault("risk_management", {})["take_profit_pct"] = new_value
+    elif param == "position_size":
+        sim_config.setdefault("risk_management", {})["max_position_size"] = new_value
+
+    # Calculate original metrics
+    original_pnl = sum(t.get("pnl", 0) for t in trades)
+    original_wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
+    original_wr = (original_wins / len(trades) * 100) if trades else 0
+
+    # Simulate with new param
+    simulated_pnls: list[float] = []
+    for t in trades:
+        entry = t.get("entry_price", 0)
+        exit_price = t.get("exit_price", 0)
+        qty = t.get("qty", 1)
+        direction = 1  # long
+
+        # Adjust based on param
+        if param == "stop_loss":
+            stop_distance = entry * (new_value / 100.0)  # new_value = stop_loss_pct
+            new_exit = entry - stop_distance
+            if direction == 1:  # long
+                exit_price = min(exit_price, new_exit)
+        elif param == "take_profit":
+            tp_distance = entry * (new_value / 100.0)  # new_value = take_profit_pct
+            new_exit = entry + tp_distance
+            if direction == 1:  # long
+                exit_price = min(exit_price, new_exit)
+        elif param == "position_size":
+            qty = int(10000 * new_value / 100 / entry) if entry > 0 else qty
+            qty = max(1, qty)
+
+        simulated_pnl = (exit_price - entry) * qty * direction
+        simulated_pnls.append(simulated_pnl)
+
+    simulated_total = sum(simulated_pnls)
+    simulated_wins = sum(1 for p in simulated_pnls if p > 0)
+    simulated_wr = (simulated_wins / len(simulated_pnls) * 100) if simulated_pnls else 0
+
+    # Simple drawdown calc (peak-to-trough using cumulative)
+    def calc_drawdown(pnl_list: list[float]) -> float:
+        cum = 0.0
+        peak = 0.0
+        dd = 0.0
+        for p in pnl_list:
+            cum += p
+            if cum > peak:
+                peak = cum
+            dd = min(dd, cum - peak)
+        return dd / 10000.0 * 100 if peak > 0 else 0.0
+
+    original_dd = calc_drawdown([t.get("pnl", 0) for t in trades])
+    simulated_dd = calc_drawdown(simulated_pnls)
+
+    return {
+        "original_pnl": original_pnl,
+        "simulated_pnl": simulated_total,
+        "original_dd": original_dd,
+        "simulated_dd": simulated_dd,
+        "original_wr": original_wr,
+        "simulated_wr": simulated_wr,
+    }
+
+
+# ── Activity Log Viewer ──────────────────────────────────────────────
+
+
+def _show_activity(console, logs_dir: str = "logs") -> None:
+    """Screen 8: Activity log viewer — last 20 lines from user_activity.log.
+
+    Shows timestamped entries with:
+      - timestamp in dim white
+      - message in white
+
+    If the file doesn't exist or is empty, shows a dim placeholder.
+    """
+    import os
+
+    try:
+        path = os.path.join(logs_dir, "user_activity.log")
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except (FileNotFoundError, OSError):
+            lines = []
+
+        _clear_screen()
+        _print_header(console)
+        console.print()
+
+        if not lines:
+            console.print("[dim]No hay actividad registrada aún.[/]")
+        else:
+            # Show last 20
+            from rich.text import Text
+
+            display = lines[-20:]
+            for line in display:
+                line = line.strip()
+                if not line:
+                    continue
+                # Split timestamp from message
+                if line.startswith("[") and "]" in line:
+                    ts_end = line.index("]") + 1
+                    ts = line[:ts_end]
+                    msg = line[ts_end:].strip()
+                    console.print(Text.assemble(
+                        (ts, "dim white"),
+                        (" ", ""),
+                        (msg, "white"),
+                    ))
+                else:
+                    console.print(line)
+
+            if len(lines) > 20:
+                console.print(
+                    "\n[dim]Mostrando últimas 20 entradas[/]"
+                )
+
+        console.print("\n[dim]Presiona Enter para volver[/]")
+        _wait_enter()
 
     except KeyboardInterrupt:
         return
@@ -1582,6 +2070,9 @@ def _builder_flow(
                 console.print(
                     f"[green]Estrategia guardada en: {path}[/]"
                 )
+                _log_activity(
+                    f"Estrategia '{strategy_name}' guardada", logs_dir
+                )
 
         # ── Stage 12: Return ──────────────────────────────────────────
         console.print(f"\n[bold]Stage 12/12 — Listo[/]")
@@ -2385,6 +2876,7 @@ def _show_control(console, logs_dir: str) -> None:
                 "[bold cyan]1[/] Pausar bot   "
                 "[bold cyan]2[/] Reanudar bot   "
                 "[bold cyan]3[/] Forzar scanner   "
+                "[bold cyan]4[/] Alertas   "
                 "[bold cyan]0[/] Volver"
             )
             try:
@@ -2415,6 +2907,8 @@ def _show_control(console, logs_dir: str) -> None:
                 _log_activity("Usuario forzó escaneo", logs_dir)
                 console.print("[bold green]✅ Scanner disparado[/]")
                 _wait_enter()
+            elif sub == "4":
+                _show_alert_config(console, logs_dir)
             else:
                 console.print("[bold red]Opción inválida.[/]")
                 _wait_enter()

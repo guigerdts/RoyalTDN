@@ -52,12 +52,16 @@ Chain strategy: feature-branch-chain
 
 ## Phase 6: Control — Alert Thresholds
 
-- [ ] 6.1 `app.py` — `_show_alert_config(console, logs_dir)`: read/write `logs/alert_thresholds.json`
-- [ ] 6.2 `app.py` — `_show_control()`: add "4 Alertas" option, dispatch to `_show_alert_config()`
+- [x] 6.1 `app.py` — `_show_alert_config(console, logs_dir)`: read/write `logs/alert_thresholds.json`
+- [x] 6.2 `app.py` — `_show_control()`: add "4 Alertas" option, dispatch to `_show_alert_config()`
 
 ## Phase 7: Simulation + Activity Viewer
 
-- [ ] 7.1 `app.py` — `_show_simulation(state_loader, console, logs_dir)`: strategy picker, param editor, comparison table
-- [ ] 7.2 `app.py` — `_simulate_trades(trades, param, new_value)`: recalc P&L adjusting stop/TP/size → stats dict
-- [ ] 7.3 `app.py` — `_show_activity(console, logs_dir)`: last 20 lines from `user_activity.log`, text search
-- [ ] 7.4 `app.py` — `run_menu()`: options 7+8 dispatch, `_last_menu_visit`, `_check_notifications`, `_log_activity()`
+- [x] 7.1 `app.py` — `_show_simulation(state_loader, console, logs_dir)`: strategy picker, param editor, comparison table
+- [x] 7.2 `app.py` — `_simulate_trades(trades, param, new_value)`: recalc P&L adjusting stop/TP/size → stats dict
+- [x] 7.3 `app.py` — `_show_activity(console, logs_dir)`: last 20 lines from `user_activity.log`, text search
+- [x] 7.4 `app.py` — `run_menu()`: options 7+8 dispatch, `_last_menu_visit`, `_check_notifications`, `_log_activity()`
+
+---
+
+**Total**: 23/23 tasks complete
