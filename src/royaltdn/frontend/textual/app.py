@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from loguru import logger
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
@@ -138,8 +139,12 @@ class RoyalTDNApp(App):
 
     def _update_active_screen(self, state: dict, log_lines: list[str]) -> None:
         for screen_id, screen_widget in self._screen_map.items():
-            if screen_widget.display is True and hasattr(screen_widget, "update_data"):
-                screen_widget.update_data(state, log_lines)  # type: ignore[misc]
+            if screen_widget.display is True:
+                if hasattr(screen_widget, "update_data"):
+                    try:
+                        screen_widget.update_data(state, log_lines)  # type: ignore[misc]
+                    except Exception:
+                        logger.error("DashboardScreen.update_data() failed")
                 break
 
     # ── Actions ───────────────────────────────────────────────────────

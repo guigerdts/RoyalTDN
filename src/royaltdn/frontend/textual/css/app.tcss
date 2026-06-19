@@ -1,17 +1,18 @@
-/* Low-color compatibility: TEXTUAL_COLORS=16 — colors degrade gracefully */
+/* Low-color compatibility: TEXTUAL_COLORS=16 — all colors use explicit
+   ANSI-safe values so content is never invisible in 16-color Termux. */
 
 /* RoyalTDN Textual TUI — Base Styles */
 
 Screen {
-    background: #1a1b26;
-    color: #c0caf5;
+    background: #000000;
+    color: #ffffff;
     padding: 0 0 0 0;
 }
 
 /* ── Header ─────────────────────────────────────────────────────── */
 
 #header {
-    background: #1a1b6e;
+    background: #000080;
     color: #ffffff;
     height: 1;
     text-style: bold;
@@ -21,8 +22,8 @@ Screen {
 /* ── Footer ─────────────────────────────────────────────────────── */
 
 #footer {
-    background: #1a1b6e;
-    color: #a9b1d6;
+    background: #000080;
+    color: #ffffff;
     height: 1;
     dock: bottom;
     text-style: bold;
@@ -40,33 +41,37 @@ ContentSwitcher {
 Label {
     margin: 0 1 0 1;
     padding: 0 0 0 0;
-    color: #7dcfff;
+    color: #ffffff;
+    text-style: bold;
 }
 
 /* ── DataTable ─────────────────────────────────────────────────── */
 
 DataTable {
-    height: 40%;
+    height: 6;
+    min-height: 3;
     margin: 0 1 1 1;
-    border: solid #3b4261;
+    border: solid #555555;
+    color: #ffffff;
 }
 
 DataTable > .datatable--header {
-    background: #24283b;
-    color: #7dcfff;
+    background: #000080;
+    color: #ffffff;
     text-style: bold;
 }
 
 DataTable > .datatable--cursor {
-    background: #565f89;
+    background: #555555;
     color: #ffffff;
 }
 
-/* ── Static (used for signals, risk, history) ──────────────────── */
+/* ── Static (used for signals, trade summary, history) ─────────── */
 
 Static {
     margin: 0 1 0 1;
     padding: 0 1 0 1;
+    color: #ffffff;
 }
 
 /* ── MetricsGrid (KPI cards) ───────────────────────────────────── */
@@ -86,39 +91,41 @@ Static {
 
 LogPanel {
     margin: 0 1 0 1;
-    border: solid #3b4261;
-    min-height: 10;
-    height: 60%;
+    border: solid #555555;
+    min-height: 5;
+    height: 8;
 }
 
 RichLog {
     margin: 0 1 0 1;
-    border: solid #3b4261;
-    min-height: 10;
-    height: 60%;
+    border: solid #555555;
+    min-height: 5;
+    height: 8;
 }
 
 /* ── Input ──────────────────────────────────────────────────────── */
 
 Input {
     margin: 0 1 1 1;
-    border: solid #3b4261;
-    background: #1f2335;
-    color: #c0caf5;
+    border: solid #555555;
+    background: #000000;
+    color: #ffffff;
 }
 
 Input:focus {
-    border: solid #7dcfff;
+    border: solid #ffffff;
 }
 
 /* ── ListView ──────────────────────────────────────────────────── */
 
 ListView {
     margin: 0 1 1 1;
-    border: solid #3b4261;
-    min-height: 5;
+    border: solid #555555;
+    min-height: 3;
 }
 
-/* ── Textual handles dark/light mode natively.
-   Further low-color overrides are not needed — default styles degrade
-   gracefully in 16-color terminals (TEXTUAL_COLORS=16). */
+/*
+   TEXTUAL_COLORS=16 compatibility: all colors above are basic ANSI-safe
+   values (#000000=black, #ffffff=white, #000080=navy, #555555=dark grey).
+   No 24-bit hex that might alias to black-on-black in 16-color mode.
+*/

@@ -32,10 +32,6 @@ class MetricsGrid(Static):
         self._metrics = metrics
         self.refresh()
 
-    def render_line(self, y: int) -> Strip:
-        """Render a single line — we override render for Rich support."""
-        return Strip(text="", cell_length=self.size.width)
-
     def render(self) -> RenderableType:
         """Render the metric grid as a Rich table."""
         if not self._metrics:
