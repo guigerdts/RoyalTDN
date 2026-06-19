@@ -623,7 +623,7 @@ class Orchestrator:
             })
 
         # 6. status.json (LAST — authoritative)
-        bot_status = "KILLED" if self._killed else "ONLINE"
+        bot_status = "PAUSADO" if self.paused else ("KILLED" if self._killed else "ONLINE")
         _atomic_write(LOGS_DIR / "status.json", {
             "bot_status": bot_status,
             "paused": self.paused,
