@@ -1,0 +1,122 @@
+/* RoyalTDN Textual TUI — Base Styles */
+
+Screen {
+    background: #1a1b26;
+    color: #c0caf5;
+    padding: 0 0 0 0;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+
+#header {
+    background: #1a1b6e;
+    color: #ffffff;
+    height: 1;
+    text-style: bold;
+    dock: top;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────── */
+
+#footer {
+    background: #1a1b6e;
+    color: #a9b1d6;
+    height: 1;
+    dock: bottom;
+    text-style: bold;
+}
+
+/* ── ContentSwitcher / screen area ─────────────────────────────── */
+
+ContentSwitcher {
+    height: 100%;
+    min-height: 20;
+}
+
+/* ── Labels ─────────────────────────────────────────────────────── */
+
+Label {
+    margin: 0 1 0 1;
+    padding: 0 0 0 0;
+    color: #7dcfff;
+}
+
+/* ── DataTable ─────────────────────────────────────────────────── */
+
+DataTable {
+    height: 40%;
+    margin: 0 1 1 1;
+    border: solid #3b4261;
+}
+
+DataTable > .datatable--header {
+    background: #24283b;
+    color: #7dcfff;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #565f89;
+    color: #ffffff;
+}
+
+/* ── Static (used for signals, risk, history) ──────────────────── */
+
+Static {
+    margin: 0 1 0 1;
+    padding: 0 1 0 1;
+}
+
+/* ── MetricsGrid (KPI cards) ───────────────────────────────────── */
+
+#kpi-grid {
+    height: auto;
+    margin: 0 1 0 1;
+    padding: 0 0 0 0;
+}
+
+#trade-metrics {
+    height: auto;
+    margin: 0 1 0 1;
+}
+
+/* ── LogPanel / RichLog ────────────────────────────────────────── */
+
+LogPanel {
+    margin: 0 1 0 1;
+    border: solid #3b4261;
+    min-height: 10;
+    height: 60%;
+}
+
+RichLog {
+    margin: 0 1 0 1;
+    border: solid #3b4261;
+    min-height: 10;
+    height: 60%;
+}
+
+/* ── Input ──────────────────────────────────────────────────────── */
+
+Input {
+    margin: 0 1 1 1;
+    border: solid #3b4261;
+    background: #1f2335;
+    color: #c0caf5;
+}
+
+Input:focus {
+    border: solid #7dcfff;
+}
+
+/* ── ListView ──────────────────────────────────────────────────── */
+
+ListView {
+    margin: 0 1 1 1;
+    border: solid #3b4261;
+    min-height: 5;
+}
+
+/* ── Textual handles dark/light mode natively.
+   Further low-color overrides are not needed — default styles degrade
+   gracefully in 16-color terminals (TEXTUAL_COLORS=16). */

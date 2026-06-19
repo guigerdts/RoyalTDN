@@ -150,7 +150,7 @@ def cmd_run():
     logger.info("  TimescaleDB: {}", "SÍ" if DATABASE_URL else "NO")
     logger.info("=" * 50)
 
-    from royaltdn.frontend.console.app import run_console
+    from royaltdn.frontend.textual import RoyalTDNApp
 
     orch = Orchestrator(
         api_key=API_KEY,
@@ -164,7 +164,7 @@ def cmd_run():
     t.start()
 
     try:
-        run_console()
+        RoyalTDNApp().run()
     finally:
         orch.stop()
         logger.info("🛑 Bot detenido.")
