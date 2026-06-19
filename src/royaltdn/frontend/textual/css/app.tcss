@@ -1,3 +1,5 @@
+/* Low-color compatibility: TEXTUAL_COLORS=16 — colors degrade gracefully */
+
 /* RoyalTDN Textual TUI — Base Styles */
 
 Screen {

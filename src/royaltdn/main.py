@@ -59,19 +59,80 @@ def cmd_check():
 # ── Comando: status ────────────────────────────────────────────────────────
 
 def cmd_status():
-    """One-shot dashboard render from JSON files."""
+    """One-shot dashboard render from JSON files using inline Rich components."""
     from rich import print as rprint
+    from rich.console import Group
+    from rich.panel import Panel
+    from rich.table import Table
     from royaltdn.frontend.console.components.state import StateLoader
     from royaltdn.frontend.console.log_handler import LogBuffer
-    from royaltdn.frontend.console.screens.dashboard import render_dashboard
 
     loader = StateLoader()
     state = loader.load_all()
-    log_buffer = LogBuffer()
-    layout = render_dashboard(state, log_buffer)
-    rprint(layout)
+    status = state.get("status", {})
+    account = state.get("account", {})
+    signals = state.get("signals", [])
+    trades = state.get("trades", {})
 
-    bot_status = state.get("status", {}).get("bot_status", "OFFLINE")
+    # ── Bot status block ──────────────────────────────────────────────
+    status_table = Table.grid(padding=(0, 2))
+    status_table.add_column(style="bold cyan")
+    status_table.add_column(style="white")
+    status_table.add_row("Bot Status", status.get("bot_status", "OFFLINE"))
+    status_table.add_row("Mode", status.get("mode", "paper"))
+    status_table.add_row("Uptime", status.get("uptime", "0:00:00"))
+    status_table.add_row("Last Scan", str(status.get("last_scan", "\u2014")))
+    if account:
+        status_table.add_row("Capital", f"${account.get('equity', 0):,.2f}")
+        status_table.add_row("Buying Power", f"${account.get('buying_power', 0):,.2f}")
+
+    # ── Recent signals ────────────────────────────────────────────────
+    if isinstance(signals, list) and signals:
+        sig_table = Table(title="Recent Signals", box=None, padding=(0, 1))
+        sig_table.add_column("Symbol", style="cyan")
+        sig_table.add_column("Signal", style="yellow")
+        sig_table.add_column("Confidence", style="green")
+        for s in signals[:5]:
+            sig_table.add_row(
+                s.get("symbol", "?"),
+                s.get("signal", "?"),
+                str(s.get("confidence", "\u2014")),
+            )
+    else:
+        sig_table = None
+
+    # ── Recent trades ─────────────────────────────────────────────────
+    trade_list = trades.get("trades", [])
+    if isinstance(trade_list, list) and trade_list:
+        tr_table = Table(title="Recent Trades (last 5)", box=None, padding=(0, 1))
+        tr_table.add_column("Symbol", style="cyan")
+        tr_table.add_column("Side", style="yellow")
+        tr_table.add_column("Qty", style="white")
+        tr_table.add_column("Price", style="green")
+        tr_table.add_column("P&L", style="bold")
+        for t in trade_list[-5:]:
+            pnl = t.get("pnl", 0)
+            pnl_str = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+            tr_table.add_row(
+                t.get("symbol", "?"),
+                t.get("side", "?"),
+                str(t.get("qty", "\u2014")),
+                f"${t.get('price', 0):,.2f}" if t.get("price") else "\u2014",
+                pnl_str,
+            )
+    else:
+        tr_table = None
+
+    # ── Assemble ──────────────────────────────────────────────────────
+    elements = [Panel(status_table, title="Status", border_style="blue")]
+    if sig_table:
+        elements.append(sig_table)
+    if tr_table:
+        elements.append(tr_table)
+
+    rprint(Group(*elements))
+
+    bot_status = status.get("bot_status", "OFFLINE")
     if bot_status == "OFFLINE":
         sys.exit(1)
 

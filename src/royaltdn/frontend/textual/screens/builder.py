@@ -29,9 +29,6 @@ from royaltdn.frontend.textual.widgets.builder_canvas import (
     ConditionRow,
     OPERATOR_OPTIONS,
 )
-from royaltdn.strategy.backtesting import run_backtest
-from royaltdn.strategy.schema import validate_config
-from royaltdn.strategy.strategy_store import StrategyStore
 
 
 class BuilderScreen(Screen):
@@ -487,6 +484,13 @@ class BuilderScreen(Screen):
         config["symbols"] = [symbol]
         config["timeframe"] = timeframe
 
+        try:
+            from royaltdn.strategy.backtesting import run_backtest
+            from royaltdn.strategy.schema import validate_config
+        except ImportError:
+            self.notify("Backtesting no disponible (falta numpy/pandas)", severity="error")
+            return
+
         ok, err = validate_config(config)
         if not ok:
             self.notify(f"Config inválida: {err}", severity="error")
@@ -539,6 +543,13 @@ class BuilderScreen(Screen):
 
     def _save_strategy(self) -> None:
         """Save the current strategy via ``StrategyStore``."""
+        try:
+            from royaltdn.strategy.schema import validate_config
+            from royaltdn.strategy.strategy_store import StrategyStore
+        except ImportError:
+            self.notify("StrategyStore no disponible (falta numpy/pandas)", severity="error")
+            return
+
         name_input = self.query_one("#strategy-name", Input)
         name = name_input.value.strip()
         if not name:
@@ -566,6 +577,12 @@ class BuilderScreen(Screen):
 
     def _load_strategy(self) -> None:
         """Load a saved strategy and populate all tabs."""
+        try:
+            from royaltdn.strategy.strategy_store import StrategyStore
+        except ImportError:
+            self.notify("StrategyStore no disponible (falta numpy/pandas)", severity="error")
+            return
+
         sel = self.query_one("#saved-strategies", Select)
         name = sel.value
         if not name or name is Select.BLANK:
@@ -627,7 +644,12 @@ class BuilderScreen(Screen):
         """Refresh the saved strategies Select from ``StrategyStore``."""
         sel = self.query_one("#saved-strategies", Select)
         try:
+            from royaltdn.strategy.strategy_store import StrategyStore
             names = StrategyStore().list_names()
             sel.set_options([(n, n) for n in names])
+        except ImportError:
+            # numpy/pandas not available — skip strategy store
+            self.notify("StrategyStore no disponible (falta numpy/pandas)", severity="warning")
+            sel.set_options([])
         except Exception:
             sel.set_options([])

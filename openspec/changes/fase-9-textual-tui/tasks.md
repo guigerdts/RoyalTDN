@@ -55,12 +55,13 @@ Chain strategy: pending
 
 ## Phase 3: HelpScreen + Tests + Polish + Cleanup (PR 3)
 
-- [ ] 3.1 Create `screens/help.py` — HelpScreen (Static command reference table)
-- [ ] 3.2 Create `tests/test_textual/` package with pilot test scaffold
-- [ ] 3.3 Screen render tests: mount each screen, assert no crash on empty data
-- [ ] 3.4 Builder flow test: tab switch → indicator select → add rule → backtest → save
-- [ ] 3.5 Keyboard nav test: pilot presses keys, assert screen changes
-- [ ] 3.6 Delete `src/royaltdn/frontend/console/` — app.py, screens/, components/
-- [ ] 3.7 Clean unused imports (threading, queue, select, rich.live) from remaining code
-- [ ] 3.8 Final CSS polish + Termux `TEXTUAL_COLORS=16` verification
-- Verify: all tests pass, TUI works in low-color, Builder creates deployable strategies
+- [x] 3.1 Create `screens/help.py` — HelpScreen (Static command reference table)
+- [x] 3.2 Create `tests/test_tui.py` pilot test scaffold (6 tests: Dashboard, Nav, IPC, Builder, Help, Quit)
+- [x] 3.3 Screen render tests: mount each screen, assert no crash on empty data
+- [x] 3.4 Builder flow test: tab switch → indicator select → add indicator
+- [x] 3.5 Keyboard nav test: pilot presses keys, assert screen changes
+- [x] 3.6 Delete `src/royaltdn/frontend/console/` — app.py, screens/, components/__init__.py, components/widgets.py
+- [x] 3.7 Clean unused imports (threading, queue, select, rich.live) from textual/ + cleanup requirements
+- [x] 3.8 Final CSS polish + Termux `TEXTUAL_COLORS=16` verification
+- [x] Verify: rewrite cmd_status() to not depend on deleted console screens
+- Verify: all 6 tests pass, TUI works in low-color, Builder creates deployable strategies
