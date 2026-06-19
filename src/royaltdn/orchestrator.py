@@ -440,11 +440,14 @@ class Orchestrator:
                 "timeframe": "1d",
             })
 
-        # User strategies (Fase 7)
+        # User strategies (Fase 7) — skip inactive
         for name, strat in self.user_strategies.items():
+            is_active = strat.config.get("active", True) if hasattr(strat, "config") else True
+            if not is_active:
+                continue
             strategies_list.append({
                 "name": f"user_{name}",
-                "active": True,
+                "active": is_active,
                 "params": strat.get_parameters() if hasattr(strat, 'get_parameters') else {},
                 "validation": strat.validate() if hasattr(strat, 'validate') else True,
                 "last_signal": self._signal_count_by_strategy.get(f"user_{name}"),
@@ -623,7 +626,7 @@ class Orchestrator:
             })
 
         # 6. status.json (LAST — authoritative)
-        bot_status = "KILLED" if self._killed else "ONLINE"
+        bot_status = "PAUSADO" if self.paused else ("KILLED" if self._killed else "ONLINE")
         _atomic_write(LOGS_DIR / "status.json", {
             "bot_status": bot_status,
             "paused": self.paused,
@@ -1159,6 +1162,9 @@ class Orchestrator:
                     }
                     data = pd.DataFrame(ohlcv)
                     for name, strat in list(self.user_strategies.items()):
+                        # Skip inactive strategies (Fase 11)
+                        if hasattr(strat, "config") and not strat.config.get("active", True):
+                            continue
                         try:
                             symbols = strat.symbols
                             if symbols and self.symbol not in symbols and "ALL" not in symbols:
