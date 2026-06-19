@@ -177,6 +177,7 @@ class TestLogBuffer:
 # ── Widget Tests ───────────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="Widgets module deleted in Fase 9 — console/ cleanup")
 class TestWidgets:
     def test_create_header_online(self):
         from royaltdn.frontend.console.components.widgets import create_header
@@ -291,6 +292,7 @@ class TestCommands:
 # ── HandleCommand Tests ────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="Console app.py module deleted in Fase 9 — Textual TUI migration")
 class TestHandleCommand:
     def test_cmd_1_sets_dashboard(self):
         from royaltdn.frontend.console.app import handle_command
