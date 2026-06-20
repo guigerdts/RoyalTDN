@@ -1,0 +1,391 @@
+## Design: FASE 12 — Mejoras de Backtesting, Scanner y Trades
+
+### 1. Architecture Overview
+
+The change touches 4 existing files with zero new modules. Data flows from the Rich menu (`app.py`) into the backtesting engine (`backtesting.py`) for inline backtests, and into the scanner subsystem (`filters.py`, `scanner.py`) which runs either inline in the bot process or via `trigger_scanner()` file-based signaling. The trades screen (`_show_trades`) reads from `state_loader.load_trades()` (backed by `trades.json`) and applies in-memory filtering only.
+
+**Integration points:**
+- `_quick_backtest()` and `_builder_flow()` call `run_backtest()` inline → tqdm bars render in the menu stdout.
+- `_show_scanner()` reads `scanner_results.json` saved by the bot process → post-scan metrics come from the persisted JSON.
+- `_show_trades()` loads `trades.json` → summary metrics computed inline, filtering done in-memory.
+- `_show_simulation()` loads trades and checks count inline before the strategy selection step.
+
+### 2. Data Flow
+
+**Backtest Professional:**
+```
+menu (_quick_backtest / _builder_flow Stage 10)
+  → run_backtest(config, symbol, timeframe, period)
+    → _download_data() [yfinance] → df
+    → tqdm loop #1: signal generation (bars 1..n)
+        desc="{symbol} {timeframe} ({period}) — {n}/{total} barras"
+    → if no entries → early return with empty trades
+    → tqdm loop #2: portfolio simulation (bars 1..n)
+        desc="Simulando cartera — {n}/{total} barras"
+    → _compute_metrics(equity_series, trades_df)
+        ← metrics dict (4 new keys: sortino_ratio, calmar_ratio, expectancy, avg_trade_duration)
+    ← result dict unchanged shape
+  → display metrics panel (new keys added)
+  → if num_trades < 30 → show ⚠️ warning (non-blocking, bold yellow)
+  → display B&H comparison panel (from buy_hold_equity list)
+  → display trade table (via new _display_backtest_trades helper)
+```
+
+**Scanner Real:**
+```
+bot_process (or direct call):
+  Scanner.__init__(universe, liquidity_filter, strategies, data_client)
+    → Scanner.scan()
+      → universe.get_all_symbols() → symbols[]
+      → tqdm.write("Escaneando {N} símbolos... ~{X}min restante")
+      → liquidity_filter.filter(symbols, data_client)
+          → tqdm loop: desc="Filtrando por liquidez: {n}/{total}..."
+      → tqdm loop: for symbol in passed_symbols:
+          → pbar.set_description(f"Escaneando {symbol}")
+          → _get_symbol_data(symbol), strategy signals
+      → store elapsed time
+      → _publish_scanner_results() ← now includes elapsed_seconds
+    ← signals list (unchanged)
+
+menu (_show_scanner):
+  → state_loader.load_scanner_results()
+  → if data has scan_metrics → display "📊 Resultados del Escaneo" panel
+  → display last scan table as before
+```
+
+**Trades Rediseñados:**
+```
+menu (_show_trades) — restructured while True loop:
+  → load all_trades from state_loader.load_trades()
+  → compute unfiltered summary (Total, WR, PF, Total P&L, Sharpe, Avg Trade, Max DD, Expectancy)
+  → display summary panel
+  → apply active_filters dict (symbol, strategy, date_range) → filtered list
+  → if filtered non-empty → display enriched trade table
+  → display submenu: [S] [E] [F] [T] [X] [V] [P] [0]
+  → single-key input:
+    S → input("Ingrese símbolo") → set active_filters["symbol"]
+    E → input("Ingrese estrategia") → set active_filters["strategy"]
+    F → show date submenu (1/2/3/4/5) → set active_filters["date_range"]
+    T → reset all filters (clear dict)
+    X → _export_trades(filtered, console, logs_dir)
+    V → _show_advanced_stats(filtered, console)
+    P → _show_performance_by_strategy(filtered, console)
+    0 → return
+  → loop back (re-render with updated filters)
+```
+
+**Simulación:**
+```
+menu (_show_simulation)
+  → load all_trades from state_loader.load_trades()
+  → if len(all_trades) < 30:
+      → console.print("[bold yellow]⚠️  Solo {N} trades históricos...[/]")
+      → resp = input("¿Continuar de todas formas? (s/N): ").strip().lower()
+      → if resp != "s" → return
+  → proceed with strategy selection and simulation as before
+```
+
+### 3. File Changes
+
+#### src/royaltdn/strategy/backtesting.py
+
+**`_compute_metrics()` — signature unchanged, 4 new keys in return dict:**
+
+Current: `def _compute_metrics(pf_close: pd.Series, trades_df: pd.DataFrame) -> dict:`
+New: Same signature. Addition of 4 keys inside the function.
+
+New metrics and formulas:
+
+| Key | Formula | Edge Case |
+|-----|---------|-----------|
+| `sortino_ratio` | Same as current `sortino`: sqrt(252) * mean(daily_returns) / std(downside_returns). **Renamed** from `sortino`; old key kept as alias for backward compat. | downside.std() == 0 → 0.0 |
+| `calmar_ratio` | CAGR / abs(max_drawdown) | max_drawdown == 0 → return CAGR |
+| `expectancy` | (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss)) | num_trades == 0 → 0.0 |
+| `avg_trade_duration` | mean of (parse(exit_date) - parse(entry_date)).days for all trades | trades_df is None or empty → 0.0. Missing date fields → skip that trade. |
+
+The existing `sortino` key is preserved with the same value; `sortino_ratio` is added alongside it. All existing keys remain untouched.
+
+**`run_backtest()` — signature unchanged, tqdm added internally:**
+
+Current: `def run_backtest(config: dict, symbol: str = "SPY", timeframe: str = "1D", period: str = "2 years", init_cash: float = 10_000.0, fee_pct: float = 0.001, slippage_pct: float = 0.0005) -> dict:`
+New: Same signature.
+
+tqdm placement:
+1. **Signal generation loop** (line 191): `for i in tqdm(range(1, len(df)), desc=f"{symbol} {timeframe} ({period})", unit="bar", file=sys.stdout):`
+   - bar_format: `"{desc} — {n}/{total} barras {bar} {percentage:.0f}% [{elapsed}<{remaining}]"`
+2. **Portfolio simulation loop** (line 231): `for i in tqdm(range(1, len(df)), desc="Simulando cartera", unit="bar", file=sys.stdout):`
+   - bar_format: `"{desc} — {n}/{total} barras {bar} {percentage:.0f}% [{elapsed}<{remaining}]"`
+
+Both imports are lazy: `from tqdm import tqdm` at function level.
+
+Return value: No shape change. `result["metrics"]` dict now includes the 4 new keys.
+
+**New helper: `_display_backtest_trades(trades: list, console) -> None`**
+- Renders a Rich Table with columns: `#`, `Entry Date`, `Exit Date`, `Entry Price`, `Exit Price`, `P&L`, `Return %`, `Duration`, `Fees`
+- P&L color: green if >= 0, red if < 0, white if 0
+- Empty trades → shows `"⚠️ No se generaron trades en este período."` in yellow
+- Duration = (exit_date - entry_date) in days with 1 decimal, or "< 1d" for same-day
+
+**New helper: `_display_buy_hold_comparison(buy_hold_equity: list, metrics: dict, console) -> None`**
+- Computes BH return: `(bh_equity[-1] / bh_equity[0]) - 1` if len >= 2
+- BH CAGR: BH return annualized over period
+- Strategy vs BH: `metrics["total_return"] - bh_return`
+- Renders "📊 Comparación: Estrategia vs Buy & Hold" Panel
+- If `buy_hold_equity` is empty or None → shows "No disponible" in gray
+
+#### src/royaltdn/scanner/liquidity.py
+
+**`LiquidityFilter.filter()` — signature unchanged, tqdm added:**
+
+Current: `def filter(self, symbols: List[str], data_client: Any) -> List[str]:`
+New: Same signature.
+
+tqdm placement:
+```python
+from tqdm import tqdm
+for symbol in tqdm(
+    symbols,
+    desc="Filtrando por liquidez",
+    unit="sym",
+    file=sys.stdout,
+    bar_format="{desc}: {n}/{total} — {percentage:.0f}% completado. ~{remaining}",
+):
+```
+Empty symbols list → tqdm shows 0/0 briefly, returns empty list.
+KeyboardInterrupt → tqdm closes cleanly, propagates up.
+
+#### src/royaltdn/scanner/scanner.py
+
+**`Scanner.__init__()` — no signature change.**
+
+**`Scanner.scan()` — signature unchanged, tqdm + metrics added:**
+
+Current: `def scan(self) -> List[dict]:`
+New: Same return type. Internal additions:
+
+1. **Initial ETA** (RQ-SC-04): Before line 87 (scan loop), compute:
+   ```python
+   import time
+   import math
+   _start = time.monotonic()
+   est_seconds = len(passed_symbols) * 0.3  # 0.3s per symbol heuristic
+   est_minutes = math.ceil(est_seconds / 60)
+   tqdm.write(f"Escaneando {len(passed_symbols)} símbolos... ~{est_minutes}min restante")
+   ```
+
+2. **tqdm scan loop** (RQ-SC-02): Replace `for symbol in passed_symbols:` with:
+   ```python
+   from tqdm import tqdm
+   pbar = tqdm(passed_symbols, desc="Escaneando", unit="sym",
+               file=sys.stdout,
+               bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}")
+   for symbol in pbar:
+       pbar.set_description(f"Escaneando {symbol}")
+       ...
+   ```
+
+3. **Elapsed time storage**: After scan loop, compute:
+   ```python
+   self._last_scan_elapsed = time.monotonic() - _start
+   ```
+   And add to `scan_entry` dict before appending to `_scan_history`:
+   ```python
+   "elapsed_seconds": round(self._last_scan_elapsed, 1)
+   ```
+
+4. **`_publish_scanner_results()` change**: Include elapsed time in the JSON:
+   ```python
+   "elapsed_seconds": self._last_scan_elapsed if hasattr(self, '_last_scan_elapsed') else 0.0
+   ```
+
+No change to `_get_symbol_data()`, `_rank_signals()`, or `get_top_signals()`.
+
+#### src/royaltdn/frontend/menu/app.py
+
+**`_quick_backtest()` — no signature change, enriched output:**
+
+Current: `def _quick_backtest(config: dict, console, logs_dir: str) -> None:`
+New: Same signature.
+
+Additions after metrics table display:
+1. Add 4 new metric rows to the metrics table: `Sortino`, `Calmar Ratio`, `Expectancy`, `Avg Trade Duration`
+2. `< 30 trades check`: `if metrics.get('num_trades', 0) < 30 and metrics.get('num_trades', 0) > 0:` → `console.print("[bold yellow]⚠️ ⚠️ ADVERTENCIA: Solo {num_trades} trades...[/]")`
+3. B&H comparison panel using `_display_buy_hold_comparison(result["buy_hold_equity"], metrics, console)`
+4. Trade table using `_display_backtest_trades(result.get("trades", []), console)`
+5. No trades: `if not result.get("trades"):` → `"⚠️ No se generaron trades en este período."`
+
+**`_show_trades()` — no signature change, major internal restructure:**
+
+Current: `def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:`
+New: Same signature.
+
+Changes:
+1. **Summary metrics panel**: Add Sharpe, Avg Trade, Max DD, Expectancy to the grid.
+   - Sharpe computed from trade P&L returns (daily): std of PnL / mean of PnL, annualized. If < 2 trades → "N/A".
+   - Max DD from cumulative PnL across all trades (peak-to-trough).
+   - Win Rate > 60% → green color.
+
+2. **Trade table columns**: `#`, `Fecha` (entry_at YYYY-MM-DD HH:MM), `Símbolo`, `Lado`, `Qty`, `Entry`, `Exit`, `P&L`, `Retorno%`, `Duración`, `Slippage`, `Estrategia`.
+   - Duration: `f"{days}d {hours}h"` if days > 0, `"< 1h"` if < 1h, else `"{hours}h"`.
+
+3. **Filter rework**: Replace the current symbol filter input + period-cmd prompt section with a unified state-driven approach:
+   - `active_filters: dict = {}` — keys: `symbol`, `strategy`, `date_range`
+   - Apply filters cumulatively (AND) to `all_trades`
+   - Remove the separate `symbol_filter = input(...)` line and the `period_cmd = input(...)` block
+   - Submenu always shows: `[S] Filtro símbolo [E] Filtro estrategia [F] Fecha [T] Reset [X] Exportar [V] Stats [P] Estrategia [0] Volver`
+   - No initial filter prompt — all filtering is triggered by single-key input
+
+4. **Active filters header**: If any filter is active, show `"Filtros activos: Símbolo={s}, Estrategia={e}"` in italic blue.
+
+**`_show_scanner()` — no signature change, add post-scan metrics:**
+
+Current: `def _show_scanner(state_loader, console, logs_dir: str) -> None:`
+New: Same signature.
+
+Additions:
+1. After loading `last_scan` data and before displaying the table:
+   ```python
+   scan_metrics = data.get("scan_history", [])
+   if scan_metrics:
+       latest = scan_metrics[-1]
+       # Display "📊 Resultados del Escaneo" Panel with:
+       # Total símbolos: X
+       # Pasaron filtro: Y/Z (W%)
+       # Señales: S
+       # Tiempo: T.s
+   ```
+
+**`_show_simulation()` — no signature change, add <30 check:**
+
+Current: `def _show_simulation(state_loader, console, logs_dir: str = "logs") -> None:`
+New: Same signature.
+
+Addition: Right after `all_trades = trades_data.get("trades", [])` (line 553), insert:
+```python
+if len(all_trades) < 30:
+    console.print(f"[bold yellow]⚠️  Solo {len(all_trades)} trades históricos. Mínimo recomendado: 30 para resultados estadísticamente significativos.[/]")
+    try:
+        resp = input("¿Continuar de todas formas? (s/N): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return
+    if resp != "s":
+        return
+```
+
+### 4. Function Signatures
+
+**`_compute_metrics`** — No change
+```
+Old: def _compute_metrics(pf_close: pd.Series, trades_df: pd.DataFrame) -> dict:
+New: def _compute_metrics(pf_close: pd.Series, trades_df: pd.DataFrame) -> dict:
+```
+New keys in return dict: `sortino_ratio`, `calmar_ratio`, `expectancy`, `avg_trade_duration`.
+Old key `sortino` preserved as alias.
+
+**`run_backtest`** — No change
+```
+Old: def run_backtest(config: dict, symbol: str = "SPY", timeframe: str = "1D", period: str = "2 years", init_cash: float = 10_000.0, fee_pct: float = 0.001, slippage_pct: float = 0.0005) -> dict:
+New: (same)
+```
+
+**`_display_backtest_trades`** — New
+```
+def _display_backtest_trades(trades: list, console) -> None:
+```
+Renders trade table as side effect. No return value.
+
+**`_display_buy_hold_comparison`** — New
+```
+def _display_buy_hold_comparison(buy_hold_equity: list, bh_returns: dict, metrics: dict, console) -> None:
+```
+Renders B&H comparison panel. No return value.
+
+**`LiquidityFilter.filter`** — No change
+```
+Old: def filter(self, symbols: List[str], data_client: Any) -> List[str]:
+New: (same)
+```
+
+**`Scanner.__init__`** — No change
+```
+Old: def __init__(self, universe: AssetUniverse, liquidity_filter: LiquidityFilter, strategies: Dict[str, BaseStrategy], data_client: Any):
+New: (same)
+```
+
+**`Scanner.scan`** — No change
+```
+Old: def scan(self) -> List[dict]:
+New: (same)
+```
+Internal: stores `self._last_scan_elapsed: float`.
+
+**`_quick_backtest`** — No change
+```
+Old: def _quick_backtest(config: dict, console, logs_dir: str) -> None:
+New: (same)
+```
+
+**`_show_trades`** — No change
+```
+Old: def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
+New: (same)
+```
+
+**`_show_scanner`** — No change
+```
+Old: def _show_scanner(state_loader, console, logs_dir: str) -> None:
+New: (same)
+```
+
+**`_show_simulation`** — No change
+```
+Old: def _show_simulation(state_loader, console, logs_dir: str = "logs") -> None:
+New: (same)
+```
+
+### 5. Implementation Plan
+
+**Phase 1: Backtest improvements** (no dependencies)
+1. Add tqdm imports and loops to `run_backtest()`
+2. Add 4 new metrics to `_compute_metrics()` — `sortino_ratio`, `calmar_ratio`, `expectancy`, `avg_trade_duration`
+3. Create `_display_backtest_trades()` helper
+4. Create `_display_buy_hold_comparison()` helper
+5. Update `_quick_backtest()` — new metric rows, <30 warning, trade table, B&H panel
+6. Verify: run backtest from strategy submenu, check all outputs
+
+**Phase 2: Scanner improvements** (no dependencies on Phase 1)
+1. Add tqdm to `LiquidityFilter.filter()` in `filters.py`
+2. Add tqdm + initial ETA + elapsed tracking to `Scanner.scan()` in `scanner.py`
+3. Add `elapsed_seconds` to `_publish_scanner_results()`
+4. Add post-scan metrics panel to `_show_scanner()`
+5. Verify: trigger scan, check progress bars and metrics in saved results + menu
+
+**Phase 3: Trades redesign** (independent)
+1. Add Sharpe, Avg Trade, Max DD, Expectancy computation to `_show_trades()`
+2. Enrich trade table columns: Fecha, Duración, Slippage, Retorno%, Estrategia
+3. Restructure filter loop: `active_filters` dict, single-key S/E/F/T/X/V in submenu
+4. Add active filters header display
+5. Apply ANSI color rules (P&L green/red, WR >60% green)
+6. Verify: view trades, test all filter keys and color outputs
+
+**Phase 4: Simulation warning** (no dependencies)
+1. Add <30 trades check + blocking confirm prompt in `_show_simulation()`
+2. Verify: simulate with <30 trades, test both "s" and non-"s" paths
+
+### 6. Risk Register
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| tqdm + Rich Console output conflict | Garbled screen in menu | tqdm writes to stdout with carriage returns; Rich uses stderr/own rendering. Test with `color_system="standard"`. Use `tqdm(file=sys.stdout)`. In menu context, tqdm output appears above Rich panels, acceptable. |
+| Missing `entry_date`/`exit_date` in old trades from `trades.json` | Duration = 0.0, Fecha = "—" | Use `.get("entry_at", "")` / `.get("exit_at", "")` fallback. Duration = 0 when dates missing. |
+| `buy_hold_equity` is None or empty in result | B&H panel crash | Check `if not buy_hold_equity or len(buy_hold_equity) < 2` before computing. Show "No disponible". |
+| Scanner runs in bot process, not menu | Menu can't show live progress | Acceptable by design. tqdm bars show in bot stdout. Menu reads persisted `elapsed_seconds` for post-scan panel. |
+| KeyboardInterrupt during tqdm loop | Partial/orphaned output | tqdm handles Ctrl+C gracefully (closes bar, re-raises). The outer `try/except KeyboardInterrupt` in menu functions catches it. |
+| `old_trades.json` without `slippage_bps` field | KeyError in enriched table | Use `.get("slippage_bps", 0)` with default 0. |
+| `avg_trade_duration` with 0 trades | Division by zero | Return 0.0 when `trades_df` is None or empty. |
+
+### Next Recommended
+sdd-tasks
+
+### Skills Used
+sdd-design

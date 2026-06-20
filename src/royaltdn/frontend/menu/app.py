@@ -378,8 +378,8 @@ def _show_dashboard(state_loader, log_buffer, console) -> None:
             if prompt == "":
                 interval = 5
             elif prompt.upper() == "N":
-                # Manual mode — refresh once and re-prompt
-                continue
+                # Manual mode — return to main menu immediately
+                return
             elif prompt.isdigit() and int(prompt) > 0:
                 interval = int(prompt)
             else:

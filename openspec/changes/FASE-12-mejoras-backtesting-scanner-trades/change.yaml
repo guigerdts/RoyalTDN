@@ -1,0 +1,94 @@
+id: "FASE-12-mejoras-backtesting-scanner-trades"
+title: "FASE 12: Mejoras de Backtesting, Scanner y Trades"
+status: "proposed"
+created: "2026-06-19"
+
+# ---- Intent ----
+intent: |
+  El menú interactivo actual (Rich) tiene carencias en tres áreas clave:
+  backtesting, scanner y visualización de trades. Los resultados de backtest
+  carecen de métricas profesionales (Calmar, Expectancy, duración promedio),
+  el scanner no muestra progreso durante ejecuciones largas (500+ símbolos),
+  y la pantalla de trades ofrece información limitada sin colores semánticos
+  ni filtros rápidos. Los < 30 trades en simulación no reciben advertencia.
+  Esta fase profesionaliza las tres pantallas para dar al usuario información
+  más actionable, transparente y rápida de consumir.
+
+# ---- Scope ----
+scope:
+  in_scope:
+    - "Backtesting: barra de progreso tqdm con ETA en run_backtest()"
+    - "Backtesting: métricas nuevas — Sortino, Calmar, Expectancy, Avg Trade Duration"
+    - "Backtesting: advertencia si < 30 trades ('Pocos trades. Resultados no estadísticamente significativos.')"
+    - "Backtesting: tabla de trades individuales y comparación Buy & Hold"
+    - "Scanner: barra de progreso en LiquidityFilter.filter() y Scanner.scan()"
+    - "Scanner: métricas post-ejecución (total, pasaron filtro, señales, tiempo)"
+    - "Trades: summary ampliado (Sharpe, Avg Trade, Max Drawdown, Expectancy)"
+    - "Trades: tabla enriquecida (fecha completa, duración, slippage, entry/exit price)"
+    - "Trades: filtros de un carácter (S=símbolo, E=estrategia, F=fecha, T=todo, X=exportar, V=stats)"
+    - "Trades: colores semánticos (P&L verde/rojo, Win Rate >60% verde)"
+    - "Simulación: advertencia si < 30 trades históricos antes de ejecutar"
+  out_of_scope:
+    - "Nuevos indicadores técnicos o estrategias de trading"
+    - "Conexión a nuevos brokers/exchanges (solo Alpaca)"
+    - "Optimización automática de parámetros de estrategia"
+    - "Reportes exportables PDF/HTML"
+    - "Gráficos matplotlib/plotly en el menú"
+    - "Cambios en el formato de almacenamiento de datos (trades.json, scanner results)"
+
+# ---- Requirements ----
+requirements:
+  backtesting:
+    - id: "RQ-BT-01"
+      desc: "SHALL mostrar barra de progreso tqdm durante run_backtest() con formato '{symbol} {timeframe} ({period}) — {n}/{total} trades'"
+    - id: "RQ-BT-02"
+      desc: "SHALL mostrar ETA en segundos/minutos durante la ejecución del backtest"
+    - id: "RQ-BT-03"
+      desc: "SHALL agregar al diccionario de retorno: sortino_ratio, calmar_ratio, expectancy, avg_trade_duration"
+    - id: "RQ-BT-04"
+      desc: "SHALL mostrar advertencia si num_trades < 30: '⚠️ Pocos trades. Resultados no estadísticamente significativos.'"
+    - id: "RQ-BT-05"
+      desc: "SHALL incluir tabla de trades en la salida con entry/exit date, price, P&L, return %, duration, fees"
+    - id: "RQ-BT-06"
+      desc: "SHALL mostrar comparación Buy & Hold (rentabilidad acumulada en el mismo período)"
+
+  scanner:
+    - id: "RQ-SC-01"
+      desc: "SHALL mostrar barra de progreso en LiquidityFilter.filter() con formato '{n}/{total} — {pct}% completado. ~{eta} restante'"
+    - id: "RQ-SC-02"
+      desc: "SHALL mostrar barra de progreso en Scanner.scan() con el mismo formato que RQ-SC-01"
+    - id: "RQ-SC-03"
+      desc: "SHALL mostrar métricas al finalizar: total símbolos escaneados, pasaron filtro de liquidez, señales generadas, tiempo total transcurrido"
+    - id: "RQ-SC-04"
+      desc: "SHALL mostrar mensaje inicial: 'Escaneando {N} símbolos... ~{X}min restante' antes de comenzar el scan"
+
+  trades:
+    - id: "RQ-TR-01"
+      desc: "SHALL mostrar en el summary de trades: Sharpe Ratio, Average Trade (P&L promedio), Max Drawdown, Expectancy"
+    - id: "RQ-TR-02"
+      desc: "SHALL enriquecer tabla de trades: Fecha completa (YYYY-MM-DD HH:MM), Duración (días/horas), Slippage (bps), Entry Price, Exit Price"
+    - id: "RQ-TR-03"
+      desc: "SHALL implementar filtro de un carácter en la pantalla de trades: S=símbolo, E=estrategia, F=fecha, T=todo (reset), X=exportar CSV, V=estadísticas avanzadas"
+    - id: "RQ-TR-04"
+      desc: "SHALL aplicar colores ANSI: P&L positivo en verde, P&L negativo en rojo. Win Rate > 60% en verde, ≤ 60% en blanco"
+
+  simulation:
+    - id: "RQ-SI-01"
+      desc: "SHALL verificar trades históricos < 30 antes de ejecutar simulación y mostrar: '⚠️ Solo {N} trades históricos. Mínimo recomendado: 30. ¿Continuar? (s/n)'"
+
+# ---- Non-Goals ----
+non_goals:
+  - "No se toca la lógica de entrada/salida de trades (entry/exit signals)"
+  - "No se añaden nuevos indicadores al builder wizard de estrategias"
+  - "No se implementan alertas push ni notificaciones externas"
+  - "No se agregan gráficos estadísticos (matplotlib/plotly) al menú"
+  - "No se modifica el formato de persistencia de trades ni scanner results"
+
+# ---- Constraints ----
+constraints:
+  - "Console(color_system='standard') — colores ANSI 16, sin hex ni 24-bit RGB"
+  - "tqdm 4.68.3 disponible en dependencias — usar tqdm.tqdm; sin nuevas dependencias"
+  - "Strings de UI en español; identificadores, comentarios y nombres de función en inglés"
+  - "Funciones _show_* y _build_* deben llamar _log_activity() en acciones relevantes"
+  - "Mantener compatibilidad con StateLoader y el formato trades.json existente"
+  - "Código existente en app.py, scanner/, backtesting.py — modificar in situ, no reescribir módulos completos"
