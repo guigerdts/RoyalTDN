@@ -186,33 +186,36 @@ class Orchestrator:
         # Trading client (sincrónico, se usa en executor)
         self._trading = TradingClient(self.api_key, self.secret_key, paper=True)
 
-        # Scanner (opcional) — inicializar después del trading client
-        try:
-            data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-            universe = AssetUniverse(
-                self.api_key, self.secret_key,
-                universe_type=SCANNER_UNIVERSE,
-            )
-            liquidity_filter = LiquidityFilter(
-                min_volume=SCANNER_MIN_VOLUME,
-                min_price=SCANNER_MIN_PRICE,
-                max_spread_pct=SCANNER_MAX_SPREAD_PCT,
-            )
-            strategies = {}
-            if "sma_crossover" in STRATEGIES_ENABLED:
-                strategies["sma_crossover"] = SMAStrategy()
-            if "bollinger_rsi" in STRATEGIES_ENABLED:
-                strategies["bollinger_rsi"] = BollingerRSIStrategy()
-            if "momentum_atr" in STRATEGIES_ENABLED:
-                strategies["momentum_atr"] = MomentumATRStrategy()
-            if "factor_rotation" in STRATEGIES_ENABLED:
-                strategies["factor_rotation"] = FactorRotationStrategy()
+        # Scanner — si ya se pasó desde main.py, usarlo sin sobrescribir
+        if self._scanner is not None:
+            logger.info("Scanner recibido desde main.py — saltando inicialización interna")
+        else:
+            try:
+                data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+                universe = AssetUniverse(
+                    self.api_key, self.secret_key,
+                    universe_type=SCANNER_UNIVERSE,
+                )
+                liquidity_filter = LiquidityFilter(
+                    min_volume=SCANNER_MIN_VOLUME,
+                    min_price=SCANNER_MIN_PRICE,
+                    max_spread_pct=SCANNER_MAX_SPREAD_PCT,
+                )
+                strategies = {}
+                if "sma_crossover" in STRATEGIES_ENABLED:
+                    strategies["sma_crossover"] = SMAStrategy()
+                if "bollinger_rsi" in STRATEGIES_ENABLED:
+                    strategies["bollinger_rsi"] = BollingerRSIStrategy()
+                if "momentum_atr" in STRATEGIES_ENABLED:
+                    strategies["momentum_atr"] = MomentumATRStrategy()
+                if "factor_rotation" in STRATEGIES_ENABLED:
+                    strategies["factor_rotation"] = FactorRotationStrategy()
 
-            self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
-            logger.info("Scanner inicializado — universo={} estrategias={}", SCANNER_UNIVERSE, list(strategies.keys()))
-        except Exception as e:
-            logger.warning("Scanner no disponible ({}) — operando solo con SPY", e)
-            self._scanner = None
+                self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
+                logger.info("Scanner inicializado — universo={} estrategias={}", SCANNER_UNIVERSE, list(strategies.keys()))
+            except Exception as e:
+                logger.warning("Scanner no disponible ({}) — operando solo con SPY", e)
+                self._scanner = None
 
         # User strategies (Fase 7)
         try:
