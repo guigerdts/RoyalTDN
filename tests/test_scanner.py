@@ -83,12 +83,12 @@ def test_asset_universe_cache() -> None:
 
 
 def test_asset_universe_invalid_type() -> None:
-    """Invalid universe_type falls back to 'etfs'."""
-    u = AssetUniverse("key", "secret", universe_type="crypto")
-    assert u.universe_type == "etfs"
+    """Invalid universe_type falls back to 'all'."""
+    u = AssetUniverse("key", "secret", universe_type="invalid_xyz")
+    assert u.universe_type == "all"
     symbols = u.get_symbols()
     assert symbols == DEFAULT_ETFS
-    print("  ✅ universe_type inválido → fallback etfs")
+    print("  ✅ universe_type inválido → fallback all")
 
 
 def test_asset_universe_invalidate_cache() -> None:

@@ -38,7 +38,13 @@ class AssetUniverse:
         "XLU", "XRT", "GLD", "TLT",
     ]
 
-    VALID_UNIVERSE_TYPES = ("etfs", "sp500", "all")
+    DEFAULT_CRYPTO = [
+        "BTC/USD", "ETH/USD", "LTC/USD", "BCH/USD",
+        "LINK/USD", "UNI/USD", "AAVE/USD", "MATIC/USD",
+        "DOGE/USD", "SHIB/USD",
+    ]
+
+    VALID_UNIVERSE_TYPES = ("etfs", "sp500", "all", "crypto")
 
     def __init__(
         self,
@@ -100,6 +106,8 @@ class AssetUniverse:
             result = self._get_etfs()
         elif self._universe_type == "sp500":
             result = self._get_sp500_via_sdk()
+        elif self._universe_type == "crypto":
+            result = self._get_default_crypto()
         else:  # "all"
             result = self._get_all_deduplicated()
 
@@ -126,6 +134,10 @@ class AssetUniverse:
     def _get_etfs(self) -> List[str]:
         """Returns a copy of DEFAULT_ETFS. No API call needed."""
         return self.DEFAULT_ETFS.copy()
+
+    def _get_default_crypto(self) -> List[str]:
+        """Returns a copy of DEFAULT_CRYPTO. No API call needed."""
+        return self.DEFAULT_CRYPTO.copy()
 
     def _get_sp500_via_sdk(self) -> List[str]:
         """Fetches S&P 500 assets via TradingClient.get_all_assets().
