@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Any
 
+from alpaca.data.historical import CryptoHistoricalDataClient
 from loguru import logger
 
 
@@ -97,15 +98,17 @@ class LiquidityFilter:
         self.max_spread_pct = max_spread_pct
         self.token_bucket = token_bucket or TokenBucket()
 
-    def filter(self, symbols: List[str], data_client: Any) -> List[str]:
+    def filter(self, symbols: List[str], data_client: Any, crypto_data_client: Optional[Any] = None) -> List[str]:
         """Filters a symbol list by liquidity using daily bars.
 
-        Fetches the last 5 daily bars via get_stock_bars(), computes
-        average volume and latest close price for each symbol.
+        Fetches the last 5 daily bars via get_stock_bars() (stocks)
+        or get_crypto_bars() (crypto symbols containing '/'),
+        computes average volume and latest close price for each symbol.
 
         Args:
             symbols: List of symbols to filter.
             data_client: StockHistoricalDataClient from alpaca-py.
+            crypto_data_client: Optional CryptoHistoricalDataClient for crypto pairs.
 
         Returns:
             List of symbols that pass the filter.
@@ -113,7 +116,7 @@ class LiquidityFilter:
         if not symbols:
             return []
 
-        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
         passed = []
@@ -132,13 +135,29 @@ class LiquidityFilter:
         ):
             try:
                 self.token_bucket.consume(1)
-                request = StockBarsRequest(
-                    symbol_or_symbols=symbol,
-                    timeframe=TimeFrame.Day,
-                    start=start,
-                    end=end,
-                )
-                bars = data_client.get_stock_bars(request)
+
+                if "/" in symbol:
+                    if crypto_data_client is None:
+                        logger.debug(
+                            "LiquidityFilter: no crypto client — skipping {}", symbol,
+                        )
+                        continue
+                    request = CryptoBarsRequest(
+                        symbol_or_symbols=symbol,
+                        timeframe=TimeFrame.Day,
+                        start=start,
+                        end=end,
+                    )
+                    bars = crypto_data_client.get_crypto_bars(request)
+                else:
+                    request = StockBarsRequest(
+                        symbol_or_symbols=symbol,
+                        timeframe=TimeFrame.Day,
+                        start=start,
+                        end=end,
+                    )
+                    bars = data_client.get_stock_bars(request)
+
                 df = bars.df
 
                 if df.empty:
