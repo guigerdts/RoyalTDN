@@ -84,6 +84,7 @@ class Scanner:
         # 3. Para cada símbolo que pasa, descargar datos y ejecutar estrategias
         signals = []
 
+        import sys
         import time as _time
         import math
         from tqdm import tqdm
