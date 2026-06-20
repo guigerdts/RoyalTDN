@@ -223,6 +223,10 @@ class Scanner:
 
         # Helper: process a group of symbols in batches using the given
         # request class and data_client method
+        from datetime import datetime, timedelta
+        _batch_end = datetime.now()
+        _batch_start = _batch_end - timedelta(days=90)  # ~60 trading days
+
         def _process_group(
             group_symbols,
             request_cls,
@@ -244,7 +248,8 @@ class Scanner:
                     request = request_cls(
                         symbol_or_symbols=batch,
                         timeframe=TimeFrame.Day,
-                        limit=60,
+                        start=_batch_start,
+                        end=_batch_end,
                     )
                     bars_response = client_method(request)
 

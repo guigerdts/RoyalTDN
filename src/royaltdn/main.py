@@ -248,10 +248,18 @@ def cmd_run():
             API_KEY, API_SECRET,
             universe_type=os.getenv("SCANNER_UNIVERSE", "all"),
         )
+        # Crypto universe needs laxer defaults — low-price pairs, no spread data
+        _crypto_mode = os.getenv("SCANNER_UNIVERSE", "all") == "crypto"
         liquidity_filter = LiquidityFilter(
-            min_volume=int(os.getenv("SCANNER_MIN_VOLUME", "100000")),
-            min_price=float(os.getenv("SCANNER_MIN_PRICE", "5.0")),
-            max_spread_pct=float(os.getenv("SCANNER_MAX_SPREAD_PCT", "1.0")),
+            min_volume=int(os.getenv(
+                "SCANNER_MIN_VOLUME", "1000" if _crypto_mode else "100000",
+            )),
+            min_price=float(os.getenv(
+                "SCANNER_MIN_PRICE", "1.0" if _crypto_mode else "5.0",
+            )),
+            max_spread_pct=float(os.getenv(
+                "SCANNER_MAX_SPREAD_PCT", "999" if _crypto_mode else "1.0",
+            )),
         )
         strategies = {}
         strategies_enabled = os.getenv(

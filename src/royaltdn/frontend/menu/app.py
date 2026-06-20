@@ -1376,10 +1376,16 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
             console.print(
                 "[yellow]\u26a0\ufe0f  Ning\u00fan s\u00edmbolo pas\u00f3 el filtro de liquidez.[/]"
             )
-            console.print(
-                "[dim]Esto es normal con el mercado cerrado (fin de semana "
-                "o fuera del horario de trading).[/dim]"
-            )
+            if universe == "crypto":
+                console.print(
+                    "[dim]Revisa min_volume y min_price en la configuraci\u00f3n "
+                    "(crypto: min_volume=1000, min_price=1.0).[/dim]"
+                )
+            else:
+                console.print(
+                    "[dim]Esto es normal con el mercado cerrado (fin de semana "
+                    "o fuera del horario de trading).[/dim]"
+                )
 
         elif passed_sym > 0 and sig_count == 0:
             console.print()
