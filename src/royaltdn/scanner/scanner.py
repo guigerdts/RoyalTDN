@@ -55,11 +55,13 @@ class Scanner:
         liquidity_filter: LiquidityFilter,
         strategies: Dict[str, BaseStrategy],
         data_client: Any,
+        crypto_data_client: Optional[Any] = None,
     ):
         self.universe = universe
         self.liquidity_filter = liquidity_filter
         self.strategies = strategies
         self.data_client = data_client
+        self.crypto_data_client = crypto_data_client
         self._data_cache: Dict[str, pd.DataFrame] = {}
         self._last_scan_results: List[dict] = []
         self._scan_history: List[dict] = []  # Fase 6 — last 10 scans
@@ -81,7 +83,7 @@ class Scanner:
         total_symbols = len(all_symbols)
 
         # 2. Filter by liquidity
-        passed_symbols = self.liquidity_filter.filter(all_symbols, self.data_client)
+        passed_symbols = self.liquidity_filter.filter(all_symbols, self.data_client, self.crypto_data_client)
         passed_count = len(passed_symbols)
 
         # 3. Download data in batches, then run strategies
@@ -184,8 +186,9 @@ class Scanner:
     def _batch_get_symbol_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
         """Downloads historical data for multiple symbols in batches of up to 100.
 
-        Uses get_stock_bars with batches of 100 symbols to reduce ~400 API calls
-        to ~4 calls for 400 symbols. Each batch consumes 1 token from the TokenBucket.
+        Uses get_stock_bars / get_crypto_bars with batches of 100 symbols.
+        Crypto symbols (containing '/') are processed separately via
+        CryptoHistoricalDataClient. Each batch consumes 1 token from the TokenBucket.
 
         Args:
             symbols: List of symbols to download data for.
@@ -208,58 +211,92 @@ class Scanner:
         if not to_fetch:
             return result
 
-        # Group into batches of 100
         batch_size = 100
         import math
-        n_batches = math.ceil(len(to_fetch) / batch_size)
 
-        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
-        for i in range(n_batches):
-            if self._auth_failed:
-                logger.warning("Scanner: auth failure — stopping batch download")
-                break
+        # Split symbols into crypto (contains '/') and stock groups
+        crypto_symbols = [s for s in to_fetch if "/" in s]
+        stock_symbols = [s for s in to_fetch if "/" not in s]
 
-            batch = to_fetch[i * batch_size:(i + 1) * batch_size]
-            try:
-                # Rate limit: 1 token per batch
-                self._token_bucket.consume(1)
-
-                request = StockBarsRequest(
-                    symbol_or_symbols=batch,
-                    timeframe=TimeFrame.Day,
-                    limit=60,
-                )
-                bars_response = self.data_client.get_stock_bars(request)
-
-                # Process each symbol in the batch
-                for symbol in batch:
-                    symbol_bars = bars_response.data.get(symbol, [])
-                    if not symbol_bars:
-                        continue
-
-                    df = pd.DataFrame([{
-                        "timestamp": b.timestamp,
-                        "open": float(b.open),
-                        "high": float(b.high),
-                        "low": float(b.low),
-                        "close": float(b.close),
-                        "volume": int(b.volume),
-                    } for b in symbol_bars])
-
-                    df = df.sort_values("timestamp").reset_index(drop=True)
-                    self._data_cache[symbol] = df
-                    result[symbol] = df
-
-            except Exception as e:
-                err_str = str(e).lower()
-                if "401" in err_str or "403" in err_str:
-                    self._auth_failed = True
-                    logger.error("Scanner: auth error in batch {}: {} — aborting scan", i, e)
+        # Helper: process a group of symbols in batches using the given
+        # request class and data_client method
+        def _process_group(
+            group_symbols,
+            request_cls,
+            client_method,
+            group_name,
+        ):
+            if not group_symbols:
+                return
+            n_batches = math.ceil(len(group_symbols) / batch_size)
+            for i in range(n_batches):
+                if self._auth_failed:
+                    logger.warning("Scanner: auth failure — stopping {} batch download", group_name)
                     break
-                logger.warning("Scanner: batch {} ({}/{}) failed: {}", i + 1, len(batch), len(to_fetch), e)
-                continue
+
+                batch = group_symbols[i * batch_size:(i + 1) * batch_size]
+                try:
+                    self._token_bucket.consume(1)
+
+                    request = request_cls(
+                        symbol_or_symbols=batch,
+                        timeframe=TimeFrame.Day,
+                        limit=60,
+                    )
+                    bars_response = client_method(request)
+
+                    for symbol in batch:
+                        symbol_bars = bars_response.data.get(symbol, [])
+                        if not symbol_bars:
+                            continue
+
+                        df = pd.DataFrame([{
+                            "timestamp": b.timestamp,
+                            "open": float(b.open),
+                            "high": float(b.high),
+                            "low": float(b.low),
+                            "close": float(b.close),
+                            "volume": float(b.volume),
+                        } for b in symbol_bars])
+
+                        df = df.sort_values("timestamp").reset_index(drop=True)
+                        self._data_cache[symbol] = df
+                        result[symbol] = df
+
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "401" in err_str or "403" in err_str:
+                        self._auth_failed = True
+                        logger.error(
+                            "Scanner: auth error in {} batch {}: {} — aborting scan",
+                            group_name, i, e,
+                        )
+                        break
+                    logger.warning(
+                        "Scanner: {} batch {} ({}/{}) failed: {}",
+                        group_name, i + 1, len(batch), len(group_symbols), e,
+                    )
+                    continue
+
+        # Process stock symbols (most common case)
+        _process_group(stock_symbols, StockBarsRequest, self.data_client.get_stock_bars, "stock")
+
+        # Process crypto symbols if client is available
+        if self.crypto_data_client is not None:
+            _process_group(
+                crypto_symbols,
+                CryptoBarsRequest,
+                self.crypto_data_client.get_crypto_bars,
+                "crypto",
+            )
+        elif crypto_symbols:
+            logger.warning(
+                "Scanner: {} crypto symbols skipped — no crypto_data_client configured",
+                len(crypto_symbols),
+            )
 
         return result
 
