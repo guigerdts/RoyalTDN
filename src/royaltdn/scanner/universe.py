@@ -44,7 +44,7 @@ class AssetUniverse:
         api_key: str,
         secret_key: str,
         use_paper: bool = True,
-        universe_type: str = "etfs",
+        universe_type: str = "all",
         cache_ttl: int = 300,
     ):
         self.api_key = api_key
@@ -54,10 +54,10 @@ class AssetUniverse:
         # Validate universe_type
         if universe_type not in self.VALID_UNIVERSE_TYPES:
             logger.warning(
-                "AssetUniverse: SCANNER_UNIVERSE='{}' invalid — falling back to 'etfs'",
+                "AssetUniverse: SCANNER_UNIVERSE='{}' invalid — falling back to 'all'",
                 universe_type,
             )
-            universe_type = "etfs"
+            universe_type = "all"
         self._universe_type = universe_type
 
         self._cache_ttl = cache_ttl
