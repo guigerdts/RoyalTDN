@@ -1200,6 +1200,27 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
         data = state_loader.load_scanner_results()
         last_scan = data.get("last_scan", {})
 
+        # T-10: Post-scan metrics panel
+        scan_history = data.get("scan_history", [])
+        if scan_history:
+            latest = scan_history[-1]
+            total_sym = latest.get("total_symbols", 0)
+            passed_sym = latest.get("passed_symbols", 0)
+            sig_count = latest.get("signals_count", 0)
+            elapsed = latest.get("elapsed_seconds", 0.0)
+            pct = (passed_sym / total_sym * 100) if total_sym > 0 else 0.0
+            metrics_panel = (
+                f"[bold white]Total s\u00edmbolos[/]: {total_sym}\n"
+                f"[bold white]Pasaron filtro[/]: {passed_sym}/{total_sym} ({pct:.0f}%)\n"
+                f"[bold white]Se\u00f1ales[/]: {sig_count}\n"
+                f"[bold white]Tiempo[/]: {elapsed:.1f}s"
+            )
+            console.print(Panel(
+                metrics_panel,
+                title="\U0001f4ca  Resultados del Escaneo",
+                border_style="white",
+            ))
+
         console.print(
             Panel(
                 "[bold]Último escaneo[/]",
