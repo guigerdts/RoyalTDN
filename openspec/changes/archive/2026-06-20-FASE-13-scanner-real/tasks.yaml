@@ -22,7 +22,7 @@ tasks:
       AssetUniverse(universe_type='etfs') no importa requests
       ni hace API call — retorna solo DEFAULT_ETFS
     depends_on: []
-    status: pending
+    status: completed
 
   - id: "T-02"
     domain: "universe"
@@ -41,7 +41,7 @@ tasks:
       Mock get_all_assets() retorna 300 assets; _get_sp500_via_sdk()
       filtra solo los de NYSE/NASDAQ con tradable=True
     depends_on: ["T-01"]
-    status: pending
+    status: completed
 
   - id: "T-03"
     domain: "universe"
@@ -60,7 +60,7 @@ tasks:
       Llamada doble a get_symbols(): primera hace fetch, segunda
       retorna cache (verificar por mock call count)
     depends_on: ["T-02"]
-    status: pending
+    status: completed
 
   - id: "T-04"
     domain: "universe"
@@ -79,7 +79,7 @@ tasks:
       SCANNER_UNIVERSE=all con sp500 mockeado retorna sp500
       + ETFs que no estén ya en sp500, sin duplicados
     depends_on: ["T-02"]
-    status: pending
+    status: completed
 
   - id: "T-05"
     domain: "universe"
@@ -101,7 +101,7 @@ tasks:
       grep de get_sp500_symbols|get_etf_symbols|get_all_symbols
       en universe.py retorna 0 matches después del cambio
     depends_on: ["T-03", "T-04"]
-    status: pending
+    status: completed
 
   - id: "T-06"
     domain: "universe"
@@ -121,7 +121,7 @@ tasks:
       Mock get_all_assets() raise Exception → get_symbols()
       retorna [] (no crash) y cache stale se usa si existía
     depends_on: ["T-03"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 2: RATE LIMITING — TokenBucket + Retry (filters.py)
@@ -147,7 +147,7 @@ tasks:
       TokenBucket(200).consume(1) sin espera; después de 200
       consumes, el 201 bloquea hasta refill
     depends_on: []
-    status: pending
+    status: completed
 
   - id: "T-08"
     domain: "rate-limiting"
@@ -167,7 +167,7 @@ tasks:
       Mock get_latest_bar() retorna 429 dos veces y éxito al tercero
       → _call_with_retry() retorna bar sin error
     depends_on: ["T-07"]
-    status: pending
+    status: completed
 
   - id: "T-09"
     domain: "rate-limiting"
@@ -186,7 +186,7 @@ tasks:
       LiquidityFilter(token_bucket=mock).filter(["SPY"], mock_client)
       consume exactamente 1 token por símbolo procesado
     depends_on: ["T-08"]
-    status: pending
+    status: completed
 
   - id: "T-10"
     domain: "rate-limiting"
@@ -210,7 +210,7 @@ tasks:
       Mock get_latest_bar() raise 401 → LiquidityFilter.filter()
       propaga la excepción → Scanner.scan() setea _auth_failed=True
     depends_on: ["T-09"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 3: BATCH DATA — Scanner batch download (scanner.py)
@@ -235,7 +235,7 @@ tasks:
       250 símbolos → exactamente 3 llamadas a get_stock_bars
       (100+100+50) y 1 token por batch = 3 tokens consumidos
     depends_on: ["T-10"]
-    status: pending
+    status: completed
 
   - id: "T-12"
     domain: "batch"
@@ -254,7 +254,7 @@ tasks:
       scan() con 50 passed_symbols llama _batch_get_symbol_data
       una vez y no llama _get_symbol_data() individualmente
     depends_on: ["T-11"]
-    status: pending
+    status: completed
 
   - id: "T-13"
     domain: "batch"
@@ -271,7 +271,7 @@ tasks:
       Scanner.__init__() setea self._token_bucket y
       self.liquidity_filter._token_bucket apunta al mismo objeto
     depends_on: ["T-10", "T-11"]
-    status: pending
+    status: completed
 
   - id: "T-14"
     domain: "batch"
@@ -288,7 +288,7 @@ tasks:
     verification: >
       scan() no contiene llamada a _get_symbol_data después del cambio
     depends_on: ["T-12"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 4: ASYNC — Scanner async execution (orchestrator.py)
@@ -312,7 +312,7 @@ tasks:
       Llamar _run_scanner() con scanner mockeado → scan() se ejecuta
       en executor sin bloquear y retorna signals
     depends_on: []
-    status: pending
+    status: completed
 
   - id: "T-16"
     domain: "async"
@@ -330,7 +330,7 @@ tasks:
     verification: >
       Al crear Orchestrator, _is_scanning y _pending_scan son False
     depends_on: ["T-15"]
-    status: pending
+    status: completed
 
   - id: "T-17"
     domain: "async"
@@ -348,7 +348,7 @@ tasks:
       Al detectar scan_now_signal.json, _check_signals() setea
       _pending_scan=True y NO llama a scanner.scan()
     depends_on: ["T-16"]
-    status: pending
+    status: completed
 
   - id: "T-18"
     domain: "async"
@@ -365,7 +365,7 @@ tasks:
       AssetUniverse() en _setup() recibe universe_type=SCANNER_UNIVERSE
       (no default "etfs")
     depends_on: ["T-01"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 5: DISPLAY — Menu scanner fix (app.py)
@@ -387,7 +387,7 @@ tasks:
       _show_scanner con last_scan={"top_signals": [...]} renderiza
       tabla; con {"symbols": [...]} ignora ese key
     depends_on: []
-    status: pending
+    status: completed
 
   - id: "T-20"
     domain: "display"
@@ -406,7 +406,7 @@ tasks:
       Tabla renderizada tiene 6 columnas exactas con datos de
       top_signals y score>0 en verde
     depends_on: ["T-19"]
-    status: pending
+    status: completed
 
   - id: "T-21"
     domain: "display"
@@ -424,7 +424,7 @@ tasks:
       BUY en green visible, SELL en rojo, timestamp en cyan,
       sin emojis ni hex colors en la salida
     depends_on: ["T-20"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 6: INTEGRATION — Auto-scan, tqdm, error chain (orchestrator.py, pyproject.toml)
@@ -442,7 +442,7 @@ tasks:
     verification: >
       grep tqdm pyproject.toml → "tqdm>=4.66,<5" en [project].dependencies
     depends_on: []
-    status: pending
+    status: completed
 
   - id: "T-23"
     domain: "integration"
@@ -464,7 +464,7 @@ tasks:
       Legacy loop con mock scanner: scan() ejecutado vía _run_scanner(),
       no directo. _pending_scan=True dispara scan en siguiente iteración.
     depends_on: ["T-17"]
-    status: pending
+    status: completed
 
   - id: "T-24"
     domain: "integration"
@@ -484,7 +484,7 @@ tasks:
       Scanner timeout → log warning, legacy loop continúa con SPY.
       Scanner auth error → log error, no crash.
     depends_on: ["T-15", "T-23"]
-    status: pending
+    status: completed
 
   # ═══════════════════════════════════════════════════════════════════════
   # STEP 7: TESTS
@@ -513,7 +513,7 @@ tasks:
     verification: >
       pytest tests/test_scanner.py -k "asset_universe" — todos pasan
     depends_on: ["T-06"]
-    status: pending
+    status: completed
 
   - id: "T-26"
     domain: "tests"
@@ -538,7 +538,7 @@ tasks:
     verification: >
       pytest tests/test_scanner.py -k "token_bucket or rate_limiting or retry" — todos pasan
     depends_on: ["T-09", "T-10"]
-    status: pending
+    status: completed
 
   - id: "T-27"
     domain: "tests"
@@ -559,7 +559,7 @@ tasks:
     verification: >
       pytest tests/test_scanner.py -k "batch or auth_failure" — todos pasan
     depends_on: ["T-12", "T-13"]
-    status: pending
+    status: completed
 
   - id: "T-28"
     domain: "tests"
@@ -579,7 +579,7 @@ tasks:
     verification: >
       pytest tests/test_scanner_orchestrator.py -k "scanner" — todos pasan
     depends_on: ["T-15", "T-16", "T-18"]
-    status: pending
+    status: completed
 
   - id: "T-29"
     domain: "tests"
@@ -597,4 +597,4 @@ tasks:
       pytest tests/ -k "tqdm" — pasa; revisión manual de _show_scanner
       confirma que no usa last_scan["symbols"]
     depends_on: ["T-21", "T-22"]
-    status: pending
+    status: completed

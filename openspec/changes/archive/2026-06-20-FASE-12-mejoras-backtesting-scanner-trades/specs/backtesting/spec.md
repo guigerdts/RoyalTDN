@@ -69,7 +69,7 @@ SHALL add four new keys to the `metrics` dict returned by `_compute_metrics()`:
 - `sortino_ratio`: (mean(returns) - rf) / std_neg(returns), annualized * sqrt(252)
 - `calmar_ratio`: CAGR / |Max Drawdown|. If MaxDD = 0, Calmar = CAGR
 - `expectancy`: (Win Rate × Avg Win) − (Loss Rate × |Avg Loss|)
-- `avg_trade_duration`: mean of (exit_date − entry_date) across all trades in days (float). If no trades, return 0.0
+- `avg_trade_duration`: mean of (exit_date − entry_date) across all trades in hours (float). If no trades, return 0.0
 
 #### Scenario: New metrics computed with valid trades
 
@@ -102,7 +102,7 @@ SHALL add four new keys to the `metrics` dict returned by `_compute_metrics()`:
 - GIVEN trades_df has 5 entries all with pnl = 0.0
 - WHEN `_compute_metrics()` runs
 - THEN `expectancy` = 0.0
-- AND `avg_trade_duration` = 0.0 (no entry/exit date diffs)
+- AND `avg_trade_duration` = 0.0 (no entry/exit date diffs — returns 0.0 for zero-duration trades too)
 
 
 ### Requirement: RQ-BT-04 — Warning when fewer than 30 trades
