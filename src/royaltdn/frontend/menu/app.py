@@ -2368,6 +2368,24 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
             if not isinstance(all_trades, list):
                 all_trades = []
 
+            # Show placeholder when no real trades exist
+            if not all_trades:
+                console.print()
+                console.print(
+                    "[yellow]No hay trades reales aun. Los trades apareceran "
+                    "cuando el bot opere en vivo.[/]"
+                )
+                console.print()
+                console.print("[bold cyan]0[/] Volver al menu principal")
+                console.print()
+                try:
+                    sub = input(">> ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    return
+                if sub == "0":
+                    return
+                continue
+
             # ── Summary (always shows unfiltered totals) ─────────────
             total = data.get("total_trades", len(all_trades))
             win_rate = data.get("win_rate", 0)

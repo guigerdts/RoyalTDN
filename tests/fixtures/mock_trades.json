@@ -1,0 +1,48 @@
+{
+  "total_trades": 8,
+  "win_rate": 62.5,
+  "profit_factor": 1.85,
+  "total_pnl": 547.32,
+  "trades": [
+    {
+      "symbol": "AAPL",
+      "side": "long",
+      "entry_price": 175.0,
+      "exit_price": 182.5,
+      "qty": 10,
+      "pnl": 75.0,
+      "entry_at": "2025-01-08T09:30:00Z",
+      "exit_at": "2025-01-10T09:30:00Z",
+      "strategy": "sma_crossover",
+      "slippage_bps": 0.3,
+      "execution_method": "market"
+    },
+    {
+      "symbol": "MSFT",
+      "side": "long",
+      "entry_price": 410.0,
+      "exit_price": 425.0,
+      "qty": 5,
+      "pnl": 75.0,
+      "entry_at": "2025-01-09T10:00:00Z",
+      "exit_at": "2025-01-13T09:30:00Z",
+      "strategy": "momentum_atr",
+      "slippage_bps": 0.5,
+      "execution_method": "twap"
+    },
+    {
+      "symbol": "AAPL",
+      "side": "long",
+      "entry_price": 183.0,
+      "exit_price": 180.5,
+      "qty": 10,
+      "pnl": -25.0,
+      "entry_at": "2025-01-13T10:00:00Z",
+      "exit_at": "2025-01-14T09:30:00Z",
+      "strategy": "bollinger_rsi",
+      "slippage_bps": 0.4,
+      "execution_method": "market"
+    }
+  ],
+  "updated_at": "2026-06-16T03:27:38.247234+00:00"
+}
