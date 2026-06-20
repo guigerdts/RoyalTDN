@@ -14,8 +14,10 @@ from datetime import datetime, timedelta
 
 from loguru import logger
 import pandas as pd
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from typing import Optional
+
+from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 
@@ -23,34 +25,45 @@ def get_atr(
     data_client: StockHistoricalDataClient,
     symbol: str,
     period: int = 14,
+    crypto_data_client: Optional[CryptoHistoricalDataClient] = None,
 ) -> float:
     """
-    Calcula ATR(14) desde datos de velas diarias Alpaca (feed IEX).
+    Calcula ATR(14) desde datos de velas diarias.
 
-    ATR = media del True Range en los últimos `period` días.
-    True Range = max(high - low, abs(high - prev_close), abs(low - prev_close))
+    For crypto symbols (containing "/"), uses CryptoHistoricalDataClient.
+    For stocks/ETFs, uses StockHistoricalDataClient with IEX feed.
 
     Returns:
         float: Valor ATR actual. 0.0 si no hay datos suficientes.
     """
     end = datetime.now()
-    start = end - timedelta(days=period * 3)  # folio holgado
+    start = end - timedelta(days=period * 3)
 
-    bars = data_client.get_stock_bars(
-        StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=end,
-            feed="iex",
+    if "/" in symbol and crypto_data_client is not None:
+        bars = crypto_data_client.get_crypto_bars(
+            CryptoBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+            )
         )
-    )
+    else:
+        bars = data_client.get_stock_bars(
+            StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                feed="iex",
+            )
+        )
     df = bars.df
     if isinstance(df.index, pd.MultiIndex):
         df = df.droplevel(0)
 
     if len(df) < period + 1:
-        logger.warning(f"Pocos datos ({len(df)}) para ATR({period})")
+        logger.warning(f"Pocos datos ({len(df)}) para ATR({period}) en {symbol}")
         return 0.0
 
     df["prev_close"] = df["close"].shift(1)
@@ -184,3 +197,43 @@ def check_risk_limits(
         return True, reason
 
     return False, "OK"
+
+
+def check_portfolio_risk(
+    portfolio: 'PortfolioPositionManager',
+    account_equity: float,
+    max_positions: int = 5,
+    max_exposure_pct: float = 0.25,
+) -> tuple[bool, str]:
+    """Portfolio-level risk check before executing signals.
+
+    Checks:
+    1. Max concurrent positions
+    2. Per-symbol exposure limit
+    3. Total portfolio exposure cap (80%)
+
+    Args:
+        portfolio: PortfolioPositionManager instance.
+        account_equity: Current account equity (float).
+        max_positions: Max concurrent open positions (default 5).
+        max_exposure_pct: Max exposure per symbol as fraction (default 0.25 = 25%).
+
+    Returns:
+        tuple[bool, str]: (passed, reason). passed=True means all checks OK.
+    """
+    if portfolio.position_count() >= max_positions:
+        return False, f"max_positions_reached ({portfolio.position_count()}/{max_positions})"
+
+    if account_equity > 0:
+        # Check per-symbol exposure
+        for symbol in portfolio.get_all_positions():
+            exposure = portfolio.get_symbol_exposure(symbol, account_equity)
+            if exposure > max_exposure_pct:
+                return False, f"exposure_limit_exceeded ({symbol}: {exposure:.1%})"
+
+        # Check total portfolio exposure
+        total_exp = portfolio.get_total_exposure(account_equity)
+        if total_exp > 0.80:  # 80% max portfolio exposure
+            return False, f"total_exposure_exceeded ({total_exp:.1%})"
+
+    return True, "ok"

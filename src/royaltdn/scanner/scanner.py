@@ -135,6 +135,7 @@ class Scanner:
                                 "action": signal.get("action"),
                                 "price": signal.get("price"),
                                 "score": score,
+                                "source": "scanner",
                                 "metadata": metadata,
                             }
                             signals.append(signal_dict)
