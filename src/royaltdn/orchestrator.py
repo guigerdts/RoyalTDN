@@ -36,7 +36,7 @@ from royaltdn.strategy.sma_strategy import SMAStrategy
 from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
 from royaltdn.strategy.momentum_atr import MomentumATRStrategy
 from royaltdn.strategy.factor_rotation import FactorRotationStrategy
-from royaltdn.scanner import AssetUniverse, LiquidityFilter, Scanner
+from royaltdn.scanner import Scanner
 from royaltdn.execution.twap import execute_twap
 from royaltdn.risk_manager import (
     calculate_position_size,
@@ -70,13 +70,8 @@ def _atomic_write(path: Path, data: dict) -> bool:
 
 # ── Constantes de entorno (Scanner) ───────────────────────────────────────
 
-SCANNER_MIN_VOLUME = int(os.getenv("SCANNER_MIN_VOLUME", "100000"))
-SCANNER_MIN_PRICE = float(os.getenv("SCANNER_MIN_PRICE", "5.0"))
-SCANNER_MAX_SPREAD_PCT = float(os.getenv("SCANNER_MAX_SPREAD_PCT", "1.0"))
 SCANNER_INTERVAL_MINUTES = int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
-STRATEGIES_ENABLED = os.getenv("STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr").split(",")
 SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N", "3"))
-SCANNER_UNIVERSE = os.getenv("SCANNER_UNIVERSE", "all")
 
 # ── Constantes ────────────────────────────────────────────────────────────
 
@@ -186,36 +181,11 @@ class Orchestrator:
         # Trading client (sincrónico, se usa en executor)
         self._trading = TradingClient(self.api_key, self.secret_key, paper=True)
 
-        # Scanner — si ya se pasó desde main.py, usarlo sin sobrescribir
+        # Scanner — viene desde main.py; el Orchestrator no lo crea
         if self._scanner is not None:
-            logger.info("Scanner recibido desde main.py — saltando inicialización interna")
+            logger.info("Scanner recibido desde main.py — listo para usar")
         else:
-            try:
-                data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-                universe = AssetUniverse(
-                    self.api_key, self.secret_key,
-                    universe_type=SCANNER_UNIVERSE,
-                )
-                liquidity_filter = LiquidityFilter(
-                    min_volume=SCANNER_MIN_VOLUME,
-                    min_price=SCANNER_MIN_PRICE,
-                    max_spread_pct=SCANNER_MAX_SPREAD_PCT,
-                )
-                strategies = {}
-                if "sma_crossover" in STRATEGIES_ENABLED:
-                    strategies["sma_crossover"] = SMAStrategy()
-                if "bollinger_rsi" in STRATEGIES_ENABLED:
-                    strategies["bollinger_rsi"] = BollingerRSIStrategy()
-                if "momentum_atr" in STRATEGIES_ENABLED:
-                    strategies["momentum_atr"] = MomentumATRStrategy()
-                if "factor_rotation" in STRATEGIES_ENABLED:
-                    strategies["factor_rotation"] = FactorRotationStrategy()
-
-                self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
-                logger.info("Scanner inicializado — universo={} estrategias={}", SCANNER_UNIVERSE, list(strategies.keys()))
-            except Exception as e:
-                logger.warning("Scanner no disponible ({}) — operando solo con SPY", e)
-                self._scanner = None
+            logger.warning("Scanner no disponible — operando sin escaneo multi-activo")
 
         # User strategies (Fase 7)
         try:
@@ -1119,39 +1089,6 @@ class Orchestrator:
 
         while self._running and not self._killed:
             try:
-                # ── Fallback scanner init (Fase 13) ──
-                if self._scanner is None:
-                    try:
-                        data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-                        universe = AssetUniverse(
-                            self.api_key, self.secret_key,
-                            universe_type=SCANNER_UNIVERSE,
-                        )
-                        liquidity_filter = LiquidityFilter(
-                            min_volume=SCANNER_MIN_VOLUME,
-                            min_price=SCANNER_MIN_PRICE,
-                            max_spread_pct=SCANNER_MAX_SPREAD_PCT,
-                        )
-                        strategies = {}
-                        if "sma_crossover" in STRATEGIES_ENABLED:
-                            strategies["sma_crossover"] = SMAStrategy()
-                        if "bollinger_rsi" in STRATEGIES_ENABLED:
-                            strategies["bollinger_rsi"] = BollingerRSIStrategy()
-                        if "momentum_atr" in STRATEGIES_ENABLED:
-                            strategies["momentum_atr"] = MomentumATRStrategy()
-                        if "factor_rotation" in STRATEGIES_ENABLED:
-                            strategies["factor_rotation"] = FactorRotationStrategy()
-
-                        self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
-                        logger.info(
-                            "Scanner inicializado (fallback en legacy loop) — "
-                            "universo={} estrategias={}",
-                            SCANNER_UNIVERSE, list(strategies.keys()),
-                        )
-                    except Exception as e:
-                        logger.warning("Scanner fallback también falló ({})", e)
-                        self._scanner = None
-
                 # ── Console IPC signals (Fase 8) ──
                 self._check_signals()
 
