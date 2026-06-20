@@ -1329,6 +1329,7 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
         universe_label = {
             "etfs": "ETFs",
             "sp500": "S&P 500",
+            "crypto": "Crypto (10 pairs)",
             "all": "all (ETFs + S&P 500)",
         }.get(universe, universe)
         console.print(

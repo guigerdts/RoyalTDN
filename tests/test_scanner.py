@@ -212,14 +212,14 @@ def test_liquidity_filter_all_pass() -> None:
     """Three symbols with good liquidity pass the filter."""
     f = LiquidityFilter(min_volume=500_000, min_price=5.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = [
-        MockBar(close=150.0, volume=1_000_000),
-        MockBar(close=200.0, volume=2_000_000),
-        MockBar(close=50.0, volume=800_000),
+    client.get_stock_bars.side_effect = [
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
+        MagicMock(df=pd.DataFrame({"volume": [2_000_000], "close": [200.0]})),
+        MagicMock(df=pd.DataFrame({"volume": [800_000], "close": [50.0]})),
     ]
     result = f.filter(["SPY", "QQQ", "IWM"], client)
     assert result == ["SPY", "QQQ", "IWM"]
-    assert client.get_latest_bar.call_count == 3
+    assert client.get_stock_bars.call_count == 3
     print("  ✅ LiquidityFilter: 3/3 pasaron")
 
 
@@ -227,9 +227,9 @@ def test_liquidity_filter_volume_reject() -> None:
     """Volume below minimum is rejected."""
     f = LiquidityFilter(min_volume=500_000, min_price=5.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = [
-        MockBar(close=150.0, volume=1_000),
-        MockBar(close=200.0, volume=2_000_000),
+    client.get_stock_bars.side_effect = [
+        MagicMock(df=pd.DataFrame({"volume": [1_000], "close": [150.0]})),
+        MagicMock(df=pd.DataFrame({"volume": [2_000_000], "close": [200.0]})),
     ]
     result = f.filter(["SPY", "QQQ"], client)
     assert result == ["QQQ"]  # SPY rechazado por bajo volumen
@@ -240,9 +240,9 @@ def test_liquidity_filter_price_reject() -> None:
     """Price below minimum is rejected."""
     f = LiquidityFilter(min_volume=100_000, min_price=10.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = [
-        MockBar(close=2.0, volume=1_000_000),
-        MockBar(close=150.0, volume=1_000_000),
+    client.get_stock_bars.side_effect = [
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [2.0]})),
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
     ]
     result = f.filter(["PENNY", "SPY"], client)
     assert result == ["SPY"]  # PENNY rechazado por bajo precio
@@ -253,9 +253,9 @@ def test_liquidity_filter_api_error() -> None:
     """API error for a symbol is silently discarded."""
     f = LiquidityFilter(min_volume=100_000, min_price=5.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = [
+    client.get_stock_bars.side_effect = [
         Exception("API error"),
-        MockBar(close=150.0, volume=1_000_000),
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
     ]
     result = f.filter(["BAD", "SPY"], client)
     assert result == ["SPY"]  # BAD descartado por error
@@ -311,10 +311,10 @@ def test_liquidity_filter_rate_limiting() -> None:
         assert initial_tokens == 200
 
         client = MagicMock()
-        client.get_latest_bar.side_effect = [
-            MockBar(close=150.0, volume=1_000_000),
-            MockBar(close=200.0, volume=2_000_000),
-            MockBar(close=50.0, volume=800_000),
+        client.get_stock_bars.side_effect = [
+            MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
+            MagicMock(df=pd.DataFrame({"volume": [2_000_000], "close": [200.0]})),
+            MagicMock(df=pd.DataFrame({"volume": [800_000], "close": [50.0]})),
         ]
         f.filter(["SPY", "QQQ", "IWM"], client)
 
@@ -323,49 +323,40 @@ def test_liquidity_filter_rate_limiting() -> None:
     print("  ✅ LiquidityFilter: consumed 1 token per symbol (3 total)")
 
 
-@patch("royaltdn.scanner.filters.time.sleep")
-def test_liquidity_filter_retry_success_on_3rd(mock_sleep) -> None:
-    """_call_with_retry retries on HTTP 429 and succeeds on 3rd attempt."""
+def test_liquidity_filter_error_isolation_per_symbol() -> None:
+    """One symbol failing does not block others from passing."""
     f = LiquidityFilter(min_volume=100_000, min_price=5.0)
     client = MagicMock()
-    # Mock get_latest_bar: fail twice with 429, succeed on 3rd
-    client.get_latest_bar.side_effect = [
-        Exception("429 Too Many Requests"),
-        Exception("429 Too Many Requests"),
-        MockBar(close=150.0, volume=1_000_000),
+    client.get_stock_bars.side_effect = [
+        Exception("API error"),
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
     ]
-    result = f._call_with_retry("SPY", client)
-    assert result is not None
-    assert result.close == 150.0
-    assert client.get_latest_bar.call_count == 3
-    print("  ✅ _call_with_retry: succeeded on 3rd attempt after 429")
+    result = f.filter(["BAD", "SPY"], client)
+    assert result == ["SPY"]  # BAD descartado por error, SPY pasa
+    print("  ✅ LiquidityFilter: error isolation per symbol")
 
 
-@patch("royaltdn.scanner.filters.time.sleep")
-def test_liquidity_filter_retry_max_exhausted(mock_sleep) -> None:
-    """_call_with_retry returns None after exhausting all 5 retries on 429."""
+def test_liquidity_filter_all_fail_returns_empty() -> None:
+    """All symbols failing returns empty list."""
     f = LiquidityFilter(min_volume=100_000, min_price=5.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = Exception("429 Too Many Requests")
-    result = f._call_with_retry("SPY", client)
-    assert result is None
-    assert client.get_latest_bar.call_count == 5
-    print("  ✅ _call_with_retry: returns None after 5 exhausted retries")
+    client.get_stock_bars.side_effect = Exception("API error")
+    result = f.filter(["SPY", "QQQ"], client)
+    assert result == []
+    print("  ✅ LiquidityFilter: all fail → empty")
 
 
-def test_liquidity_filter_auth_abort() -> None:
-    """HTTP 401 in _call_with_retry aborts immediately (raises)."""
+def test_liquidity_filter_auth_error_isolation() -> None:
+    """Auth errors are also caught and symbol is skipped (no special abort)."""
     f = LiquidityFilter(min_volume=100_000, min_price=5.0)
     client = MagicMock()
-    client.get_latest_bar.side_effect = Exception("401 Unauthorized")
-
-    import pytest as _pytest
-    with _pytest.raises(Exception) as exc_info:
-        f._call_with_retry("SPY", client)
-    assert "401" in str(exc_info.value)
-    # Should only have made 1 attempt (no retry on auth errors)
-    assert client.get_latest_bar.call_count == 1
-    print("  ✅ _call_with_retry: 401 aborts immediately, no retry")
+    client.get_stock_bars.side_effect = [
+        Exception("401 Unauthorized"),
+        MagicMock(df=pd.DataFrame({"volume": [1_000_000], "close": [150.0]})),
+    ]
+    result = f.filter(["BAD", "SPY"], client)
+    assert result == ["SPY"]
+    print("  ✅ LiquidityFilter: auth error skipped, other symbols continue")
 
 
 # ── Tests Scanner ───────────────────────────────────────────────────────
