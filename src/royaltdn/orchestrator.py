@@ -98,6 +98,8 @@ class Orchestrator:
         sma_fast:         Período SMA rápida (default 5).
         sma_slow:         Período SMA lenta (default 20).
         feed:             Alpaca feed (default "iex").
+        scanner:          Scanner instance (opcional); si se pasa, se usa en
+                          lugar de inicializar uno nuevo en _setup().
     """
 
     def __init__(
@@ -113,6 +115,7 @@ class Orchestrator:
         twap_min_shares: int = 100,
         twap_duration_minutes: int = 10,
         twap_enabled: bool = True,
+        scanner: Optional[Scanner] = None,
     ):
         self.api_key = api_key
         self.secret_key = secret_key
@@ -134,7 +137,7 @@ class Orchestrator:
         # Tasks asyncio
         self._ingestor: Optional[DataIngestor] = None
         self._strategy: Optional[SMAStrategy] = None
-        self._scanner: Optional[Scanner] = None
+        self._scanner: Optional[Scanner] = scanner  # ya viene inicializado desde main
         self._ingestor_task: Optional[asyncio.Task] = None
         self._strategy_task: Optional[asyncio.Task] = None
 

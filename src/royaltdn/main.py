@@ -213,12 +213,55 @@ def cmd_run():
 
     from royaltdn.frontend.menu.app import run_menu
 
+    # ── Scanner: inicializar antes del Orchestrator ──
+    scanner = None
+    try:
+        from alpaca.data.historical import StockHistoricalDataClient
+        from royaltdn.scanner import AssetUniverse, LiquidityFilter, Scanner
+        from royaltdn.strategy.sma_strategy import SMAStrategy
+        from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
+        from royaltdn.strategy.momentum_atr import MomentumATRStrategy
+        from royaltdn.strategy.factor_rotation import FactorRotationStrategy
+
+        data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
+        universe = AssetUniverse(
+            API_KEY, API_SECRET,
+            universe_type=os.getenv("SCANNER_UNIVERSE", "etfs"),
+        )
+        liquidity_filter = LiquidityFilter(
+            min_volume=float(os.getenv("SCANNER_MIN_VOLUME", "500000")),
+            min_price=float(os.getenv("SCANNER_MIN_PRICE", "5.0")),
+            max_spread_pct=float(os.getenv("SCANNER_MAX_SPREAD_PCT", "0.5")),
+        )
+        strategies = {}
+        strategies_enabled = os.getenv(
+            "STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr"
+        ).split(",")
+        if "sma_crossover" in strategies_enabled:
+            strategies["sma_crossover"] = SMAStrategy()
+        if "bollinger_rsi" in strategies_enabled:
+            strategies["bollinger_rsi"] = BollingerRSIStrategy()
+        if "momentum_atr" in strategies_enabled:
+            strategies["momentum_atr"] = MomentumATRStrategy()
+        if "factor_rotation" in strategies_enabled:
+            strategies["factor_rotation"] = FactorRotationStrategy()
+
+        scanner = Scanner(universe, liquidity_filter, strategies, data_client)
+        logger.info(
+            "Scanner inicializado desde main — universo={} estrategias={}",
+            os.getenv("SCANNER_UNIVERSE", "etfs"),
+            list(strategies.keys()),
+        )
+    except Exception as e:
+        logger.warning("Scanner no disponible desde main ({})", e)
+
     orch = Orchestrator(
         api_key=API_KEY,
         secret_key=API_SECRET,
         redis_url=REDIS_URL,
         db_url=DATABASE_URL,
         symbol=SYMBOL,
+        scanner=scanner,
     )
 
     t = threading.Thread(target=orch.start, daemon=True)
