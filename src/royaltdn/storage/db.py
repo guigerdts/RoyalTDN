@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_order_id   VARCHAR(50),
     entry_at        TIMESTAMPTZ     NOT NULL,
     exit_at         TIMESTAMPTZ     NOT NULL,
-    strategy        VARCHAR(50)     NOT NULL DEFAULT 'sma_crossover'
+    strategy        VARCHAR(50)     NOT NULL DEFAULT 'sma_crossover',
+    source          VARCHAR(20)     NOT NULL DEFAULT 'legacy'
 );
 
 CREATE TABLE IF NOT EXISTS signals (
@@ -230,9 +231,9 @@ class Database:
 
         await self._execute(
             "INSERT INTO trades (symbol, side, entry_price, exit_price, qty, pnl, pnl_pct, "
-            "entry_order_id, exit_order_id, entry_at, exit_at, strategy, "
+            "entry_order_id, exit_order_id, entry_at, exit_at, strategy, source, "
             "slippage_bps, arrival_price, execution_method) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 trade["symbol"],
                 trade["side"],
@@ -246,6 +247,7 @@ class Database:
                 trade["entry_at"],
                 trade["exit_at"],
                 trade.get("strategy", "sma_crossover"),
+                trade.get("source", "legacy"),
                 trade.get("slippage_bps"),
                 trade.get("arrival_price"),
                 trade.get("execution_method", "market"),

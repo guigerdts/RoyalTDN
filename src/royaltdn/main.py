@@ -35,6 +35,8 @@ API_SECRET = os.getenv("ALPACA_SECRET_KEY")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 SYMBOL = "SPY"
+AUTO_EXECUTE = os.getenv("AUTO_EXECUTE", "false").lower() == "true"
+MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", "5"))
 
 
 # ── Comando: check ─────────────────────────────────────────────────────────
@@ -290,6 +292,8 @@ def cmd_run():
         db_url=DATABASE_URL,
         symbol=SYMBOL,
         scanner=scanner,
+        auto_execute=AUTO_EXECUTE,
+        max_positions=MAX_POSITIONS,
     )
 
     def _run_orchestrator():

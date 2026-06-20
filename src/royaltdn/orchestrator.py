@@ -38,6 +38,7 @@ from royaltdn.strategy.momentum_atr import MomentumATRStrategy
 from royaltdn.strategy.factor_rotation import FactorRotationStrategy
 from royaltdn.scanner import Scanner
 from royaltdn.execution.twap import execute_twap
+from royaltdn.risk.portfolio import PortfolioPositionManager
 from royaltdn.risk_manager import (
     calculate_position_size,
     check_risk_limits,
@@ -111,6 +112,8 @@ class Orchestrator:
         twap_duration_minutes: int = 10,
         twap_enabled: bool = True,
         scanner: Optional[Scanner] = None,
+        auto_execute: bool = False,
+        max_positions: int = 5,
     ):
         self.api_key = api_key
         self.secret_key = secret_key
@@ -123,6 +126,8 @@ class Orchestrator:
         self.twap_min_shares = twap_min_shares
         self.twap_duration_minutes = twap_duration_minutes
         self.twap_enabled = twap_enabled
+        self.auto_execute = auto_execute
+        self.max_positions = max_positions
 
         # Clientes
         self._trading: Optional[TradingClient] = None
@@ -143,11 +148,6 @@ class Orchestrator:
         # Estado del bot
         self._running = False
         self.paused = False
-        self._position: Optional[str] = None         # "long" | None
-        self._position_qty: int = 0
-        self._last_entry_price: float = 0.0
-        self._last_entry_order_id: Optional[str] = None
-        self._last_entry_at: Optional[datetime] = None
         self._initial_equity: float = 0.0
         self._consecutive_losses: int = 0
         self._trades_count: int = 0
@@ -168,6 +168,10 @@ class Orchestrator:
         # Scanner flags (Fase 13)
         self._is_scanning: bool = False
         self._pending_scan: bool = False
+
+        # Portfolio Position Manager (Fase 16)
+        self._portfolio: PortfolioPositionManager = PortfolioPositionManager()
+        self.scanner_top_n: int = SCANNER_TOP_N
 
         # User strategies (Fase 7)
         self.strategy_store = None
@@ -233,22 +237,22 @@ class Orchestrator:
             account = self._trading.get_account()
             self._initial_equity = float(account.equity)
 
-            # Posición actual
+            # Sincronizar todas las posiciones abiertas en PPM
             try:
-                pos = self._trading.get_open_position(self.symbol)
-                qty = float(pos.qty)
-                self._position = "long" if qty > 0 else ("short" if qty < 0 else None)
-                self._position_qty = int(abs(qty))
-            except Exception:
-                self._position = None
-                self._position_qty = 0
-
-            logger.info(
-                "Estado inicial — Capital: ${:.2f} | Posición: {} ({} acc)",
-                self._initial_equity,
-                self._position or "none",
-                self._position_qty,
-            )
+                positions = self._trading.get_all_positions()
+                for pos in positions:
+                    sym = pos.symbol
+                    qty = float(pos.qty)
+                    side = "long" if qty > 0 else "short"
+                    price = float(pos.current_price) if hasattr(pos, 'current_price') and pos.current_price else 0.0
+                    self._portfolio.open_position(sym, int(abs(qty)), price, strategy="legacy", side=side)
+                logger.info(
+                    "Estado inicial — Capital: ${:.2f} | Posiciones: {}",
+                    self._initial_equity,
+                    self._portfolio.position_count(),
+                )
+            except Exception as e:
+                logger.warning("Error sincronizando posiciones: {}", e)
         except Exception as e:
             logger.error("Error sincronizando estado del broker: {}", e)
             return False
@@ -299,6 +303,25 @@ class Orchestrator:
         logger.info("SMAStrategy task creada")
 
     # ── Ejecución de señales ─────────────────────────────────────────
+
+    @staticmethod
+    def _is_market_open(symbol: str) -> bool:
+        """Check if the US stock market is currently open for trading.
+        
+        Stocks/ETFs: Mon-Fri, 9:30-16:00 ET.
+        Crypto (symbol contains '/'): always open.
+        
+        Returns:
+            bool: True if market is open for this symbol type.
+        """
+        if "/" in symbol:
+            return True  # crypto 24/7
+        
+        from datetime import timedelta
+        now_et = datetime.utcnow() - timedelta(hours=4)  # EDT (UTC-4)
+        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        return 9 <= now_et.hour < 16  # 9:30-16:00 simplified
 
     async def _get_atr_value(self) -> float:
         """Calcula ATR usando Alpaca REST (sincrónico en executor)."""
@@ -377,22 +400,22 @@ class Orchestrator:
         return self._equity_points
 
     def _build_positions_list(self) -> list:
-        """Build open positions list from orchestrator state."""
-        if not self._position:
+        """Build open positions list from PortfolioPositionManager."""
+        positions = self._portfolio.get_all_positions()
+        if not positions:
             return []
-        return [{
-            "symbol": self.symbol,
-            "side": self._position,
-            "qty": self._position_qty,
-            "entry_price": self._last_entry_price,
-            "current_price": self._last_known_price if self._last_known_price else self._last_entry_price,
-            "pnl_unrealized": round(
-                (self._last_known_price - self._last_entry_price) * self._position_qty
-                if self._last_known_price and self._last_entry_price else 0, 2
-            ),
-            "entry_at": self._last_entry_at.isoformat() if self._last_entry_at else None,
-            "strategy": "sma_crossover",
-        }]
+        result = []
+        for symbol, pos in positions.items():
+            result.append({
+                "symbol": symbol,
+                "side": pos.side,
+                "qty": pos.qty,
+                "entry_price": pos.entry_price,
+                "current_price": self._last_known_price if self._last_known_price else pos.entry_price,
+                "entry_at": pos.opened_at.isoformat(),
+                "strategy": pos.strategy,
+            })
+        return result
 
     def _build_strategies_list(self) -> list:
         """Build strategies status list from scanner + config + user strategies."""
@@ -573,9 +596,10 @@ class Orchestrator:
         })
 
         # 2. positions.json
+        open_positions = self._build_positions_list()
         _atomic_write(LOGS_DIR / "positions.json", {
-            "open_positions": self._build_positions_list(),
-            "total_open": 1 if self._position else 0,
+            "open_positions": open_positions,
+            "total_open": len(open_positions),
             "updated_at": now.isoformat(),
         })
 
@@ -659,7 +683,7 @@ class Orchestrator:
         }
         _atomic_write(path, output)
 
-    async def _submit_order(self, side: OrderSide, qty: int) -> Optional[object]:
+    async def _submit_order(self, side: OrderSide, qty: int, symbol: Optional[str] = None) -> Optional[object]:
         """Envía orden directa o TWAP si supera el umbral.
 
         Si la orden es grande (``qty >= twap_min_shares``) y TWAP está
@@ -676,7 +700,7 @@ class Orchestrator:
                 qty, self.twap_min_shares, self.twap_duration_minutes,
             )
             results = await execute_twap(
-                symbol=self.symbol,
+                symbol=symbol or self.symbol,
                 total_shares=qty,
                 duration_minutes=self.twap_duration_minutes,
                 side=side,
@@ -692,7 +716,7 @@ class Orchestrator:
                     if r.get("order_id"):
                         await self._db.insert_order({
                             "order_id": r["order_id"],
-                            "symbol": self.symbol,
+                            "symbol": symbol or self.symbol,
                             "side": side.name,
                             "qty": r["shares"],
                             "order_type": "market",
@@ -707,18 +731,18 @@ class Orchestrator:
         # Orden directa (normal)
         order = self._trading.submit_order(
             MarketOrderRequest(
-                symbol=self.symbol,
+                symbol=symbol or self.symbol,
                 qty=qty,
                 side=side,
                 time_in_force=TimeInForce.DAY,
             )
         )
-        logger.info("📤 Orden: {} {} {} — ID: {}", side.name, qty, self.symbol, order.id)
+        logger.info("📤 Orden: {} {} {} — ID: {}", side.name, qty, symbol or self.symbol, order.id)
 
         if self._db and self._db.is_connected:
             await self._db.insert_order({
                 "order_id": order.id,
-                "symbol": self.symbol,
+                "symbol": symbol or self.symbol,
                 "side": side.name,
                 "qty": qty,
                 "order_type": "market",
@@ -752,6 +776,132 @@ class Orchestrator:
             return float(result.filled_avg_price)
         return None
 
+    async def _execute_scanner_signals(self, signals: List[dict]) -> None:
+        """Execute top-N scanner signals through the risk pipeline.
+        
+        Pipeline gates per signal:
+        1. Kill switch check
+        2. Duplicate position check (same symbol)
+        3. Max positions check
+        4. SPY + legacy mode conflict
+        5. Market hours check (stocks only)
+        6. Per-symbol exposure > 25%
+        7. RiskManager limits
+        
+        If all gates pass: ATR sizing → Alpaca order → PPM tracking → trade record → Telegram.
+        """
+        if not self.auto_execute:
+            logger.info("Scanner auto-execute disabled — signals logged only")
+            for sig in signals:
+                logger.info(f"Scanner signal (not executed): {sig.get('symbol')} {sig.get('action')}")
+            return
+        
+        # Gate 0: Kill switch check before batch
+        account = self._trading.get_account()
+        account_equity = float(account.equity)
+        
+        kill, reason = check_risk_limits(
+            account, self._initial_equity, self._consecutive_losses,
+        )
+        if kill:
+            logger.warning(f"Scanner: kill switch triggered ({reason}) — closing ALL positions")
+            closed = self._portfolio.close_all_positions()
+            for pos in closed:
+                if self._portfolio.has_position(pos.symbol):
+                    await self._submit_order(OrderSide.SELL, int(pos.qty), symbol=pos.symbol)
+            self._killed = True
+            return
+        
+        for signal in signals:
+            symbol = signal.get("symbol", "")
+            action = signal.get("action", "BUY")
+            
+            # Gate 1: Duplicate position
+            if self._portfolio.has_position(symbol):
+                logger.info(f"Signal rejected: {symbol} - position already open")
+                continue
+            
+            # Gate 2: Max positions
+            if self._portfolio.position_count() >= self.max_positions:
+                logger.info(f"Signal rejected: {symbol} - max positions reached ({self._portfolio.position_count()}/{self.max_positions})")
+                continue
+            
+            # Gate 3: SPY + legacy conflict
+            if symbol == "SPY" and self._use_legacy_fallback and self._portfolio.has_position("SPY"):
+                logger.info(f"Signal rejected: {symbol} - legacy mode already holds SPY")
+                continue
+            
+            # Gate 4: Market hours (stocks only)
+            if not self._is_market_open(symbol):
+                logger.info(f"Signal rejected: {symbol} - market closed")
+                continue
+            
+            # Gate 5: Per-symbol exposure
+            sym_exposure = self._portfolio.get_symbol_exposure(symbol, account_equity)
+            if sym_exposure > 0.25:
+                logger.info(f"Signal rejected: {symbol} - exposure {sym_exposure:.1%} exceeds 25% limit")
+                continue
+            
+            # Gate 6: RiskManager limits
+            if not self._killed:
+                kill2, reason2 = check_risk_limits(
+                    account, self._initial_equity, self._consecutive_losses,
+                )
+                if kill2:
+                    logger.warning(f"Signal rejected: {symbol} - {reason2}")
+                    continue
+            
+            # Calculate ATR-based position size
+            data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+            atr = get_atr(data_client, symbol)
+            qty = calculate_position_size(account, atr)
+            
+            if qty <= 0:
+                logger.warning(f"Signal rejected: {symbol} - invalid position size ({qty})")
+                continue
+            
+            # Submit order
+            side = OrderSide.BUY if action == "BUY" else OrderSide.SELL
+            entry = await self._submit_order(side, qty, symbol=symbol)
+            
+            if entry:
+                filled_price = self._get_filled_price(entry) or float(signal.get("price", 0))
+                
+                # Track position in PPM
+                self._portfolio.open_position(
+                    symbol=symbol,
+                    qty=float(qty),
+                    entry_price=filled_price,
+                    strategy="scanner",
+                )
+                
+                # Record trade
+                trade_record = {
+                    "symbol": symbol,
+                    "side": "long",
+                    "entry_price": filled_price,
+                    "exit_price": 0.0,
+                    "qty": qty,
+                    "pnl": 0.0,
+                    "entry_at": datetime.now(timezone.utc).isoformat(),
+                    "exit_at": None,
+                    "strategy": "scanner",
+                    "source": "scanner",
+                }
+                try:
+                    self._append_trade(trade_record)
+                except Exception as e:
+                    logger.warning(f"Error recording scanner trade: {e}")
+                
+                # Telegram notification
+                try:
+                    from royaltdn.alerts import notify_entry
+                    await notify_entry(symbol, "buy", qty, filled_price)
+                except Exception as e:
+                    logger.warning(f"Telegram notification error: {e}")
+                
+                logger.info(f"Scanner signal EXECUTED: BUY {qty} {symbol} @ ${filled_price:.2f}")
+
     async def _execute_signal(self, signal: dict) -> None:
         """Procesa una señal: risk check → posición → orden → DB → alerta."""
         action = signal.get("action")
@@ -774,9 +924,10 @@ class Orchestrator:
                 await notify_kill_switch(reason)
                 logger.error("🛑 {}", reason)
 
-                # Cerrar posición si existe
-                if self._position == "long" and self._position_qty > 0:
-                    await self._submit_order(OrderSide.SELL, self._position_qty)
+                # Cerrar todas las posiciones
+                closed = self._portfolio.close_all_positions()
+                for pos in closed:
+                    await self._submit_order(OrderSide.SELL, int(pos.qty), symbol=pos.symbol)
 
                 self._killed = True
                 return
@@ -801,7 +952,8 @@ class Orchestrator:
         self._last_known_price = price
 
         # ── BUY ──
-        if action == "BUY" and self._position != "long":
+        symbol_for_order = signal.get("symbol", self.symbol)
+        if action == "BUY" and not self._portfolio.has_position(symbol_for_order):
             # Calcular ATR y tamaño de posición
             atr = await self._get_atr_value()
             account = self._trading.get_account()
@@ -811,51 +963,54 @@ class Orchestrator:
             arrival_price = price
             exec_method = "twap" if self.twap_enabled and qty >= self.twap_min_shares else "market"
 
-            # Si estábamos en short, cerrar primero
-            if self._position == "short":
-                await self._submit_order(OrderSide.BUY, self._position_qty)
-                await asyncio.sleep(2)
+            entry = await self._submit_order(OrderSide.BUY, qty, symbol=symbol_for_order)
 
-            entry = await self._submit_order(OrderSide.BUY, qty)
-            self._position = "long"
-            self._position_qty = qty
-            self._last_entry_price = arrival_price
-            self._last_entry_order_id = self._get_order_id(entry)
-            self._last_entry_at = datetime.now(timezone.utc)
+            if entry:
+                self._portfolio.open_position(
+                    symbol=symbol_for_order,
+                    qty=float(qty),
+                    entry_price=arrival_price,
+                    strategy="sma_crossover",
+                )
 
             if price > 0:
-                await notify_entry(self.symbol, "buy", qty, price)
+                await notify_entry(symbol_for_order, "buy", qty, price)
 
         # ── SELL (cierre) ──
-        elif action == "SELL" and self._position == "long":
+        elif action == "SELL" and self._portfolio.has_position(symbol_for_order):
+            pos = self._portfolio.get_position(symbol_for_order)
+            if not pos:
+                logger.warning(f"No position found for {symbol_for_order}")
+                return
+
             # Capturar arrival price antes de ejecutar
             arrival_price = price
-            exec_method = "twap" if self.twap_enabled and self._position_qty >= self.twap_min_shares else "market"
+            exec_method = "twap" if self.twap_enabled and pos.qty >= self.twap_min_shares else "market"
 
-            exit_result = await self._submit_order(OrderSide.SELL, self._position_qty)
+            exit_result = await self._submit_order(OrderSide.SELL, int(pos.qty), symbol=symbol_for_order)
 
             # P&L
-            pnl = (price - self._last_entry_price) * self._position_qty
+            pnl = (price - pos.entry_price) * float(pos.qty)
 
             # Slippage (filled vs arrival)
             filled_price = self._get_filled_price(exit_result)
             slippage_bps = calculate_slippage(filled_price, arrival_price) if filled_price else None
 
             if price > 0:
-                await notify_exit(self.symbol, "sell", self._position_qty, price, pnl)
+                await notify_exit(symbol_for_order, "sell", int(pos.qty), price, pnl)
 
             # Registrar trade en DB (con TCA)
-            if self._db and self._db.is_connected and self._last_entry_at:
+            if self._db and self._db.is_connected and pos.opened_at:
                 await self._db.insert_trade({
-                    "symbol": self.symbol,
+                    "symbol": symbol_for_order,
                     "side": "long",
-                    "entry_price": self._last_entry_price,
+                    "entry_price": pos.entry_price,
                     "exit_price": price,
-                    "qty": self._position_qty,
+                    "qty": int(pos.qty),
                     "pnl": pnl,
-                    "entry_order_id": self._last_entry_order_id,
+                    "entry_order_id": None,
                     "exit_order_id": self._get_order_id(exit_result),
-                    "entry_at": self._last_entry_at,
+                    "entry_at": pos.opened_at,
                     "exit_at": datetime.now(timezone.utc),
                     "strategy": "sma_crossover",
                     "slippage_bps": slippage_bps,
@@ -873,13 +1028,13 @@ class Orchestrator:
 
             # Append trade to logs/trades.json (Fase 6)
             trade_record = {
-                "symbol": self.symbol,
+                "symbol": symbol_for_order,
                 "side": "long",
-                "entry_price": self._last_entry_price,
+                "entry_price": pos.entry_price,
                 "exit_price": price,
-                "qty": self._position_qty,
+                "qty": int(pos.qty),
                 "pnl": round(pnl, 2),
-                "entry_at": self._last_entry_at.isoformat() if self._last_entry_at else None,
+                "entry_at": pos.opened_at.isoformat(),
                 "exit_at": datetime.now(timezone.utc).isoformat(),
                 "strategy": "sma_crossover",
                 "slippage_bps": slippage_bps,
@@ -890,8 +1045,7 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Error appending trade: {}", e)
 
-            self._position = None
-            self._position_qty = 0
+            self._portfolio.close_position(symbol_for_order)
 
     # ── Monitor de salud de tareas ──────────────────────────────────
 
@@ -1106,8 +1260,7 @@ class Orchestrator:
                         )
                         # Solo ejecutar trades si el bot NO está pausado
                         if not self.paused:
-                            for sig in top_signals:
-                                await self._execute_signal(sig)
+                            await self._execute_scanner_signals(top_signals)
                         else:
                             logger.info(
                                 "Scanner manual: bot PAUSADO — senales guardadas en "
@@ -1132,14 +1285,13 @@ class Orchestrator:
                         logger.info("Scanner: ejecutando escaneo automatico...")
                         signals = await self._run_scanner()
                         if signals:
-                            top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
+                            top_signals = self._scanner.get_top_signals(n=self.scanner_top_n)
                             if top_signals:
                                 logger.info(
-                                    "Scanner: %d senales generadas — ejecutando top %d",
+                                    "Scanner: %d senales generadas — ejecutando top %d via scanner pipeline",
                                     len(signals), len(top_signals),
                                 )
-                                for sig in top_signals:
-                                    await self._execute_signal(sig)
+                                await self._execute_scanner_signals(top_signals)
                                 await asyncio.sleep(poll_interval)
                                 continue
                             else:
