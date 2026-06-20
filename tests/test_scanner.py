@@ -198,27 +198,33 @@ def test_scanner_scan_with_mocks() -> None:
     # Filter mock — todos pasan
     liquidity_filter = MagicMock()
     liquidity_filter.filter.return_value = ["SPY", "QQQ"]
+    from royaltdn.scanner.filters import TokenBucket
+    liquidity_filter.token_bucket = TokenBucket()
 
     # Data client mock — devuelve barras
     data_client = MagicMock()
 
-    # Mock de get_stock_bars que devuelve datos
+    # Mock de get_stock_bars que maneja batches
     base_date = pd.Timestamp("2024-01-01")
 
     def mock_get_stock_bars(request):
         result = MagicMock()
-        symbol = request.symbol_or_symbols
-        bars_list = []
-        for i in range(60):
-            bar = MagicMock()
-            bar.timestamp = base_date + pd.Timedelta(days=i)
-            bar.open = 100.0 + i * 0.1
-            bar.high = 101.0 + i * 0.1
-            bar.low = 99.0 + i * 0.1
-            bar.close = 100.0 + i * 0.1
-            bar.volume = 1_000_000
-            bars_list.append(bar)
-        result.data = {symbol: bars_list}
+        symbols = request.symbol_or_symbols
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        result.data = {}
+        for symbol in symbols:
+            bars_list = []
+            for i in range(60):
+                bar = MagicMock()
+                bar.timestamp = base_date + pd.Timedelta(days=i)
+                bar.open = 100.0 + i * 0.1
+                bar.high = 101.0 + i * 0.1
+                bar.low = 99.0 + i * 0.1
+                bar.close = 100.0 + i * 0.1
+                bar.volume = 1_000_000
+                bars_list.append(bar)
+            result.data[symbol] = bars_list
         return result
 
     data_client.get_stock_bars.side_effect = mock_get_stock_bars
@@ -236,17 +242,17 @@ def test_scanner_scan_with_mocks() -> None:
     scanner = Scanner(universe, liquidity_filter, strategies, data_client)
     results = scanner.scan()
 
-    assert len(results) > 0, "Scanner debería generar señales"
-    print(f"  ✅ Scanner.scan(): {len(results)} señales generadas")
+    assert len(results) > 0, "Scanner should generate signals"
+    print(f"  ✅ Scanner.scan(): {len(results)} signals generated")
 
-    # Verificar estructura de cada señal
+    # Verify signal structure
     for r in results:
         assert "symbol" in r
         assert "strategy" in r
         assert "action" in r
         assert "price" in r
 
-    print("  ✅ Scanner: estructura de señal correcta")
+    print("  ✅ Scanner: correct signal structure")
 
 
 def test_scanner_top_signals() -> None:
@@ -256,24 +262,30 @@ def test_scanner_top_signals() -> None:
 
     liquidity_filter = MagicMock()
     liquidity_filter.filter.return_value = ["SPY", "QQQ", "AAPL"]
+    from royaltdn.scanner.filters import TokenBucket
+    liquidity_filter.token_bucket = TokenBucket()
 
     data_client = MagicMock()
     base_date = pd.Timestamp("2024-01-01")
 
     def mock_bars(request):
         result = MagicMock()
-        symbol = request.symbol_or_symbols
-        bars_list = []
-        for i in range(60):
-            bar = MagicMock()
-            bar.timestamp = base_date + pd.Timedelta(days=i)
-            bar.open = 100.0
-            bar.high = 101.0
-            bar.low = 99.0
-            bar.close = 100.0
-            bar.volume = 1_000_000
-            bars_list.append(bar)
-        result.data = {symbol: bars_list}
+        symbols = request.symbol_or_symbols
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        result.data = {}
+        for symbol in symbols:
+            bars_list = []
+            for i in range(60):
+                bar = MagicMock()
+                bar.timestamp = base_date + pd.Timedelta(days=i)
+                bar.open = 100.0
+                bar.high = 101.0
+                bar.low = 99.0
+                bar.close = 100.0
+                bar.volume = 1_000_000
+                bars_list.append(bar)
+            result.data[symbol] = bars_list
         return result
 
     data_client.get_stock_bars.side_effect = mock_bars

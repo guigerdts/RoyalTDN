@@ -20,7 +20,7 @@ import os
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from loguru import logger
 import pandas as pd
@@ -167,6 +167,10 @@ class Orchestrator:
         self._last_known_price: float = 0.0
         self._signal_count_by_strategy: dict = {}
 
+        # Scanner flags (Fase 13)
+        self._is_scanning: bool = False
+        self._pending_scan: bool = False
+
         # User strategies (Fase 7)
         self.strategy_store = None
         self.user_strategies: dict = {}
@@ -182,7 +186,10 @@ class Orchestrator:
         # Scanner (opcional) — inicializar después del trading client
         try:
             data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-            universe = AssetUniverse(self.api_key, self.secret_key)
+            universe = AssetUniverse(
+                self.api_key, self.secret_key,
+                universe_type=SCANNER_UNIVERSE,
+            )
             liquidity_filter = LiquidityFilter(
                 min_volume=SCANNER_MIN_VOLUME,
                 min_price=SCANNER_MIN_PRICE,
@@ -349,16 +356,16 @@ class Orchestrator:
             except Exception as e:
                 logger.warning("Error al leer comando de pausa: {}", e)
 
-        # Scanner trigger signal
+        # Scanner trigger signal (Fase 13 — async via _pending_scan flag)
         scanner_file = _os.path.join("logs", "scan_now_signal.json")
         if _os.path.exists(scanner_file):
             try:
                 _os.remove(scanner_file)
-                logger.info("🔍 Ejecutando scanner por comando de consola")
-                if self._scanner is not None:
-                    self._scanner.scan()
+                if self._scanner is not None and not self._is_scanning:
+                    self._pending_scan = True
+                    logger.info("Scanner: scan manual encolado — se ejecutara en proxima iteracion")
             except Exception as e:
-                logger.warning("Error al ejecutar scanner manual: {}", e)
+                logger.warning("Error al procesar senal de scanner manual: {}", e)
 
     # ── Status publishing (Fase 6) ────────────────────────────────────
 
@@ -1009,6 +1016,49 @@ class Orchestrator:
                 await notify_error(str(e))
                 await asyncio.sleep(5)
 
+    # ── Async scanner wrapper (Fase 13) ──────────────────────────
+
+    async def _run_scanner(self) -> Optional[List[dict]]:
+        """Runs Scanner.scan() in a thread executor to avoid blocking the event loop.
+
+        Uses loop.run_in_executor() with configurable timeout.
+        Flags _is_scanning to prevent concurrent scans.
+
+        Returns:
+            List of signal dicts on success, None on failure.
+        """
+        if self._is_scanning:
+            logger.info("Scanner: already running — skipping")
+            return None
+        if self._scanner is None:
+            logger.warning("Scanner: not available — skipping")
+            return None
+
+        self._is_scanning = True
+        self._pending_scan = False
+        loop = asyncio.get_running_loop()
+        timeout = int(os.getenv("SCANNER_TIMEOUT", "300"))
+
+        try:
+            future = loop.run_in_executor(None, self._scanner.scan)
+            signals = await asyncio.wait_for(future, timeout=timeout)
+            count = len(signals) if signals else 0
+            logger.info("Scanner: completed — {} signals generated", count)
+            return signals
+        except asyncio.TimeoutError:
+            logger.warning("Scanner: timeout after {}s — cancelling scan", timeout)
+            future.cancel()
+            return None
+        except Exception as e:
+            err = str(e)
+            if "401" in err or "403" in err:
+                logger.error("Scanner: auth error: {} — aborting", err)
+            else:
+                logger.warning("Scanner: error: {}", err)
+            return None
+        finally:
+            self._is_scanning = False
+
     # ── Fallback legacy (polling REST) ─────────────────────────────
 
     async def _run_legacy_loop(self):
@@ -1070,29 +1120,43 @@ class Orchestrator:
                     _time.sleep(60)
                     continue
 
-                # ── Scanner multi-estrategia ──
+                # ── Scanner multi-estrategia (Fase 13 — async) ──
                 if self._scanner:
+                    # Check for pending manual scan first
+                    if self._pending_scan and not self._is_scanning:
+                        logger.info("Scanner: ejecutando scan manual encolado")
+                        signals = await self._run_scanner()
+                        self._pending_scan = False
+                        if signals:
+                            top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
+                            logger.info(
+                                "Scanner: %d senales generadas — ejecutando top %d",
+                                len(signals), len(top_signals),
+                            )
+                            for sig in top_signals:
+                                await self._execute_signal(sig)
+                            await asyncio.sleep(poll_interval)
+                            continue
+
+                    # Auto-scan based on interval
                     scanner_cycle += 1
                     if scanner_cycle >= scanner_iterations:
                         scanner_cycle = 0
-                        logger.info("🔍 Scanner: ejecutando escaneo multi-estrategia...")
-                        try:
-                            signals = self._scanner.scan()
+                        logger.info("Scanner: ejecutando escaneo automatico...")
+                        signals = await self._run_scanner()
+                        if signals:
                             top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
                             if top_signals:
                                 logger.info(
-                                    "🔍 Scanner: %d señales generadas — ejecutando top %d",
+                                    "Scanner: %d senales generadas — ejecutando top %d",
                                     len(signals), len(top_signals),
                                 )
                                 for sig in top_signals:
                                     await self._execute_signal(sig)
-                                # Saltar la lógica SPY en este ciclo
                                 await asyncio.sleep(poll_interval)
                                 continue
                             else:
-                                logger.info("🔍 Scanner: sin señales — usando SPY por defecto")
-                        except Exception as e:
-                            logger.warning("🔍 Scanner error: {} — continuando con SPY", e)
+                                logger.info("Scanner: sin senales — usando SPY por defecto")
 
                 # ── User strategies watcher (Fase 7) ──
                 try:

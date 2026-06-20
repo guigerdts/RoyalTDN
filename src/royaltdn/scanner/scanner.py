@@ -35,18 +35,18 @@ def _atomic_write(path: Path, data: dict) -> bool:
 
 from royaltdn.strategy.base import BaseStrategy
 from royaltdn.scanner.universe import AssetUniverse
-from royaltdn.scanner.filters import LiquidityFilter
+from royaltdn.scanner.filters import LiquidityFilter, TokenBucket
 
 
 class Scanner:
-    """Escáner multi-estrategia y multi-símbolo.
+    """Multi-strategy, multi-symbol scanner.
 
-    Flujo:
-    1. Obtiene todos los símbolos del universo
-    2. Filtra por liquidez
-    3. Para cada símbolo que pasa: descarga ~60 barras diarias
-    4. Ejecuta cada estrategia sobre los datos
-    5. Rankea señales (FactorRotation primero por score, luego BUY antes SELL)
+    Flow:
+    1. Gets all symbols from the asset universe
+    2. Filters by liquidity
+    3. Downloads ~60 daily bars in batches of 100 symbols
+    4. Runs each strategy on the data
+    5. Ranks signals (FactorRotation by score first, then BUY before SELL)
     """
 
     def __init__(
@@ -63,25 +63,28 @@ class Scanner:
         self._data_cache: Dict[str, pd.DataFrame] = {}
         self._last_scan_results: List[dict] = []
         self._scan_history: List[dict] = []  # Fase 6 — last 10 scans
+        self._auth_failed: bool = False
+        self._token_bucket: TokenBucket = liquidity_filter.token_bucket
 
     def scan(self) -> List[dict]:
-        """Ejecuta escaneo completo y retorna señales rankeadas.
+        """Runs a full scan and returns ranked signals.
 
         Returns:
-            Lista de dicts con: symbol, strategy, action, price, score, metadata
-            Ordenados: FactorRotation (score desc) → BUY antes SELL → resto
+            List of dicts with: symbol, strategy, action, price, score, metadata
+            Ordered: FactorRotation (score desc) -> BUY before SELL -> rest
         """
         self._data_cache.clear()
+        self._auth_failed = False
 
-        # 1. Obtener todos los símbolos
+        # 1. Get all symbols
         all_symbols = self.universe.get_symbols()
         total_symbols = len(all_symbols)
 
-        # 2. Filtrar por liquidez
+        # 2. Filter by liquidity
         passed_symbols = self.liquidity_filter.filter(all_symbols, self.data_client)
         passed_count = len(passed_symbols)
 
-        # 3. Para cada símbolo que pasa, descargar datos y ejecutar estrategias
+        # 3. Download data in batches, then run strategies
         signals = []
 
         import sys
@@ -89,29 +92,34 @@ class Scanner:
         import math
         from tqdm import tqdm
         _start = _time.monotonic()
-        if passed_symbols:
+        if passed_symbols and not self._auth_failed:
             est_seconds = len(passed_symbols) * 0.3
             est_minutes = math.ceil(est_seconds / 60)
             tqdm.write(
                 f"Escaneando {len(passed_symbols)} s\u00edmbolos... ~{est_minutes}min restante"
             )
 
-        pbar = tqdm(
-            passed_symbols,
-            desc="Escaneando",
-            unit="sym",
-            file=sys.stdout,
-            bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}",
-        )
-        for symbol in pbar:
-            pbar.set_description(f"Escaneando {symbol}")
-            try:
-                # Descargar datos (cachear por símbolo)
-                data = self._get_symbol_data(symbol)
+            # Batch download data (reduces ~400 calls to ~4)
+            symbol_data = self._batch_get_symbol_data(passed_symbols)
+
+            # Process each symbol with strategies
+            pbar = tqdm(
+                list(symbol_data.keys()),
+                desc="Escaneando",
+                unit="sym",
+                file=sys.stdout,
+                bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}",
+            )
+            for symbol in pbar:
+                if self._auth_failed:
+                    logger.warning("Scanner: auth failure detected — aborting scan loop")
+                    break
+                pbar.set_description(f"Procesando {symbol}")
+                data = symbol_data.get(symbol)
                 if data is None or len(data) < 60:
                     continue
 
-                # Ejecutar cada estrategia
+                # Run each strategy on this symbol's data
                 for strategy_name, strategy in self.strategies.items():
                     try:
                         signal = strategy.generate_signal(data)
@@ -130,20 +138,16 @@ class Scanner:
                             signals.append(signal_dict)
 
                     except Exception as e:
-                        logger.debug("Scanner: estrategia {} falló para {}: {}", strategy_name, symbol, e)
+                        logger.debug("Scanner: strategy {} failed for {}: {}", strategy_name, symbol, e)
                         continue
-
-            except Exception as e:
-                logger.debug("Scanner: error procesando {}: {}", symbol, e)
-                continue
 
         self._last_scan_elapsed = _time.monotonic() - _start
 
-        # 4. Rankear señales
+        # 4. Rank signals
         ranked = self._rank_signals(signals)
         self._last_scan_results = ranked
 
-        # Track scan history (Fase 6)
+        # Track scan history
         scan_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "total_symbols": total_symbols,
@@ -172,49 +176,92 @@ class Scanner:
             pass
 
         logger.info(
-            "Scanner: {} símbolos → {} pasaron filtro → {} señales generadas",
+            "Scanner: {} symbols -> {} passed filter -> {} signals generated",
             total_symbols, passed_count, len(ranked)
         )
         return ranked
 
-    def _get_symbol_data(self, symbol: str) -> Optional[pd.DataFrame]:
-        """Descarga ~60 barras diarias para un símbolo (con cache)."""
-        if symbol in self._data_cache:
-            return self._data_cache[symbol]
+    def _batch_get_symbol_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+        """Downloads historical data for multiple symbols in batches of up to 100.
 
-        try:
-            from alpaca.data.requests import StockBarsRequest
-            from alpaca.data.timeframe import TimeFrame
+        Uses get_stock_bars with batches of 100 symbols to reduce ~400 API calls
+        to ~4 calls for 400 symbols. Each batch consumes 1 token from the TokenBucket.
 
-            request = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Day,
-                limit=60,
-            )
-            bars = self.data_client.get_stock_bars(request)
+        Args:
+            symbols: List of symbols to download data for.
 
-            # bars.data es dict[str, list[Bar]]
-            symbol_bars = bars.data.get(symbol, [])
-            if not symbol_bars:
-                return None
+        Returns:
+            Dict mapping symbol -> DataFrame with 60 daily bars.
+        """
+        if not symbols:
+            return {}
 
-            # Convertir a DataFrame
-            df = pd.DataFrame([{
-                "timestamp": b.timestamp,
-                "open": float(b.open),
-                "high": float(b.high),
-                "low": float(b.low),
-                "close": float(b.close),
-                "volume": int(b.volume),
-            } for b in symbol_bars])
+        result: Dict[str, pd.DataFrame] = {}
 
-            df = df.sort_values("timestamp").reset_index(drop=True)
-            self._data_cache[symbol] = df
-            return df
+        # Check cache first — remove cached symbols from fetch list
+        to_fetch = [s for s in symbols if s not in self._data_cache]
+        # Return cached data for already-fetched symbols
+        for s in symbols:
+            if s in self._data_cache:
+                result[s] = self._data_cache[s]
 
-        except Exception as e:
-            logger.debug("Scanner: error descargando datos para {}: {}", symbol, e)
-            return None
+        if not to_fetch:
+            return result
+
+        # Group into batches of 100
+        batch_size = 100
+        import math
+        n_batches = math.ceil(len(to_fetch) / batch_size)
+
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
+        for i in range(n_batches):
+            if self._auth_failed:
+                logger.warning("Scanner: auth failure — stopping batch download")
+                break
+
+            batch = to_fetch[i * batch_size:(i + 1) * batch_size]
+            try:
+                # Rate limit: 1 token per batch
+                self._token_bucket.consume(1)
+
+                request = StockBarsRequest(
+                    symbol_or_symbols=batch,
+                    timeframe=TimeFrame.Day,
+                    limit=60,
+                )
+                bars_response = self.data_client.get_stock_bars(request)
+
+                # Process each symbol in the batch
+                for symbol in batch:
+                    symbol_bars = bars_response.data.get(symbol, [])
+                    if not symbol_bars:
+                        continue
+
+                    df = pd.DataFrame([{
+                        "timestamp": b.timestamp,
+                        "open": float(b.open),
+                        "high": float(b.high),
+                        "low": float(b.low),
+                        "close": float(b.close),
+                        "volume": int(b.volume),
+                    } for b in symbol_bars])
+
+                    df = df.sort_values("timestamp").reset_index(drop=True)
+                    self._data_cache[symbol] = df
+                    result[symbol] = df
+
+            except Exception as e:
+                err_str = str(e).lower()
+                if "401" in err_str or "403" in err_str:
+                    self._auth_failed = True
+                    logger.error("Scanner: auth error in batch {}: {} — aborting scan", i, e)
+                    break
+                logger.warning("Scanner: batch {} ({}/{}) failed: {}", i + 1, len(batch), len(to_fetch), e)
+                continue
+
+        return result
 
     def _rank_signals(self, signals: List[dict]) -> List[dict]:
         """Rankear señales: FactorRotation (score desc) → BUY antes SELL → resto."""

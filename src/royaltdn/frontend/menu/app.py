@@ -1241,28 +1241,37 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
             )
         )
 
-        if last_scan and isinstance(last_scan, dict) and last_scan.get("symbols"):
+        if last_scan and isinstance(last_scan, dict) and last_scan.get("top_signals"):
+            signals = last_scan["top_signals"]
             table = Table(title=None, border_style="white", header_style="bold white")
+            table.add_column("#", style="bold white", width=4)
             table.add_column("Symbol", style="bold white")
+            table.add_column("Action")
             table.add_column("Price", justify="right")
-            table.add_column("Signal")
             table.add_column("Score", justify="right")
+            table.add_column("Strategy")
 
-            for sym in last_scan["symbols"]:
-                if isinstance(sym, dict):
-                    table.add_row(
-                        str(sym.get("symbol", "?")),
-                        f"${float(sym.get('price', 0)):.4f}"
-                        if sym.get("price")
-                        else "\u2014",
-                        str(sym.get("signal", "\u2014")),
-                        f"{float(sym.get('score', 0)):.2f}"
-                        if sym.get("score")
-                        else "\u2014",
-                    )
+            for idx, s in enumerate(signals, start=1):
+                symbol = str(s.get("symbol", "?"))
+                action = s.get("action", "\u2014")
+                action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
+                price_raw = s.get("price")
+                price = f"${float(price_raw):,.2f}" if price_raw is not None else "\u2014"
+                score_raw = s.get("score")
+                score = f"{float(score_raw):.2f}" if score_raw is not None else "\u2014"
+                score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
+                strategy = str(s.get("strategy", "\u2014"))
+                table.add_row(
+                    str(idx),
+                    symbol,
+                    f"[{action_style}]{action}[/]",
+                    price,
+                    f"[{score_style}]{score}[/]",
+                    strategy,
+                )
             console.print(table)
         else:
-            console.print("[dim]No hay resultados de escaneo aún.[/]")
+            console.print("[dim]No hay resultados de escaneo aun.[/]")
 
         if last_scan.get("timestamp"):
             console.print(f"\nTimestamp: [cyan]{last_scan['timestamp']}[/]")
@@ -1288,26 +1297,35 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                     border_style="white",
                 )
             )
-            if last_scan and isinstance(last_scan, dict) and last_scan.get("symbols"):
+            if last_scan and isinstance(last_scan, dict) and last_scan.get("top_signals"):
+                signals = last_scan["top_signals"]
                 table = Table(
                     title=None, border_style="white", header_style="bold white"
                 )
+                table.add_column("#", style="bold white", width=4)
                 table.add_column("Symbol", style="bold white")
+                table.add_column("Action")
                 table.add_column("Price", justify="right")
-                table.add_column("Signal")
                 table.add_column("Score", justify="right")
-                for sym in last_scan["symbols"]:
-                    if isinstance(sym, dict):
-                        table.add_row(
-                            str(sym.get("symbol", "?")),
-                            f"${float(sym.get('price', 0)):.4f}"
-                            if sym.get("price")
-                            else "\u2014",
-                            str(sym.get("signal", "\u2014")),
-                            f"{float(sym.get('score', 0)):.2f}"
-                            if sym.get("score")
-                            else "\u2014",
-                        )
+                table.add_column("Strategy")
+                for idx, s in enumerate(signals, start=1):
+                    symbol = str(s.get("symbol", "?"))
+                    action = s.get("action", "\u2014")
+                    action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
+                    price_raw = s.get("price")
+                    price = f"${float(price_raw):,.2f}" if price_raw is not None else "\u2014"
+                    score_raw = s.get("score")
+                    score = f"{float(score_raw):.2f}" if score_raw is not None else "\u2014"
+                    score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
+                    strategy = str(s.get("strategy", "\u2014"))
+                    table.add_row(
+                        str(idx),
+                        symbol,
+                        f"[{action_style}]{action}[/]",
+                        price,
+                        f"[{score_style}]{score}[/]",
+                        strategy,
+                    )
                 console.print(table)
             else:
                 console.print("[dim]No hay resultados de escaneo aún.[/]")
