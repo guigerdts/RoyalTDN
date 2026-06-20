@@ -13,6 +13,7 @@ Comandos:
     scanner              Disparar scanner manual
 """
 
+import asyncio
 import os
 import sys
 import threading
@@ -264,7 +265,10 @@ def cmd_run():
         scanner=scanner,
     )
 
-    t = threading.Thread(target=orch.start, daemon=True)
+    def _run_orchestrator():
+        asyncio.run(orch.start())
+
+    t = threading.Thread(target=_run_orchestrator, daemon=True)
     t.start()
 
     try:
