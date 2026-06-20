@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "jupyterlab>=4.0,<5",
     "rich>=13.0.0",
+    "tqdm>=4.66,<5",
 ]
 
 [project.readme]
