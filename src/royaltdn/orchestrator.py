@@ -76,7 +76,7 @@ SCANNER_MAX_SPREAD_PCT = float(os.getenv("SCANNER_MAX_SPREAD_PCT", "1.0"))
 SCANNER_INTERVAL_MINUTES = int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
 STRATEGIES_ENABLED = os.getenv("STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr").split(",")
 SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N", "3"))
-SCANNER_UNIVERSE = os.getenv("SCANNER_UNIVERSE", "etfs")
+SCANNER_UNIVERSE = os.getenv("SCANNER_UNIVERSE", "all")
 
 # ── Constantes ────────────────────────────────────────────────────────────
 

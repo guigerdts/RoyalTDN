@@ -245,7 +245,7 @@ def cmd_run():
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
         universe = AssetUniverse(
             API_KEY, API_SECRET,
-            universe_type=os.getenv("SCANNER_UNIVERSE", "etfs"),
+            universe_type=os.getenv("SCANNER_UNIVERSE", "all"),
         )
         liquidity_filter = LiquidityFilter(
             min_volume=int(os.getenv("SCANNER_MIN_VOLUME", "100000")),
@@ -268,7 +268,7 @@ def cmd_run():
         scanner = Scanner(universe, liquidity_filter, strategies, data_client)
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
-            os.getenv("SCANNER_UNIVERSE", "etfs"),
+            os.getenv("SCANNER_UNIVERSE", "all"),
             list(strategies.keys()),
         )
     except Exception as e:

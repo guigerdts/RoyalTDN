@@ -1211,6 +1211,15 @@ _LOG_NOISE_PATTERNS = (
     "Strategy store no disponible",
     "Scanner no disponible",
     "Status final publicado en logs",
+    "Estrategias de usuario cargadas:",
+    "Estado inicial",
+    "Status inicial",
+    "Scanner:",
+    "Telegram enviado",
+    "Legacy loop",
+    "_run_legacy_loop",
+    "_setup",
+    "_load_user_strategies",
 )
 
 
@@ -1262,82 +1271,126 @@ def _build_log_section(
 
 
 def _show_scanner(state_loader, console, logs_dir: str) -> None:
-    """Screen 2: Show last scan results, optionally trigger a new scan."""
+    """Screen 2: Show last scan results with metrics, optionally trigger a new scan."""
+    import os
+    from datetime import datetime as _dt
     from rich.table import Table
     from rich.panel import Panel
     from rich.text import Text
 
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _format_ts(iso_ts: str) -> str:
+        """Format ISO timestamp to readable '20 Jun 2026 — 14:38 UTC'."""
+        try:
+            dt = _dt.fromisoformat(iso_ts)
+            return dt.strftime("%d %b %Y — %H:%M UTC")
+        except (ValueError, TypeError):
+            return str(iso_ts)
+
+    def _render_signals_table(signals: list) -> Table:
+        """Build a Rich table from top_signals list."""
+        table = Table(title=None, border_style="white", header_style="bold white")
+        table.add_column("#", style="bold white", width=4)
+        table.add_column("Symbol", style="bold white")
+        table.add_column("Action")
+        table.add_column("Price", justify="right")
+        table.add_column("Score", justify="right")
+        table.add_column("Strategy")
+        for idx, s in enumerate(signals, start=1):
+            symbol = str(s.get("symbol", "?"))
+            action = s.get("action", "\u2014")
+            action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
+            price_raw = s.get("price")
+            price = f"${float(price_raw):,.2f}" if price_raw is not None else "\u2014"
+            score_raw = s.get("score")
+            score = f"{float(score_raw):.2f}" if score_raw is not None else "\u2014"
+            score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
+            strategy = str(s.get("strategy", "\u2014"))
+            table.add_row(
+                str(idx),
+                Text(symbol),
+                Text(action, style=action_style),
+                Text(price),
+                Text(score, style=score_style),
+                Text(strategy),
+            )
+        return table
+
+    # ── Main ───────────────────────────────────────────────────────────
+
     try:
         data = state_loader.load_scanner_results()
+        scan_history = data.get("scan_history", [])
         last_scan = data.get("last_scan", {})
 
-        # T-10: Post-scan metrics panel
-        scan_history = data.get("scan_history", [])
-        signals_list = last_scan.get("top_signals", []) if last_scan else []
-        has_real_data = any(
-            s.get("strategy", "") not in ("mock", "") for s in signals_list
-        )
-        if scan_history and has_real_data:
-            latest = scan_history[-1]
-            total_sym = latest.get("total_symbols", 0)
-            passed_sym = latest.get("passed_symbols", 0)
-            sig_count = latest.get("signals_count", 0)
-            elapsed = latest.get("elapsed_seconds", 0.0)
-            pct = (passed_sym / total_sym * 100) if total_sym > 0 else 0.0
-            metrics_panel = (
-                f"[bold white]Total s\u00edmbolos[/]: {total_sym}\n"
-                f"[bold white]Pasaron filtro[/]: {passed_sym}/{total_sym} ({pct:.0f}%)\n"
-                f"[bold white]Se\u00f1ales[/]: {sig_count}\n"
-                f"[bold white]Tiempo[/]: {elapsed:.1f}s"
-            )
-            console.print(Panel(
-                metrics_panel,
-                title="\U0001f4ca  Resultados del Escaneo",
-                border_style="white",
-            ))
-
+        # Universe info
+        universe = os.getenv("SCANNER_UNIVERSE", "all")
+        universe_label = {
+            "etfs": "ETFs",
+            "sp500": "S&P 500",
+            "all": "all (ETFs + S&P 500)",
+        }.get(universe, universe)
         console.print(
             Panel(
-                "[bold]Último escaneo[/]",
+                f"Universo: [bold white]{universe_label}[/]",
                 border_style="white",
             )
         )
 
-        if last_scan and isinstance(last_scan, dict) and last_scan.get("top_signals"):
-            signals = last_scan["top_signals"]
-            table = Table(title=None, border_style="white", header_style="bold white")
-            table.add_column("#", style="bold white", width=4)
-            table.add_column("Symbol", style="bold white")
-            table.add_column("Action")
-            table.add_column("Price", justify="right")
-            table.add_column("Score", justify="right")
-            table.add_column("Strategy")
+        # Latest scan entry (from scan_history or last_scan)
+        latest_entry = scan_history[-1] if scan_history else last_scan
+        total_sym = latest_entry.get("total_symbols", 0) if latest_entry else 0
+        passed_sym = latest_entry.get("passed_symbols", 0) if latest_entry else 0
+        sig_count = latest_entry.get("signals_count", 0) if latest_entry else last_scan.get("total_signals", 0)
+        elapsed = latest_entry.get("elapsed_seconds", 0.0) if latest_entry else 0.0
+        ts_raw = latest_entry.get("timestamp", "") if latest_entry else ""
+        ts_formatted = _format_ts(ts_raw) if ts_raw else "—"
 
-            for idx, s in enumerate(signals, start=1):
-                symbol = str(s.get("symbol", "?"))
-                action = s.get("action", "\u2014")
-                action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
-                price_raw = s.get("price")
-                price = f"${float(price_raw):,.2f}" if price_raw is not None else "\u2014"
-                score_raw = s.get("score")
-                score = f"{float(score_raw):.2f}" if score_raw is not None else "\u2014"
-                score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
-                strategy = str(s.get("strategy", "\u2014"))
-                table.add_row(
-                    str(idx),
-                    Text(symbol),
-                    Text(action, style=action_style),
-                    Text(price),
-                    Text(score, style=score_style),
-                    Text(strategy),
-                )
-            console.print(table)
+        # Metrics panel
+        if latest_entry:
+            pct = (passed_sym / total_sym * 100) if total_sym > 0 else 0.0
+            metrics_lines = (
+                f"[bold white]Total s\u00edmbolos[/]: {total_sym}\n"
+                f"[bold white]Pasaron filtro[/]: {passed_sym}/{total_sym} ({pct:.0f}%)\n"
+                f"[bold white]Se\u00f1ales generadas[/]: {sig_count}\n"
+                f"[bold white]Tiempo de escaneo[/]: {elapsed:.1f}s\n"
+                f"[bold white]Timestamp[/]: {ts_formatted}"
+            )
         else:
-            console.print("[dim]No hay resultados de escaneo aun.[/]")
+            metrics_lines = "[dim]No se ha ejecutado ning\u00fan escaneo todav\u00eda.[/dim]"
 
-        if last_scan.get("timestamp"):
-            console.print(f"\nTimestamp: [cyan]{last_scan['timestamp']}[/]")
+        console.print(Panel(metrics_lines, title="Resultados", border_style="white"))
 
+        # Content: signals table or contextual message
+        top_signals = latest_entry.get("top_signals", []) if latest_entry else []
+
+        if not latest_entry:
+            # No scan ever
+            console.print()
+            console.print("[dim]Presiona 's' para iniciar el primer escaneo.[/dim]")
+
+        elif passed_sym == 0 and sig_count == 0:
+            console.print()
+            console.print(
+                "[yellow]\u26a0\ufe0f  Ning\u00fan s\u00edmbolo pas\u00f3 el filtro de liquidez.[/]"
+            )
+            console.print(
+                "[dim]Esto es normal con el mercado cerrado (fin de semana "
+                "o fuera del horario de trading).[/dim]"
+            )
+
+        elif passed_sym > 0 and sig_count == 0:
+            console.print()
+            console.print(
+                f"[cyan]\u2139\ufe0f  {passed_sym} s\u00edmbolos pasaron el filtro "
+                f"pero ninguna estrategia gener\u00f3 se\u00f1ales.[/]"
+            )
+
+        elif top_signals:
+            console.print(_render_signals_table(top_signals))
+
+        # ── Prompt and force scan ─────────────────────────────────────
         console.print()
         console.print("[bold cyan]0[/] Volver al men\u00fa principal")
         try:
@@ -1354,47 +1407,45 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
             trigger_scanner(logs_dir)
             console.print("[yellow]Escaneo disparado. Esperando...[/]")
             time.sleep(5)
+
             # Reload and show updated results
             data = state_loader.load_scanner_results()
+            scan_history = data.get("scan_history", [])
             last_scan = data.get("last_scan", {})
-            console.print(
-                Panel(
-                    "[bold]Resultados actualizados[/]",
-                    border_style="white",
-                )
+
+            latest_entry = scan_history[-1] if scan_history else last_scan
+            total_sym = latest_entry.get("total_symbols", 0) if latest_entry else 0
+            passed_sym = latest_entry.get("passed_symbols", 0) if latest_entry else 0
+            sig_count = latest_entry.get("signals_count", 0) if latest_entry else \
+                last_scan.get("total_signals", 0)
+            elapsed = latest_entry.get("elapsed_seconds", 0.0) if latest_entry else 0.0
+            ts_raw = latest_entry.get("timestamp", "") if latest_entry else ""
+            ts_formatted = _format_ts(ts_raw) if ts_raw else "—"
+            pct = (passed_sym / total_sym * 100) if total_sym > 0 else 0.0
+
+            metrics_lines = (
+                f"[bold white]Total s\u00edmbolos[/]: {total_sym}\n"
+                f"[bold white]Pasaron filtro[/]: {passed_sym}/{total_sym} ({pct:.0f}%)\n"
+                f"[bold white]Se\u00f1ales generadas[/]: {sig_count}\n"
+                f"[bold white]Tiempo de escaneo[/]: {elapsed:.1f}s\n"
+                f"[bold white]Timestamp[/]: {ts_formatted}"
             )
-            if last_scan and isinstance(last_scan, dict) and last_scan.get("top_signals"):
-                signals = last_scan["top_signals"]
-                table = Table(
-                    title=None, border_style="white", header_style="bold white"
+            console.print(Panel(metrics_lines, title="Resultados actualizados", border_style="green"))
+
+            top_signals = latest_entry.get("top_signals", []) if latest_entry else []
+            if passed_sym == 0 and sig_count == 0:
+                console.print()
+                console.print(
+                    "[yellow]\u26a0\ufe0f  Ning\u00fan s\u00edmbolo pas\u00f3 el filtro de liquidez.[/]"
                 )
-                table.add_column("#", style="bold white", width=4)
-                table.add_column("Symbol", style="bold white")
-                table.add_column("Action")
-                table.add_column("Price", justify="right")
-                table.add_column("Score", justify="right")
-                table.add_column("Strategy")
-                for idx, s in enumerate(signals, start=1):
-                    symbol = str(s.get("symbol", "?"))
-                    action = s.get("action", "\u2014")
-                    action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
-                    price_raw = s.get("price")
-                    price = f"${float(price_raw):,.2f}" if price_raw is not None else "\u2014"
-                    score_raw = s.get("score")
-                    score = f"{float(score_raw):.2f}" if score_raw is not None else "\u2014"
-                    score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
-                    strategy = str(s.get("strategy", "\u2014"))
-                    table.add_row(
-                        str(idx),
-                        Text(symbol),
-                        Text(action, style=action_style),
-                        Text(price),
-                        Text(score, style=score_style),
-                        Text(strategy),
-                    )
-                console.print(table)
-            else:
-                console.print("[dim]No hay resultados de escaneo aún.[/]")
+            elif passed_sym > 0 and sig_count == 0:
+                console.print()
+                console.print(
+                    f"[cyan]\u2139\ufe0f  {passed_sym} s\u00edmbolos pasaron el filtro "
+                    f"pero ninguna estrategia gener\u00f3 se\u00f1ales.[/]"
+                )
+            elif top_signals:
+                console.print(_render_signals_table(top_signals))
 
         console.print("\n[dim]Presiona Enter para volver[/]")
         _wait_enter()
