@@ -235,7 +235,7 @@ def cmd_run():
     # ── Scanner: inicializar antes del Orchestrator ──
     scanner = None
     try:
-        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
         from royaltdn.scanner import AssetUniverse, LiquidityFilter, Scanner
         from royaltdn.strategy.sma_strategy import SMAStrategy
         from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
@@ -243,6 +243,7 @@ def cmd_run():
         from royaltdn.strategy.factor_rotation import FactorRotationStrategy
 
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
+        crypto_client = CryptoHistoricalDataClient(API_KEY, API_SECRET)
         universe = AssetUniverse(
             API_KEY, API_SECRET,
             universe_type=os.getenv("SCANNER_UNIVERSE", "all"),
@@ -265,7 +266,7 @@ def cmd_run():
         if "factor_rotation" in strategies_enabled:
             strategies["factor_rotation"] = FactorRotationStrategy()
 
-        scanner = Scanner(universe, liquidity_filter, strategies, data_client)
+        scanner = Scanner(universe, liquidity_filter, strategies, data_client, crypto_data_client=crypto_client)
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),
