@@ -2290,12 +2290,15 @@ def _build_rule_conditions(
 
 
 def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
-    """Screen 4: Trade summary + trade list with symbol + date filter + submenu."""
+    """Screen 4: Trade summary — enriched table, cumulative AND filters, single-key submenu."""
     from rich.table import Table
     from rich.panel import Panel
     from rich.text import Text
+    from datetime import datetime, timedelta
 
     try:
+        active_filters: dict = {}
+
         while True:
             _clear_screen()
             _print_header(console)
@@ -2311,14 +2314,60 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
             profit_factor = data.get("profit_factor", 0)
             total_pnl = data.get("total_pnl", 0)
 
-            pnl_style = "green" if float(total_pnl) >= 0 else "red"
+            # T-11: New summary metrics on unfiltered data
+            pnl_list = [float(t.get("pnl", t.get("profit_loss", 0))) for t in all_trades if isinstance(t, dict)]
+            num_total_trades = len(pnl_list)
+
+            # Sharpe
+            if num_total_trades >= 2:
+                mean_pnl = sum(pnl_list) / len(pnl_list)
+                variance = sum((x - mean_pnl) ** 2 for x in pnl_list) / (len(pnl_list) - 1)
+                std_pnl = variance ** 0.5
+                sharpe_val = (mean_pnl / std_pnl * (252 ** 0.5)) if std_pnl > 0 else 0.0
+                sharpe_str = f"{sharpe_val:.2f}"
+            else:
+                sharpe_str = "N/A"
+                mean_pnl = 0.0
+
+            # Avg Trade
+            avg_trade_val = mean_pnl = (sum(pnl_list) / len(pnl_list)) if pnl_list else 0.0
+            avg_trade_style = "bold green" if avg_trade_val >= 0 else "bold red"
+
+            # Max Drawdown (peak-to-trough of cumulative P&L)
+            cum = 0.0
+            peak = 0.0
+            max_dd_val = 0.0
+            for p in pnl_list:
+                cum += p
+                if cum > peak:
+                    peak = cum
+                dd = (cum - peak) / peak if peak > 0 else 0.0
+                max_dd_val = min(max_dd_val, dd)
+            max_dd_pct = max_dd_val * 100
+
+            # Expectancy
+            if num_total_trades > 0:
+                wins_list = [p for p in pnl_list if p > 0]
+                losses_list = [p for p in pnl_list if p < 0]
+                wr = len(wins_list) / num_total_trades
+                avg_win = sum(wins_list) / len(wins_list) if wins_list else 0.0
+                avg_loss = sum(losses_list) / len(losses_list) if losses_list else 0.0
+                expectancy = (wr * avg_win) - ((1 - wr) * abs(avg_loss))
+                expectancy_str = f"${expectancy:+.2f}"
+            else:
+                expectancy_str = "$0.00"
+
+            # T-14: WR > 60% in green
+            wr_style = "green" if float(win_rate) > 60 else "white"
+            pnl_style = "bold green" if float(total_pnl) >= 0 else "bold red"
+
             summary = Table.grid(padding=(0, 3))
             summary.add_column(justify="center", ratio=1)
             summary.add_row(
                 Text.assemble(("Total\n", "bold white"), (str(total), "bold white")),
                 Text.assemble(
                     ("Win Rate\n", "bold white"),
-                    (f"{float(win_rate):.1f}%", "bold cyan"),
+                    (f"{float(win_rate):.1f}%", wr_style),
                 ),
                 Text.assemble(
                     ("Profit Factor\n", "bold white"),
@@ -2328,95 +2377,90 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
                     ("Total P&L\n", "bold white"),
                     (f"${float(total_pnl):+,.2f}", pnl_style),
                 ),
+                Text.assemble(
+                    ("Sharpe\n", "bold white"),
+                    (sharpe_str, "bold cyan"),
+                ),
+                Text.assemble(
+                    ("Avg Trade\n", "bold white"),
+                    (f"${avg_trade_val:+,.2f}", avg_trade_style),
+                ),
+                Text.assemble(
+                    ("Max DD\n", "bold white"),
+                    (f"{max_dd_pct:.2f}%", "bold yellow"),
+                ),
+                Text.assemble(
+                    ("Expectancy\n", "bold white"),
+                    (expectancy_str, "bold cyan"),
+                ),
             )
             console.print(Panel(summary, title="Trade Summary", border_style="white"))
 
-            # ── Symbol filter ────────────────────────────────────────
-            try:
-                symbol_filter = (
-                    input("Filtrar por s\u00edmbolo (Enter=todos): ").strip().upper()
-                )
-            except (KeyboardInterrupt, EOFError):
-                return
+            # T-13: Apply cumulative AND filters
+            filtered = list(all_trades)
 
-            filtered = all_trades
-            if symbol_filter:
+            if "symbol" in active_filters:
+                sym_val = active_filters["symbol"]
+                filtered = [t for t in filtered if str(t.get("symbol", "")).upper() == sym_val.upper()]
+
+            if "strategy" in active_filters:
+                strat_val = active_filters["strategy"]
                 filtered = [
                     t for t in filtered
-                    if str(t.get("symbol", "")).upper() == symbol_filter
+                    if (t.get("strategy") or t.get("strategy_name") or "") == strat_val
                 ]
 
-            # ── Period filter ────────────────────────────────────────
-            console.print()
-            console.print(
-                "[bold cyan]1[/] Hoy   "
-                "[bold cyan]2[/] Semana   "
-                "[bold cyan]3[/] Mes   "
-                "[bold cyan]4[/] Todo   "
-                "[bold cyan]5[/] Personalizado"
-            )
-            try:
-                period_cmd = input(
-                    "Filtrar por per\u00edodo: "
-                ).strip()
-            except (KeyboardInterrupt, EOFError):
-                return
+            if "date_range" in active_filters:
+                dr = active_filters["date_range"]
+                if dr == "today":
+                    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                    filtered = _filter_trades_by_date(filtered, today.isoformat(), datetime.now().isoformat())
+                elif dr == "week":
+                    start = (datetime.now() - timedelta(days=7)).isoformat()
+                    filtered = _filter_trades_by_date(filtered, start, datetime.now().isoformat())
+                elif dr == "month":
+                    start = (datetime.now() - timedelta(days=30)).isoformat()
+                    filtered = _filter_trades_by_date(filtered, start, datetime.now().isoformat())
+                elif dr == "custom":
+                    try:
+                        s = input("Fecha inicio (YYYY-MM-DD): ").strip()
+                        e = input("Fecha fin (YYYY-MM-DD): ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        s = e = ""
+                    if s and e:
+                        filtered = _filter_trades_by_date(filtered, s, e)
 
-            if period_cmd == "1":
-                from datetime import datetime, timedelta
-                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                filtered = _filter_trades_by_date(
-                    filtered, today.isoformat(), datetime.now().isoformat()
-                )
-            elif period_cmd == "2":
-                from datetime import datetime, timedelta
-                start = (datetime.now() - timedelta(days=7)).isoformat()
-                filtered = _filter_trades_by_date(
-                    filtered, start, datetime.now().isoformat()
-                )
-            elif period_cmd == "3":
-                from datetime import datetime, timedelta
-                start = (datetime.now() - timedelta(days=30)).isoformat()
-                filtered = _filter_trades_by_date(
-                    filtered, start, datetime.now().isoformat()
-                )
-            elif period_cmd == "5":
-                try:
-                    s = input("Fecha inicio (YYYY-MM-DD): ").strip()
-                    e = input("Fecha fin (YYYY-MM-DD): ").strip()
-                except (KeyboardInterrupt, EOFError):
-                    return
-                if s and e:
-                    filtered = _filter_trades_by_date(filtered, s, e)
-            # "4" or anything else → no date filter
+            # T-14: Active filters header in italic blue
+            if active_filters:
+                parts = []
+                if "symbol" in active_filters:
+                    parts.append(f"S\u00edmbolo={active_filters['symbol']}")
+                if "strategy" in active_filters:
+                    parts.append(f"Estrategia={active_filters['strategy']}")
+                if "date_range" in active_filters:
+                    parts.append(f"Fecha={active_filters['date_range']}")
+                console.print(f"[italic blue]Filtros activos: {', '.join(parts)}[/]")
 
-            # ── Recalculate metrics on filtered set ──────────────────
+            # ── Filtered summary + trade table ──────────────────────
             if filtered:
                 f_total = len(filtered)
-                wins = sum(1 for t in filtered if float(t.get("pnl", t.get("profit_loss", 0))) > 0)
-                losses = sum(1 for t in filtered if float(t.get("pnl", t.get("profit_loss", 0))) <= 0)
+                f_pnls = [float(t.get("pnl", t.get("profit_loss", 0))) for t in filtered if isinstance(t, dict)]
+                wins = sum(1 for p in f_pnls if p > 0)
                 f_win_rate = (wins / f_total * 100) if f_total else 0.0
-                f_total_pnl = sum(float(t.get("pnl", t.get("profit_loss", 0))) for t in filtered)
-                winning_pnl = sum(
-                    float(t.get("pnl", t.get("profit_loss", 0)))
-                    for t in filtered
-                    if float(t.get("pnl", t.get("profit_loss", 0))) > 0
-                )
-                losing_pnl = sum(
-                    float(t.get("pnl", t.get("profit_loss", 0)))
-                    for t in filtered
-                    if float(t.get("pnl", t.get("profit_loss", 0))) < 0
-                )
+                f_total_pnl = sum(f_pnls)
+                winning_pnl = sum(p for p in f_pnls if p > 0)
+                losing_pnl = sum(p for p in f_pnls if p < 0)
                 f_profit_factor = (winning_pnl / abs(losing_pnl)) if losing_pnl else float("inf")
+                f_wr_style = "green" if f_win_rate > 60 else "white"
 
-                pnl_s = "green" if f_total_pnl >= 0 else "red"
+                pnl_s = "bold green" if f_total_pnl >= 0 else "bold red"
                 f_summary = Table.grid(padding=(0, 3))
                 f_summary.add_column(justify="center", ratio=1)
                 f_summary.add_row(
                     Text.assemble(("Filtrados\n", "bold white"), (str(f_total), "bold white")),
                     Text.assemble(
                         ("Win Rate\n", "bold white"),
-                        (f"{f_win_rate:.1f}%", "bold cyan"),
+                        (f"{f_win_rate:.1f}%", f_wr_style),
                     ),
                     Text.assemble(
                         ("Profit Factor\n", "bold white"),
@@ -2429,20 +2473,36 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
                 )
                 console.print(Panel(f_summary, title="Filtro", border_style="white"))
 
-                # ── Trade detail table ────────────────────────────────
+                # T-12: Enriched trade table — 12 columns
                 table = Table(
                     title=None, border_style="white", header_style="bold white"
                 )
-                table.add_column("Symbol", style="bold white")
-                table.add_column("Side")
+                table.add_column("#", style="bold cyan")
+                table.add_column("Fecha")
+                table.add_column("S\u00edmbolo", style="bold white")
+                table.add_column("Lado")
                 table.add_column("Qty", justify="right")
                 table.add_column("Entry", justify="right")
                 table.add_column("Exit", justify="right")
                 table.add_column("P&L", justify="right")
+                table.add_column("Retorno%", justify="right")
+                table.add_column("Duraci\u00f3n", justify="right")
+                table.add_column("Slippage", justify="right")
+                table.add_column("Estrategia")
 
-                for t in filtered:
+                for idx, t in enumerate(filtered, start=1):
                     if not isinstance(t, dict):
                         continue
+                    # Fecha: entry_at formatted YYYY-MM-DD HH:MM
+                    entry_at = t.get("entry_at", "") or t.get("entry_time", "") or ""
+                    fecha = "\u2014"
+                    if entry_at:
+                        try:
+                            dt = datetime.fromisoformat(str(entry_at).replace("Z", "+00:00"))
+                            fecha = dt.strftime("%Y-%m-%d %H:%M")
+                        except (ValueError, TypeError):
+                            fecha = str(entry_at)[:16]
+
                     symbol = str(t.get("symbol", "\u2014"))
                     side = str(t.get("side", "\u2014"))
                     qty_raw = t.get("qty", t.get("quantity", "\u2014"))
@@ -2461,24 +2521,58 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
                         if isinstance(pnl_raw, (int, float))
                         else "\u2014"
                     )
-                    pnl_style = (
-                        "green"
-                        if (isinstance(pnl_raw, (int, float)) and pnl_raw >= 0)
-                        else "red"
-                    )
+                    # T-14: P&L >= 0 bold green, < 0 bold red, == 0 default
+                    pnl_style = "bold green" if (isinstance(pnl_raw, (int, float)) and pnl_raw > 0) else ("bold red" if (isinstance(pnl_raw, (int, float)) and pnl_raw < 0) else "white")
+
+                    # Retorno%
+                    ret_pct = t.get("return_pct", "")
+                    ret_str = f"{float(ret_pct):.2f}%" if ret_pct else "\u2014"
+
+                    # Duración: (exit_at - entry_at)
+                    dur_str = "\u2014"
+                    exit_at = t.get("exit_at", "") or t.get("exit_time", "")
+                    if entry_at and exit_at:
+                        try:
+                            ed = datetime.fromisoformat(str(entry_at).replace("Z", "+00:00"))
+                            xd = datetime.fromisoformat(str(exit_at).replace("Z", "+00:00"))
+                            delta = xd - ed
+                            if delta.total_seconds() < 3600:
+                                dur_str = "< 1h"
+                            elif delta.days > 0:
+                                hours = delta.seconds // 3600
+                                dur_str = f"{delta.days}d {hours}h"
+                            else:
+                                dur_str = f"{delta.seconds // 3600}h"
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Slippage
+                    slippage_bps = t.get("slippage_bps", 0)
+                    slippage_str = f"{slippage_bps} bps"
+
+                    # Estrategia
+                    estrategia = str(t.get("strategy") or t.get("strategy_name") or "\u2014")
+
                     table.add_row(
-                        symbol, side, qty, entry, exit_val, f"[{pnl_style}]{pnl}[/]"
+                        str(idx), fecha, symbol, side, qty, entry, exit_val,
+                        f"[{pnl_style}]{pnl}[/]",
+                        ret_str, dur_str, slippage_str, estrategia,
                     )
                 console.print(table)
             else:
-                console.print("[dim]No hay trades para los filtros seleccionados.[/]")
+                # T-12, T-14: Empty state in dim italic gray
+                console.print("[dim italic]No hay trades para mostrar con los filtros actuales.[/]")
 
-            # ── Submenu ──────────────────────────────────────────────
+            # T-13: Single-key submenu
             console.print()
             console.print(
-                "[bold cyan]P[/] Rendimiento por estrategia   "
-                "[bold cyan]E[/] Exportar   "
-                "[bold cyan]S[/] Estad\u00edsticas   "
+                "[bold cyan]S[/] S\u00edmbolo   "
+                "[bold cyan]E[/] Estrategia   "
+                "[bold cyan]F[/] Fecha   "
+                "[bold cyan]T[/] Reset   "
+                "[bold cyan]X[/] Exportar   "
+                "[bold cyan]V[/] Stats   "
+                "[bold cyan]P[/] Estrategia   "
                 "[bold cyan]0[/] Volver"
             )
             try:
@@ -2488,16 +2582,63 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
 
             if sub == "0":
                 return
-            if sub == "p":
-                _show_performance_by_strategy(filtered, console)
-                _wait_enter()
+            elif sub == "s":
+                # T-13: Prompt for symbol
+                try:
+                    val = input("Ingrese s\u00edmbolo (ENTER para cancelar): ").strip().upper()
+                except (KeyboardInterrupt, EOFError):
+                    continue
+                if val:
+                    active_filters["symbol"] = val
+                elif "symbol" in active_filters:
+                    del active_filters["symbol"]
                 continue
-            if sub == "e":
+            elif sub == "e":
+                # T-13: Prompt for strategy
+                try:
+                    val = input("Ingrese estrategia (ENTER para cancelar): ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    continue
+                if val:
+                    active_filters["strategy"] = val
+                elif "strategy" in active_filters:
+                    del active_filters["strategy"]
+                continue
+            elif sub == "f":
+                # T-13: Date submenu
+                console.print()
+                console.print(
+                    "[bold cyan]1[/] Hoy   "
+                    "[bold cyan]2[/] Semana   "
+                    "[bold cyan]3[/] Mes   "
+                    "[bold cyan]4[/] Todo   "
+                    "[bold cyan]5[/] Personalizado"
+                )
+                try:
+                    dc = input("Filtrar por per\u00edodo: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    continue
+                dr_map = {"1": "today", "2": "week", "3": "month", "4": None, "5": "custom"}
+                val = dr_map.get(dc)
+                if val:
+                    active_filters["date_range"] = val
+                elif "date_range" in active_filters:
+                    del active_filters["date_range"]
+                continue
+            elif sub == "t":
+                # T-13: Reset all filters
+                active_filters = {}
+                continue
+            elif sub == "x":
                 _export_trades(filtered, console, logs_dir)
                 _wait_enter()
                 continue
-            if sub == "s":
+            elif sub == "v":
                 _show_advanced_stats(filtered, console)
+                _wait_enter()
+                continue
+            elif sub == "p":
+                _show_performance_by_strategy(filtered, console)
                 _wait_enter()
                 continue
             # Anything else → loop (re-prompt with fresh data)
