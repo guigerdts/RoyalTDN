@@ -1,0 +1,939 @@
+# ═══════════════════════════════════════════════════════════════════════
+# SDD Design — FASE 13: Scanner con Universo Real de Activos
+# ═══════════════════════════════════════════════════════════════════════
+
+change: "FASE-13-scanner-universo-real"
+phase: design
+created: "2026-06-20"
+
+# ── Resumen ──────────────────────────────────────────────────────────────
+# Esta fase profesionaliza el scanner existente: SCANNER_UNIVERSE se vuelve
+# operativo (etfs/sp500/all), se agrega rate limiting con token bucket,
+# descarga de datos en batch (100 símbolos por call), AssetUniverse migra
+# a alpaca-py SDK, el menú muestra señales correctamente, Scanner.scan()
+# se ejecuta con run_in_executor para no bloquear el event loop, y se
+# declara tqdm como dependencia explícita.
+
+# ── Archivos afectados ──────────────────────────────────────────────────
+
+affected_files:
+  - path: "src/royaltdn/scanner/universe.py"
+    change: "modify"
+    description: >
+      Refactor completo de AssetUniverse. Reemplazar requests.get() por
+      TradingClient.get_all_assets(). __init__ recibe universe_type
+      (default "etfs") que respeta SCANNER_UNIVERSE env var. Cache
+      in-memory con TTL 300s via dict + timestamp. Nueva API unificada
+      get_symbols() que reemplaza los 3 métodos anteriores.
+
+  - path: "src/royaltdn/scanner/filters.py"
+    change: "modify"
+    description: >
+      Agregar clase TokenBucket para rate limiting (200 tokens iniciales,
+      refill 200/min). Modificar LiquidityFilter.filter() para que cada
+      get_latest_bar() consuma 1 token. Agregar retry con exponential
+      backoff para errores 429/503/timeout y abort en 401/403.
+
+  - path: "src/royaltdn/scanner/scanner.py"
+    change: "modify"
+    description: >
+      Reemplazar _get_symbol_data() individual por método batch-aware
+      _batch_get_symbol_data() que group passed symbols en batches de 100
+      para get_stock_bars. Integrar TokenBucket en las calls batch.
+      Usar tqdm con import explícito.
+
+  - path: "src/royaltdn/orchestrator.py"
+    change: "modify"
+    description: >
+      Agregar _run_scanner() async que ejecuta Scanner.scan() via
+      loop.run_in_executor() con timeout 300s. Modificar _check_signals
+      para usar run_in_executor en scan manual. Agregar auto-scan en
+      legacy loop con SCANNER_INTERVAL_MINUTES. Estado 'scanneando'
+      durante ejecución. Flag _is_scanning para evitar concurrencia.
+      Pasar SCANNER_UNIVERSE a AssetUniverse en _setup().
+
+  - path: "src/royaltdn/frontend/menu/app.py"
+    change: "modify"
+    description: >
+      Corregir _show_scanner: leer last_scan["top_signals"] en vez de
+      last_scan["symbols"]. Tabla con columnas #, Symbol, Action, Price,
+      Score, Strategy. Score > 0 en verde. BUY/SELL coloreado. Fallbacks
+      para datos faltantes. Metrics panel usa scan_history[-1].
+
+  - path: "pyproject.toml"
+    change: "modify"
+    description: >
+      Agregar "tqdm>=4.66,<5" a [project] dependencies como dependencia
+      explícita (ya se usa en filters.py y scanner.py).
+
+  - path: "src/royaltdn/scanner/__init__.py"
+    change: "modify"
+    description: >
+      Agregar TokenBucket al __all__ y al import si se define en filters.py.
+      Actualizar AssetUniverse import si cambia la firma.
+
+new_files: []
+
+# ── Diseño técnico detallado ─────────────────────────────────────────────
+
+design:
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 1: UNIVERSE — AssetUniverse refactor
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: universe
+    files: ["src/royaltdn/scanner/universe.py"]
+    approach:
+      summary: >
+        Refactor completo de AssetUniverse. Reemplazar requests.get() raw
+        por TradingClient.get_all_assets() del SDK alpaca-py. El constructor
+        recibe universe_type que define qué símbolos cargar y respeta la
+        variable de entorno SCANNER_UNIVERSE. Cache in-memory con TTL
+        configurable (default 300s). Nueva API unificada get_symbols()
+        que reemplaza get_sp500_symbols(), get_etf_symbols() y
+        get_all_symbols(). Se elimina import requests.
+
+      key_decisions:
+        - "Usar TradingClient.get_all_assets(status='active', asset_class='us_equity') con filtro post-query por exchange NYSE/NASDAQ (el SDK no soporta filtro múltiple de exchange directamente)"
+        - "universe_type='etfs' usa solo DEFAULT_ETFS, sin API call"
+        - "universe_type='sp500' llama a get_all_assets() y filtra por tradable=True, exchange en ('NYSE','NASDAQ')"
+        - "universe_type='all' llama sp500 + etfs deduplicados (sp500 primero)"
+        - "Cache key = f'universe:{universe_type}', TTL via SCANNER_CACHE_TTL (default 300s)"
+        - "Si API falla y cache existe (incluso expired), usar cache con log warning"
+        - "Si API falla y no hay cache, retornar DEFAULT_ETFS como fallback con log warning"
+        - "requests queda eliminado del archivo — no más import requests"
+
+      modified_classes:
+        - name: "AssetUniverse"
+          new_signature: |
+            class AssetUniverse:
+                def __init__(
+                    self,
+                    api_key: str,
+                    secret_key: str,
+                    use_paper: bool = True,
+                    universe_type: str = "etfs",
+                    cache_ttl: int = 300,
+                )
+          changes:
+            - "Agregar parámetro universe_type con default 'etfs'"
+            - "Agregar parámetro cache_ttl con default 300"
+            - "Remover self._sp500_cache, self._etf_cache, self._all_cache"
+            - "Agregar self._cache: dict con estructura {key: (timestamp: float, data: list[str])}"
+            - "Agregar self._trading_client: TradingClient inicializado con api_key, secret_key, paper=use_paper"
+            - "DEFAULT_ETFS se mantiene igual (16 símbolos sectoriales)"
+            - "Validar universe_type en __init__: si no es etfs/sp500/all, log warning y default a 'etfs'"
+
+          removed_methods:
+            - "get_sp500_symbols() — reemplazado por get_symbols()"
+            - "get_etf_symbols() — reemplazado por get_symbols()"
+            - "get_all_symbols() — reemplazado por get_symbols()"
+
+          new_methods:
+            - name: "get_symbols() -> List[str]"
+              description: "Método unificado que retorna símbolos según universe_type, con cache y TTL."
+              logic: |
+                def get_symbols(self) -> List[str]:
+                    cache_key = f"universe:{self._universe_type}"
+                    now = time.time()
+                    # Cache hit?
+                    if cache_key in self._cache:
+                        ts, data = self._cache[cache_key]
+                        if (now - ts) < self._cache_ttl:
+                            return data
+                    # Fresh fetch
+                    if self._universe_type == "etfs":
+                        result = self._get_etfs()
+                    elif self._universe_type == "sp500":
+                        result = self._get_sp500_via_sdk()
+                    else:  # "all"
+                        result = self._get_all_deduplicated()
+                    # Cache result (even if empty — avoid thundering herd)
+                    self._cache[cache_key] = (now, result)
+                    return result
+
+            - name: "_get_sp500_via_sdk() -> List[str]"
+              description: "Llama TradingClient.get_all_assets() y filtra por exchange=NYSE|NASDAQ, tradable=True. Retorna hasta 500 símbolos."
+              error_handling:
+                - "Timeout/APIError → log warning, retornar []"
+                - "Respuesta vacía → log warning, retornar []"
+                - "Cualquier Exception → log warning, retornar []"
+
+            - name: "_get_etfs() -> List[str]"
+              description: "Retorna copy de DEFAULT_ETFS. Sin API call."
+
+            - name: "_get_all_deduplicated() -> List[str]"
+              description: "Sp500 primero + ETFs no duplicados. Si sp500 falla, retorna solo ETFs."
+              logic: |
+                sp500 = self._get_sp500_via_sdk()
+                etfs = self._get_etfs()
+                seen = set(sp500)
+                result = sp500.copy()
+                for sym in etfs:
+                    if sym not in seen:
+                        seen.add(sym)
+                        result.append(sym)
+                return result
+
+            - name: "_invalidate_cache()"
+              description: "Limpia self._cache completamente. Llamada interna cuando cambia universe_type."
+
+          imports:
+            - "from alpaca.trading.client import TradingClient"
+            - "import time"
+            - "NO: import requests"  # removed entirely
+
+      error_handling:
+        - "TradingClient.get_all_assets() timeout 10s → log warning + retornar []"
+        - "APIError de Alpaca → log warning + retornar []"
+        - "Valor inválido de SCANNER_UNIVERSE → log warning + fallback a 'etfs'"
+        - "Si sp500 falla y universe_type='all' → retornar solo ETFs con log warning"
+        - "Caché con TTL expirado pero API falla → usar cache stale con log warning"
+
+      breaking_changes:
+        - "get_sp500_symbols() deja de existir — cualquier caller debe usar get_symbols()"
+        - "get_etf_symbols() deja de existir"
+        - "get_all_symbols() deja de existir"
+        - "Scanner.scan() y Orchestrator._setup() deben actualizar la llamada a get_symbols()"
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 2: RATE LIMITING — Token bucket + Retry
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: rate-limiting
+    files:
+      - "src/royaltdn/scanner/filters.py"
+      - "src/royaltdn/scanner/scanner.py"
+    approach:
+      summary: >
+        Implementar TokenBucket como clase separada en filters.py.
+        200 tokens iniciales, refill a 200 tokens/minuto. Cada
+        get_latest_bar() consume 1 token en LiquidityFilter.filter().
+        Cada get_stock_bars() batch consume 1 token en Scanner.
+        Reintentos con exponential backoff (1s, 2s, 4s, 8s, max 5)
+        para errores 429, 503, y timeouts. HTTP 401/403 abortan el scan.
+
+      key_decisions:
+        - "TokenBucket en filters.py junto a LiquidityFilter (misma responsabilidad de filtrado/control)"
+        - "Scanner inyecta el mismo TokenBucket a LiquidityFilter y lo usa internamente"
+        - "TokenBucket.consume() bloquea con time.sleep() hasta tener tokens (modelo síncrono)"
+        - "Backoff: time.sleep(1), sleep(2), sleep(4), sleep(8) — máximo 5 intentos totales (initial + 4 retries)"
+        - "HTTP 429: leer Retry-After header si existe, si no usar backoff estándar"
+        - "HTTP 401/403: log crítico, setear flag _auth_failed en Scanner, salir del scan loop"
+        - "Timeout de conexión (requests.exceptions.Timeout) → retry con backoff"
+
+      new_components:
+        - name: "TokenBucket"
+          location: "src/royaltdn/scanner/filters.py"
+          class_def: |
+            class TokenBucket:
+                def __init__(self, max_tokens: int = 200, refill_rate: float = 200.0 / 60.0):
+                    self._max_tokens = max_tokens
+                    self._refill_rate = refill_rate      # tokens per second
+                    self._tokens = float(max_tokens)
+                    self._last_refill = time.monotonic()
+
+                def _refill(self) -> None:
+                    now = time.monotonic()
+                    elapsed = now - self._last_refill
+                    self._tokens = min(self._max_tokens, self._tokens + elapsed * self._refill_rate)
+                    self._last_refill = now
+
+                def consume(self, tokens: int = 1) -> None:
+                    """Block until tokens are available, then consume."""
+                    while True:
+                        self._refill()
+                        if self._tokens >= tokens:
+                            self._tokens -= tokens
+                            return
+                        # Sleep until at least 1 token is available
+                        deficit = tokens - self._tokens
+                        wait = deficit / self._refill_rate
+                        time.sleep(min(wait, 0.1))  # max 100ms per check
+
+                @property
+                def available_tokens(self) -> float:
+                    self._refill()
+                    return self._tokens
+
+      modified_classes:
+        - name: "LiquidityFilter"
+          changes:
+            - "Agregar parámetro opcional token_bucket: Optional[TokenBucket] = None en __init__"
+            - "Si token_bucket es None, crear TokenBucket() por defecto"
+            - "En filter(): antes de cada data_client.get_latest_bar(), llamar self._token_bucket.consume(1)"
+            - "Envolver get_latest_bar() en helper _call_with_retry() que maneja backoff y errores"
+
+          new_methods:
+            - name: "_call_with_retry(symbol, client) -> Optional[Bar]"
+              description: "Wrapper con retry para get_latest_bar. Consume token antes de cada intento."
+              logic: |
+                backoff = [1, 2, 4, 8]  # seconds
+                for attempt in range(5):  # initial + 4 retries
+                    try:
+                        self._token_bucket.consume(1)
+                        return client.get_latest_bar(symbol)
+                    except Exception as e:
+                        err_str = str(e)
+                        # Auth errors — abort immediately
+                        if "401" in err_str or "403" in err_str:
+                            logger.error("Auth error ({}): credenciales inválidas — abortando scan", err_str)
+                            raise  # propagate to scanner
+                        # Rate limit or server error — retry
+                        if "429" in err_str or "503" in err_str or "Timeout" in err_str:
+                            if attempt < 4:
+                                delay = backoff[attempt]
+                                logger.debug("API error {} para {} — reintento {}/5 en {}s", err_str, symbol, attempt + 1, delay)
+                                time.sleep(delay)
+                                continue
+                            else:
+                                logger.warning("Rate limit: max retries (5) alcanzado para {}", symbol)
+                                return None
+                        # Unknown error — skip silently
+                        logger.debug("Error inesperado para {}: {} — saltando", symbol, e)
+                        return None
+                return None
+
+        - name: "Scanner"
+          changes:
+            - "En __init__: crear TokenBucket y pasarlo a LiquidityFilter"
+            - "En _batch_get_symbol_data(): consumir 1 token por batch de get_stock_bars"
+            - "Agregar flag self._auth_failed para abortar scan si hay error 401/403"
+
+      error_handling:
+        - "TokenBucket vacío → consume() bloquea hasta refill (~0.3s por token)"
+        - "429 → backoff 1s/2s/4s/8s, max 5 intentos, log warning en fallo final"
+        - "503 → mismo backoff que 429"
+        - "Timeout → mismo backoff"
+        - "401 → log error + set self._auth_failed = True en Scanner, break del scan loop"
+        - "403 → log error + set self._auth_failed = True, break del scan loop"
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 3: CACHE + BATCH DATA — Optimización get_stock_bars
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: cache
+    files: ["src/royaltdn/scanner/scanner.py"]
+    approach:
+      summary: >
+        Convertir _get_symbol_data(symbol) en _batch_get_symbol_data(symbols)
+        que agrupa símbolos en batches de hasta 100 para get_stock_bars.
+        Esto reduce ~400 llamadas individuales a ~4 llamadas batch para 400
+        símbolos. Los datos se cachean por símbolo en self._data_cache.
+        El cache de AssetUniverse ya maneja TTL (dominio universe).
+
+      key_decisions:
+        - "Agrupar passed_symbols en chunks de 100 (itertools.batched o slice manual)"
+        - "Cada batch consume 1 token del TokenBucket (no 1 por símbolo)"
+        - "Usar StockBarsRequest con symbol_or_symbols=list, timeframe=TimeFrame.Day, limit=60"
+        - "Resultado: dict[symbol] -> DataFrame, cacheado en self._data_cache"
+        - "Si un batch falla completamente: log warning, saltar todos los símbolos de ese batch"
+        - "Si un batch retorna datos parciales (menos símbolos de los solicitados): usar los que vienen"
+        - "Eliminar _get_symbol_data(self, symbol) — reemplazar por lógica batch en scan()"
+
+      modified_classes:
+        - name: "Scanner"
+
+          removed_methods:
+            - "_get_symbol_data(symbol) -> Optional[DataFrame]"
+
+          modified_methods:
+            - name: "scan()"
+              changes:
+                - "Después de liquidity_filter.filter(), pasar passed_symbols a _batch_get_symbol_data()"
+                - "Iterar sobre el dict retornado: for symbol, data in symbol_data_dict.items()"
+                - "Si symbol no está en el dict (batch falló), skip"
+                - "Resto del flujo igual: ejecutar estrategias, rankear, publicar"
+
+            - name: "_get_symbol_data(symbol)"
+              change: "replace"
+              description: >
+                Reemplazado por _batch_get_symbol_data() que procesa todos
+                los símbolos de una vez en batches.
+
+          new_methods:
+            - name: "_batch_get_symbol_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]"
+              description: >
+                Descarga datos históricos para múltiples símbolos en batches
+                de hasta 100. Cachea por símbolo. Retorna dict[symbol] -> DataFrame.
+              logic: |
+                def _batch_get_symbol_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+                    if not symbols:
+                        return {}
+                    from alpaca.data.requests import StockBarsRequest
+                    from alpaca.data.timeframe import TimeFrame
+                    import math
+
+                    result: Dict[str, pd.DataFrame] = {}
+                    # Check cache first — remove cached symbols from fetch list
+                    to_fetch = [s for s in symbols if s not in self._data_cache]
+                    # Return cached data for already-fetched symbols
+                    for s in symbols:
+                        if s in self._data_cache:
+                            result[s] = self._data_cache[s]
+
+                    if not to_fetch:
+                        return result
+
+                    # Group into batches of 100
+                    batch_size = 100
+                    n_batches = math.ceil(len(to_fetch) / batch_size)
+                    for i in range(n_batches):
+                        batch = to_fetch[i * batch_size:(i + 1) * batch_size]
+                        try:
+                            # Rate limit: 1 token per batch
+                            self._token_bucket.consume(1)
+                            request = StockBarsRequest(
+                                symbol_or_symbols=batch,
+                                timeframe=TimeFrame.Day,
+                                limit=60,
+                            )
+                            bars_response = self.data_client.get_stock_bars(request)
+                            # Process each symbol in the batch
+                            for symbol in batch:
+                                symbol_bars = bars_response.data.get(symbol, [])
+                                if not symbol_bars:
+                                    continue
+                                df = pd.DataFrame([{
+                                    "timestamp": b.timestamp,
+                                    "open": float(b.open),
+                                    "high": float(b.high),
+                                    "low": float(b.low),
+                                    "close": float(b.close),
+                                    "volume": int(b.volume),
+                                } for b in symbol_bars])
+                                df = df.sort_values("timestamp").reset_index(drop=True)
+                                self._data_cache[symbol] = df
+                                result[symbol] = df
+                        except Exception as e:
+                            err_str = str(e)
+                            if "401" in err_str or "403" in err_str:
+                                self._auth_failed = True
+                                logger.error("Auth error en batch {}: {} — abortando scan", i, e)
+                                break
+                            logger.warning("Scanner: batch {} ({}/{}) falló: {}", i + 1, len(batch), len(to_fetch), e)
+                            continue
+
+                    return result
+
+      error_handling:
+        - "Batch API call falla (timeout/503/429 después de retries) → log warning, skip batch"
+        - "Símbolo individual sin datos en respuesta batch → skip (no añadir a result)"
+        - "Auth error en batch → abortar inmediatamente, no procesar más batches"
+        - "Cache hit → no hacer API call"
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 4: ASYNC SCAN — run_in_executor
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: async
+    files:
+      - "src/royaltdn/orchestrator.py"
+      - "src/royaltdn/scanner/scanner.py"
+    approach:
+      summary: >
+        El orchestrator ejecuta Scanner.scan() con loop.run_in_executor()
+        para no bloquear el event loop asyncio. Timeout configurable
+        (default 300s vía SCANNER_TIMEOUT). Estado intermedio durante
+        scan. Flag _is_scanning para prevenir concurrencia.
+
+      key_decisions:
+        - "Mínimo cambio en Scanner: scan() sigue siendo síncrono, el wrapper está en orchestrator"
+        - "run_in_executor(None, self._scanner.scan) — None usa ThreadPoolExecutor default"
+        - "Timeout vía asyncio.wait_for(fut, timeout=SCANNER_TIMEOUT)"
+        - "Flag self._is_scanning en Orchestrator para evitar scans concurrentes"
+        - "KeyboardInterrupt durante scan → catch en legacy loop, cancel future, no corrupción"
+        - "El scan manual (desde _check_signals) también usa run_in_executor"
+
+      modified_classes:
+        - name: "Orchestrator"
+          new_attributes:
+            - name: "self._is_scanning: bool"
+              default: "False"
+              description: "Flag para evitar scans concurrentes. Se setea True al iniciar scan, False al terminar."
+
+          modified_methods:
+            - name: "_setup()"
+              changes:
+                - "Pasar universe_type=SCANNER_UNIVERSE a AssetUniverse()"
+                - "Agregar self._is_scanning = False"
+
+            - name: "_check_signals()"
+              changes: >
+                El scan manual (al detectar scan_now_signal.json) en vez de
+                llamar self._scanner.scan() directamente, debe disparar el
+                scan async. Pero _check_signals es síncrono y se llama desde
+                el legacy loop. Solución: en lugar de ejecutar scan aquí,
+                setear un flag self._pending_scan = True que el legacy loop
+                procesa en su siguiente iteración con run_in_executor.
+
+            - name: "_run_legacy_loop()"
+              changes:
+                - "Agregar handling de self._pending_scan al inicio de cada iteración"
+                - "Auto-scan: usar scanner_cycle counter existente (líneas 1060-1061)"
+                - "Reemplazar self._scanner.scan() directo por await self._run_scanner()"
+
+          new_methods:
+            - name: "async _run_scanner() -> Optional[List[dict]]"
+              description: "Ejecuta Scanner.scan() en thread pool con timeout."
+              signature: "async def _run_scanner(self) -> Optional[List[dict]]"
+              logic: |
+                if self._is_scanning:
+                    logger.info("Scanner ya está corriendo — saltando")
+                    return None
+                if self._scanner is None:
+                    logger.warning("Scanner no disponible — saltando")
+                    return None
+
+                self._is_scanning = True
+                self._pending_scan = False
+                loop = asyncio.get_running_loop()
+                timeout = int(os.getenv("SCANNER_TIMEOUT", "300"))
+
+                try:
+                    future = loop.run_in_executor(None, self._scanner.scan)
+                    signals = await asyncio.wait_for(future, timeout=timeout)
+                    logger.info("Scanner completado: {} señales generadas", len(signals) if signals else 0)
+                    return signals
+                except asyncio.TimeoutError:
+                    logger.warning("Scanner timeout tras {}s — cancelando escaneo", timeout)
+                    future.cancel()
+                    return None
+                except Exception as e:
+                    err = str(e)
+                    if "401" in err or "403" in err:
+                        logger.error("Scanner error de autenticación: {} — no se reintentará", err)
+                    else:
+                        logger.warning("Scanner error: {}", err)
+                    return None
+                finally:
+                    self._is_scanning = False
+
+            - name: "_handle_pending_scan()"
+              description: "Procesa scan manual pendiente (desde IPC signal)."
+              logic: |
+                # Called at start of each legacy loop iteration
+                if self._pending_scan and not self._is_scanning:
+                    logger.info("Ejecutando scanner por comando de consola (manual)")
+                    # This is async, so we'd schedule it; but in legacy loop
+                    # we can call _run_scanner directly since we're already async
+
+          modified_flow:
+            - "En _run_legacy_loop, reemplazar bloque sincrónico de scanner:"
+            old: |
+              if scanner_cycle >= scanner_iterations:
+                  signals = self._scanner.scan()
+            new: |
+              if scanner_cycle >= scanner_iterations or self._pending_scan:
+                  signals = await self._run_scanner()
+                  self._pending_scan = False
+              (si signals no es None y tiene top_signals, ejecutar top_signals y saltar SPY)
+
+      error_handling:
+        - "Timeout → log warning, scan parcial descartado, _last_scan_results no se actualiza"
+        - "Auth error → log error, no reintentar en esta iteración"
+        - "Scanner no disponible (self._scanner is None) → skip silencioso"
+        - "Scan ya corriendo (self._is_scanning) → log info, skip"
+        - "KeyboardInterrupt durante run_in_executor → future.cancel(), graceful stop"
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 5: DISPLAY — Menú scanner corregido
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: display
+    files: ["src/royaltdn/frontend/menu/app.py"]
+    approach:
+      summary: >
+        Corregir _show_scanner para leer last_scan["top_signals"] en vez
+        de last_scan["symbols"]. Mostrar tabla rankeada con columnas:
+        #, Symbol, Action, Price, Score, Strategy. Score > 0 en verde.
+        BUY en verde, SELL en rojo. Metrics panel usando scan_history[-1].
+        Fallbacks para datos faltantes (symbol=None → "?", score=None → "—").
+
+      key_decisions:
+        - "La estructura de scanner_results.json NO cambia — ya tiene top_signals"
+        - "El bug es solo de lectura: last_scan.get('symbols', []) → last_scan.get('top_signals', [])"
+        - "Mantener el mismo patrón de filtración S/E/F/T/X/V que trades (no tocar)"
+        - "La tabla DEBE rankear por score descendente (el scanner ya devuelve rankeado)"
+        - "Score > 0 en verde (bold green), score ≤ 0 sin color extra"
+        - "BUY en green, SELL en red (ANSI 16-colors)"
+        - "Timestamp del último scan en cyan"
+        - "Metrics panel solo si scan_history tiene al menos 1 entry"
+
+      modified_functions:
+        - name: "_show_scanner(state_loader, console, logs_dir)"
+          changes:
+            old: |
+              last_scan.get("symbols", [])
+            new: |
+              last_scan.get("top_signals", [])
+
+          table_columns:
+            old: "Symbol, Price, Signal, Score"
+            new: "#, Symbol, Action, Price, Score, Strategy"
+
+          rendering_logic: |
+            signals = last_scan.get("top_signals", [])
+            if signals:
+                table = Table(title=None, border_style="white", header_style="bold white")
+                table.add_column("#", style="bold white", width=4)
+                table.add_column("Symbol", style="bold white")
+                table.add_column("Action")
+                table.add_column("Price", justify="right")
+                table.add_column("Score", justify="right")
+                table.add_column("Strategy")
+
+                for idx, s in enumerate(signals, start=1):
+                    symbol = str(s.get("symbol", "?"))
+                    action = s.get("action", "—")
+                    action_style = "green" if action == "BUY" else ("red" if action == "SELL" else "white")
+                    price_raw = s.get("price")
+                    price = f"${float(price_raw):,.2f}" if price_raw is not None else "—"
+                    score_raw = s.get("score")
+                    score = f"{float(score_raw):.2f}" if score_raw is not None else "—"
+                    score_style = "bold green" if (score_raw is not None and float(score_raw) > 0) else ""
+                    strategy = str(s.get("strategy", "—"))
+                    table.add_row(
+                        str(idx),
+                        symbol,
+                        f"[{action_style}]{action}[/]",
+                        price,
+                        f"[{score_style}]{score}[/]",
+                        strategy,
+                    )
+                console.print(table)
+            else:
+                console.print("[dim]No hay resultados de escaneo aún.[/]")
+
+          metrics_panel: |
+            # Already works — reads scan_history[-1]:
+            #   total_symbols, passed_symbols, signals_count, elapsed_seconds
+            # No changes needed to metrics logic (lines 1217-1235 in current app.py)
+            # Just ensure the format string is correct (already is)
+
+          post_scan_refresh: |
+            # After trigger_scanner() + time.sleep(5):
+            # data = state_loader.load_scanner_results()
+            # last_scan = data.get("last_scan", {})
+            # signals = last_scan.get("top_signals", [])
+            # Re-render table with new data
+
+      error_handling:
+        - "top_signals vacío o missing → 'No hay resultados de escaneo aún.'"
+        - "Signal sin symbol → mostrar '?'"
+        - "Signal sin score → mostrar '—'"
+        - "Signal sin strategy → mostrar '—'"
+        - "Signal sin price → mostrar '—'"
+        - "last_scan es dict vacío → empty state"
+        - "scan_history vacío → no mostrar metrics panel"
+
+  # ═════════════════════════════════════════════════════════════════════
+  # DOMINIO 6: INTEGRACIÓN — Auto-scan, errores, tqdm
+  # ═════════════════════════════════════════════════════════════════════
+
+  - domain: integration
+    files:
+      - "src/royaltdn/orchestrator.py"
+      - "pyproject.toml"
+      - "src/royaltdn/scanner/scanner.py"
+    approach:
+      summary: >
+        Auto-scan cada SCANNER_INTERVAL_MINUTES desde el legacy loop.
+        Scan manual vía IPC signal (scan_now_signal.json) usando el flag
+        _pending_scan. tqdm como dependencia explícita. Manejo de errores
+        de API en toda la cadena: auth errors abortan, rate limits
+        reintentan, errores de red reintentan.
+
+      key_decisions:
+        - "Auto-scan timer usa el mismo scanner_cycle counter existente (no scheduler separado)"
+        - "SCANNER_INTERVAL_MINUTES=0 → scanner_cycle nunca llega al threshold (scanner_iterations=1 pero counter no incrementa efectivamente)"
+        - "En realidad: scanner_iterations = max(1, 0) = 1, pero si el contador se resetea cada ciclo, hay que usar una lógica diferente. Solución: si SCANNER_INTERVAL_MINUTES == 0, no incrementar scanner_cycle."
+        - "Scan manual vía IPC: _check_signals sincrónico setea self._pending_scan = True, el legacy loop lo procesa con _run_scanner()"
+        - "No resetear scanner_cycle al hacer scan manual — el auto-scan mantiene su schedule"
+        - "tqdm>=4.66,<5 en pyproject.toml dependencies (no optional-dependencies)"
+        - "Import de tqdm: mover a nivel de función si está en módulo con carga diferida"
+
+      modified_modules:
+        - name: "pyproject.toml"
+          changes:
+            - "Agregar 'tqdm>=4.66,<5' a [project] dependencies, después de rich>=13.0.0"
+
+        - name: "scanner.py"
+          changes:
+            - "Import tqdm: mantener import a nivel función (dentro de scan() y dentro de LiquidityFilter.filter())"
+
+      modified_classes:
+        - name: "Orchestrator"
+          modified_methods:
+            - name: "_run_legacy_loop()"
+              changes:
+                # Add _pending_scan check at start of each iteration
+                - "Si self._pending_scan y not self._is_scanning: llamar await self._run_scanner()"
+                - "Auto-scan: if scanner_cycle >= scanner_iterations y SCANNER_INTERVAL_MINUTES > 0"
+                - "Si SCANNER_INTERVAL_MINUTES == 0: no incrementar scanner_cycle en absoluto"
+                - "Reemplazar signals = self._scanner.scan() por signals = await self._run_scanner()"
+
+            - name: "_check_signals()"
+              changes:
+                old: |
+                  if self._scanner is not None:
+                      self._scanner.scan()
+                new: |
+                  if self._scanner is not None and not self._is_scanning:
+                      self._pending_scan = True
+                      logger.info("Scan manual encolado — se ejecutará en próxima iteración")
+
+            - name: "_setup()"
+              changes:
+                - "Pasar SCANNER_UNIVERSE a AssetUniverse(universe_type=SCANNER_UNIVERSE) en línea 185"
+                - "self._is_scanning = False"
+                - "self._pending_scan = False"
+
+      env_config:
+        - var: "SCANNER_UNIVERSE"
+          default: "etfs"
+          values: ["etfs", "sp500", "all"]
+          description: "Define qué activos escanear"
+          used_in: "AssetUniverse.__init__()"
+
+        - var: "SCANNER_INTERVAL_MINUTES"
+          default: "60"
+          description: "Intervalo en minutos entre auto-scans. 0 = deshabilitado"
+          used_in: "Orchestrator._run_legacy_loop()"
+
+        - var: "SCANNER_CACHE_TTL"
+          default: "300"
+          description: "TTL en segundos para cache de AssetUniverse"
+          used_in: "AssetUniverse.__init__()"
+
+        - var: "SCANNER_TIMEOUT"
+          default: "300"
+          description: "Timeout en segundos para run_in_executor del scanner"
+          used_in: "Orchestrator._run_scanner()"
+
+        - var: "SCANNER_TOP_N"
+          default: "3"
+          description: "Top N señales a ejecutar"
+          existing: true
+
+        - var: "SCANNER_MIN_VOLUME"
+          default: "500000"
+          description: "Volumen mínimo para LiquidityFilter"
+          existing: true
+
+        - var: "SCANNER_MIN_PRICE"
+          default: "5.0"
+          description: "Precio mínimo para LiquidityFilter"
+          existing: true
+
+        - var: "SCANNER_MAX_SPREAD_PCT"
+          default: "0.5"
+          description: "Spread máximo % para LiquidityFilter"
+          existing: true
+
+      error_handling:
+        - "API errors durante auto-scan → log + next scan en iteración normal (no reintentar inmediatamente)"
+        - "Red lock: self._is_scanning evita scans concurrentes"
+        - "Scanner no disponible (self._scanner is None) → skip silencioso en auto-scan y manual"
+        - "Auth error 401/403 → abortar scan, log error, continuar loop con SPY"
+
+# ── Orden de implementación ──────────────────────────────────────────────
+
+implementation_order:
+  - step: 1
+    domain: universe
+    files: ["src/royaltdn/scanner/universe.py"]
+    description: >
+      Refactor AssetUniverse: migrar a TradingClient, agregar universe_type
+      param, cache con TTL, get_symbols() unificado. Eliminar requests import.
+      Este es el paso FUNDACIONAL — todo lo demás depende de tener un
+      universo correcto.
+
+  - step: 2
+    domain: rate-limiting
+    files: ["src/royaltdn/scanner/filters.py"]
+    description: >
+      Agregar TokenBucket class y retry logic en LiquidityFilter. Modificar
+      filter() para rate-limit cada get_latest_bar(). Importante hacerlo
+      antes de tocar scanner.py porque el rate limiter es necesario para
+      no quemar la API key.
+
+  - step: 3
+    domain: cache
+    files: ["src/royaltdn/scanner/scanner.py"]
+    description: >
+      Reemplazar _get_symbol_data() por _batch_get_symbol_data() con batches
+      de 100. Integrar TokenBucket en scanner. Actualizar scan() flow para
+      usar nuevo método batch. Agregar flag _auth_failed.
+
+  - step: 4
+    domain: async
+    files: ["src/royaltdn/orchestrator.py"]
+    description: >
+      Agregar _run_scanner() async con run_in_executor + timeout. Modificar
+      _check_signals para usar flag _pending_scan. Flags _is_scanning y
+      _pending_scan. Pasar SCANNER_UNIVERSE a AssetUniverse en _setup().
+
+  - step: 5
+    domain: display
+    files: ["src/royaltdn/frontend/menu/app.py"]
+    description: >
+      Corregir _show_scanner: top_signals en vez de symbols, tabla rankeada.
+      Este paso puede hacerse en cualquier orden, pero es más gratificante
+      hacerlo después de que el scanner ya funciona correctamente.
+
+  - step: 6
+    domain: integration
+    files: ["src/royaltdn/orchestrator.py", "pyproject.toml"]
+    description: >
+      Auto-scan desde legacy loop. tqdm en pyproject.toml. Errores de API
+      en cadena completa. Este paso amarra todo junto.
+
+  - step: 7
+    domain: tests
+    files: ["tests/test_scanner.py", "tests/test_scanner_orchestrator.py"]
+    description: >
+      Actualizar tests existentes para nueva API (get_symbols en vez de
+      get_all_symbols). Agregar tests para: TokenBucket, cache con TTL,
+      batch download, rate limiting en LiquidityFilter, _run_scanner timeout.
+
+# ── Riesgos ──────────────────────────────────────────────────────────────
+
+risks:
+  - id: R1
+    severity: high
+    domain: universe
+    description: >
+      TradingClient.get_all_assets() puede tener un rate limit diferente
+      al de data endpoints. Si Alpaca rate-limit el trading client, el
+      scanner no podría obtener la lista de activos. Mitigación: cache
+      con TTL de 5 min minimiza calls de universe a 1 cada 5 min.
+
+  - id: R2
+    severity: high
+    domain: async
+    description: >
+      run_in_executor ejecuta Scanner.scan() en un thread separado.
+      Si el thread modifica self._data_cache mientras el menú intenta
+      leerlo, hay race condition. Mitigación: Scanner.scan() limpia y
+      reescribe _data_cache al inicio, y el menú solo lee
+      scanner_results.json (archivo), no la cache interna. Zona segura.
+
+  - id: R3
+    severity: medium
+    domain: async
+    description: >
+      KeyboardInterrupt durante run_in_executor puede matar el thread
+      dejando _last_scan_results en estado parcial. Mitigación:
+      _atomic_write solo escribe al final, y el try/finally en
+      _run_scanner garantiza que el flag _is_scanning se resetee.
+
+  - id: R4
+    severity: medium
+    domain: rate-limiting
+    description: >
+      El consumo de tokens no considera que get_stock_bars puede consumir
+      más recursos que get_latest_bar. Ambas consumen 1 token, pero
+      get_stock_bars trae 60 velas de 100 símbolos. Mitigación: si vemos
+      rate limits reales de Alpaca, podemos ajustar el peso. Por ahora
+      es conservador: 200 tokens = 200 calls, y con batch hacemos mucho
+      menos.
+
+  - id: R5
+    severity: low
+    domain: display
+    description: >
+      scanner_results.json puede tener el key "symbols" de scans anteriores.
+      El menú debe ignorar ese key y usar solo "top_signals". El código
+      legacy (Fase 5.6) usaba "symbols" — pero el scanner actual ya escribe
+      "top_signals". Riesgo bajo porque el scanner actual (desde Fase 5.7)
+      ya usa top_signals.
+
+  - id: R6
+    severity: medium
+    domain: universe
+    description: >
+      Alpaca puede cambiar su API. El TradingClient.get_all_assets() podría
+      tener cambios de firma entre versiones de alpaca-py. Mitigación:
+      mantener versión alpaca-py>=0.18,<1.
+
+# ── Dependencias ─────────────────────────────────────────────────────────
+
+dependencies:
+  new:
+    - "tqdm>=4.66,<5"
+  existing:
+    - "alpaca-py>=0.18"
+    - "rich>=13.0"
+    - "python-dotenv>=1.0"
+    - "loguru"
+    - "pandas>=2.1"
+  removed: []
+
+# ── Tests requeridos ────────────────────────────────────────────────────
+
+tests:
+  - name: "test_asset_universe_scanner_universe_etfs"
+    description: "SCANNER_UNIVERSE=etfs carga solo DEFAULT_ETFS, sin API call"
+    file: "tests/test_scanner.py"
+
+  - name: "test_asset_universe_scanner_universe_sp500"
+    description: "SCANNER_UNIVERSE=sp500 carga sp500 via SDK mock"
+    file: "tests/test_scanner.py"
+
+  - name: "test_asset_universe_scanner_universe_all"
+    description: "SCANNER_UNIVERSE=all carga sp500 + etfs deduplicados"
+    file: "tests/test_scanner.py"
+
+  - name: "test_asset_universe_invalid_universe_type"
+    description: "Valor inválido → fallback a etfs con warning"
+    file: "tests/test_scanner.py"
+
+  - name: "test_asset_universe_cache_ttl"
+    description: "Cache respeta TTL (hit dentro TTL, miss fuera)"
+    file: "tests/test_scanner.py"
+
+  - name: "test_asset_universe_sdk_fallback"
+    description: "SDK falla → lista vacía, no crash"
+    file: "tests/test_scanner.py"
+
+  - name: "test_token_bucket_initial_tokens"
+    description: "TokenBucket empieza con 200 tokens"
+    file: "tests/test_scanner.py"
+
+  - name: "test_token_bucket_consume"
+    description: "Consume tokens correctamente"
+    file: "tests/test_scanner.py"
+
+  - name: "test_token_bucket_refill"
+    description: "Refill rate 200/min después de consumir"
+    file: "tests/test_scanner.py"
+
+  - name: "test_liquidity_filter_rate_limiting"
+    description: "LiquidityFilter.filter() rate-limit cada get_latest_bar"
+    file: "tests/test_scanner.py"
+
+  - name: "test_scanner_batch_get_symbol_data"
+    description: "Batch de 100 símbolos en vez de 100 calls individuales"
+    file: "tests/test_scanner.py"
+
+  - name: "test_scanner_auth_failure_aborts"
+    description: "HTTP 401 aborta el scan completo"
+    file: "tests/test_scanner.py"
+
+  - name: "test_orchestrator_run_scanner_executor"
+    description: "run_in_executor ejecuta scan sin bloquear"
+    file: "tests/test_scanner_orchestrator.py"
+
+  - name: "test_orchestrator_scanner_concurrent"
+    description: "Flag _is_scanning previene scans concurrentes"
+    file: "tests/test_scanner_orchestrator.py"
+
+  - name: "test_orchestrator_scanner_timeout"
+    description: "Timeout cancela scan y no crashea"
+    file: "tests/test_scanner_orchestrator.py"
+
+  - name: "test_tqdm_dependency_declared"
+    description: "tqdm>=4.66,<5 en pyproject.toml"
+    file: "tests/test_scanner.py"

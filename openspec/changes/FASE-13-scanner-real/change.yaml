@@ -1,0 +1,151 @@
+id: FASE-13-scanner-universo-real
+title: "FASE 13: Scanner con Universo Real de Activos"
+status: proposed
+
+intent: >
+  El scanner ya existe y se conecta a Alpaca real, pero tiene problemas
+  críticos que lo hacen inoperable en producción:
+  (1) SCANNER_UNIVERSE se define pero nunca se usa para decidir qué cargar
+  — siempre se escanean ~500 símbolos;
+  (2) Sin rate limiting — ~900 llamadas API por scan (~500 get_latest_bar +
+  ~400 get_stock_bars), Alpaca limita a 200 req/min en plan estándar;
+  (3) El menú espera last_scan["symbols"] pero el scanner escribe
+  last_scan["top_signals"] — la pantalla nunca muestra resultados;
+  (4) Scanner.scan() corre síncrono bloqueando el event loop asyncio;
+  (5) AssetUniverse usa requests crudo en vez de alpaca-py SDK;
+  (6) tqdm no está declarado en pyproject.toml.
+  Esta fase profesionaliza el scanner: lo hace usable, escalable y
+  configurable vía entorno.
+
+scope:
+  in_scope:
+    - Hacer operativo SCANNER_UNIVERSE: AssetUniverse respeta la env var
+      (etfs → solo ETFs, sp500 → solo S&P 500, all → ambos)
+    - Rate limiting: cola de requests con backoff exponencial + batch API
+      calls para respetar límite de 200 req/min de Alpaca
+    - Reparar display del menú: _show_scanner usa last_scan["top_signals"]
+      en vez de last_scan["symbols"]; mostrar señales rankeadas con
+      precio, score, acción
+    - Convertir Scanner.scan() a async con run_in_executor para no
+      bloquear el event loop
+    - Migrar AssetUniverse a alpaca-py SDK (TradingClient.get_all_assets())
+      en vez de requests.get() raw
+    - Agregar tqdm como dependencia explícita en pyproject.toml
+    - Caché de activos (TTL configurable, ~5 min) para evitar consultas
+      repetidas a Alpaca
+    - Llamadas en lote (batch) a get_stock_bars con múltiples símbolos
+      en vez de uno por uno
+    - Post-scan metrics panel: total símbolos, pasaron filtro, señales
+      generadas, tiempo total (ya parcialmente implementado en scan_history)
+    - Manejo de errores: timeout, rate limit HTTP 429, auth 401/403 con
+      reintentos y fallback graceful
+    - Auto-scan cada SCANNER_INTERVAL_MINUTES (60 por defecto) desde el
+      legacy loop, sin bloquear
+    - Tests unitarios para AssetUniverse con SCANNER_UNIVERSE configurable
+      y LiquidityFilter con rate limiting mockeado
+
+  out_of_scope:
+    - Interfaz web o dashboard en tiempo real
+    - Estrategias nuevas (solo las existentes: SMA, Bollinger RSI,
+      Momentum ATR, FactorRotation)
+    - Backtesting de estrategias
+    - Optimización de parámetros de estrategias
+    - Trading automático basado en scanner (solo generación de señales)
+    - Soporte para cripto o forex (solo equities/ETFs US)
+    - Conexión a múltiples brokers
+    - Persistencia en base de datos relacional (solo logs/JSON)
+
+requirements:
+  - id: REQ-UNIVERSE-CONFIG
+    title: Universo configurable por entorno
+    description: >
+      AssetUniverse debe leer SCANNER_UNIVERSE ("etfs", "sp500", o "all").
+      "etfs" carga solo DEFAULT_ETFS (16 símbolos), "sp500" carga hasta
+      500 equities activos de NYSE/NASDAQ, "all" carga ambos deduplicados.
+    source: orchestrator.py línea 79-79 (variable sin uso)
+
+  - id: REQ-UNIVERSE-SDK
+    title: AssetUniverse usa alpaca-py en vez de requests
+    description: >
+      Reemplazar requests.get() en AssetUniverse.get_sp500_symbols() por
+      TradingClient.get_all_assets() con filtro de status=active,
+      asset_class=us_equity, exchange=NYSE|NASDAQ. Mantener cache in-memory.
+
+  - id: REQ-RATE-LIMIT
+    title: Rate limiting para API calls a Alpaca
+    description: >
+      Implementar cola de requests con token bucket (200 req/min).
+      get_latest_bar en LiquidityFilter.filter() debe rate-limit.
+      get_stock_bars debe agrupar símbolos en batches de 100 (máximo
+      permitido por Alpaca) y rate-limit por batch.
+    endpoints:
+      - GET /v2/stocks/bars (get_stock_bars) — batch hasta 100 símbolos
+      - GET /v2/stocks/{symbol}/bars/latest (get_latest_bar) — 1 por call
+
+  - id: REQ-RETRY
+    title: Reintentos con backoff para errores de API
+    description: >
+      Retry con exponential backoff (1s, 2s, 4s, 8s, max 5 intentos) para
+      HTTP 429 (rate limit), 503, y timeouts. HTTP 401/403 loguear error
+      y abortar el scan. Loguear warning con número de reintento.
+
+  - id: REQ-DISPLAY-FIX
+    title: Menú scanner muestra señales correctamente
+    description: >
+      _show_scanner en app.py debe leer last_scan["top_signals"] (no
+      "symbols"). Mostrar tabla con Symbol, Action, Price, Score,
+      Strategy. El metrics panel (total, passed, signals, tiempo) ya
+      funciona vía scan_history. Refrescar después de scan forzado.
+
+  - id: REQ-ASYNC-SCAN
+    title: Scanner no bloquea el event loop
+    description: >
+      Scanner.scan() debe ejecutarse con loop.run_in_executor() desde el
+      orchestrator, o convertirse a async internamente con aiohttp.
+      La opción pragmática es run_in_executor (mínimo cambio).
+    constraint: >
+      Preferir run_in_executor sobre refactor async completo para
+      minimizar cambios en el scanner existente.
+
+  - id: REQ-CACHE
+    title: Caché de activos con TTL
+    description: >
+      La lista de símbolos de AssetUniverse debe cachearse con TTL
+      configurable (default 300s). El cache se invalida al cambiar
+      SCANNER_UNIVERSE o al expirar el TTL.
+    format: >
+      Cache in-memory simple: dict con (key, timestamp, data).
+      Key = f"{universe_type}:{etf_list_hash}"
+
+  - id: REQ-BATCH-DATA
+    title: Descarga de datos históricos en lote
+    description: >
+      _get_symbol_data debe agrupar símbolos en batches de hasta 100 para
+      get_stock_bars. Los batches que pasan el filtro se procesan juntos
+      en vez de 1 request por símbolo. Reduce ~400 calls a ~4 calls.
+
+  - id: REQ-TQDM-DEP
+    title: tqdm como dependencia explícita
+    description: >
+      Agregar "tqdm>=4.66,<5" a pyproject.toml dependencies. Es usado
+      en filters.py y scanner.py pero solo funciona por dependencia
+      transitiva actualmente.
+
+non_goals:
+  - No se implementa un WebSocket para streaming de datos del scanner
+  - No se agrega soporte para múltiples usuarios o equipos
+  - No se crea un historial persistente de scans en base de datos
+  - No se implementa notificación push de señales del scanner
+  - No se agrega autenticación ni control de acceso al menú
+
+constraints:
+  - Solo colores ANSI de 16 colores (color_system="standard") en UI Rich
+  - Sin emojis en UI del menú (solo texto plano ANSI)
+  - Español en strings de UI, inglés en identificadores y comentarios
+  - No agregar dependencias pesadas nuevas (tqdm es liviano, ya está
+    en uso implícito)
+  - Compatibilidad con alpaca-py >=0.18 (ya instalado)
+  - Python >= 3.10 (type hints, f-strings)
+  - atomic_write pattern para archivos JSON (ya establecido)
+  - Sin cambios en la estructura de BaseStrategy ni en las estrategias
+    existentes

@@ -74,7 +74,7 @@ class Scanner:
         self._data_cache.clear()
 
         # 1. Obtener todos los símbolos
-        all_symbols = self.universe.get_all_symbols()
+        all_symbols = self.universe.get_symbols()
         total_symbols = len(all_symbols)
 
         # 2. Filtrar por liquidez

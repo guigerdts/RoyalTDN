@@ -1,0 +1,600 @@
+tasks:
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 1: UNIVERSE — AssetUniverse refactor (universe.py)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-01"
+    domain: "universe"
+    step: 1
+    title: "Refactor AssetUniverse.__init__() con universe_type y TradingClient"
+    description: >
+      Modificar __init__() para aceptar universe_type (default "etfs"),
+      cache_ttl (default 300). Inicializar TradingClient con api_key,
+      secret_key, paper=use_paper. Agregar self._cache = {}
+      y remover self._sp500/_etf/_all_cache. Validar universe_type:
+      si no es etfs/sp500/all, log warning y default a "etfs".
+      Eliminar import requests.
+    file: "src/royaltdn/scanner/universe.py"
+    functions:
+      - "AssetUniverse.__init__()"
+      - "AssetUniverse._invalidate_cache()"
+    verification: >
+      AssetUniverse(universe_type='etfs') no importa requests
+      ni hace API call — retorna solo DEFAULT_ETFS
+    depends_on: []
+    status: pending
+
+  - id: "T-02"
+    domain: "universe"
+    step: 1
+    title: "Implementar _get_sp500_via_sdk() con TradingClient.get_all_assets()"
+    description: >
+      Nuevo método privado que llama
+      TradingClient.get_all_assets(status='active', asset_class='us_equity')
+      y filtra post-query por exchange en ('NYSE','NASDAQ'), tradable=True.
+      Timeout 10s. En error: log warning + retornar []. No cache aquí
+      — el cache lo maneja get_symbols().
+    file: "src/royaltdn/scanner/universe.py"
+    functions:
+      - "AssetUniverse._get_sp500_via_sdk()"
+    verification: >
+      Mock get_all_assets() retorna 300 assets; _get_sp500_via_sdk()
+      filtra solo los de NYSE/NASDAQ con tradable=True
+    depends_on: ["T-01"]
+    status: pending
+
+  - id: "T-03"
+    domain: "universe"
+    step: 1
+    title: "Implementar get_symbols() unificado con cache y TTL"
+    description: >
+      Nuevo método que reemplaza get_sp500/get_etf/get_all_symbols().
+      Cache key = f"universe:{universe_type}". Dentro del TTL (default 300s)
+      retorna cache sin API call. Cache miss → fetch según universe_type.
+      Cachea incluso resultados vacíos (evita thundering herd).
+      Si API falla y cache stale existe, usar cache stale con log warning.
+    file: "src/royaltdn/scanner/universe.py"
+    functions:
+      - "AssetUniverse.get_symbols()"
+    verification: >
+      Llamada doble a get_symbols(): primera hace fetch, segunda
+      retorna cache (verificar por mock call count)
+    depends_on: ["T-02"]
+    status: pending
+
+  - id: "T-04"
+    domain: "universe"
+    step: 1
+    title: "Implementar _get_etfs() y _get_all_deduplicated()"
+    description: >
+      _get_etfs() retorna copy de DEFAULT_ETFS sin API call.
+      _get_all_deduplicated() llama sp500 primero vía _get_sp500_via_sdk(),
+      luego agrega ETFs no duplicados. Si sp500 falla, retorna solo ETFs
+      con log warning.
+    file: "src/royaltdn/scanner/universe.py"
+    functions:
+      - "AssetUniverse._get_etfs()"
+      - "AssetUniverse._get_all_deduplicated()"
+    verification: >
+      SCANNER_UNIVERSE=all con sp500 mockeado retorna sp500
+      + ETFs que no estén ya en sp500, sin duplicados
+    depends_on: ["T-02"]
+    status: pending
+
+  - id: "T-05"
+    domain: "universe"
+    step: 1
+    title: "Eliminar métodos legacy get_sp500/get_etf/get_all_symbols"
+    description: >
+      Remover get_sp500_symbols(), get_etf_symbols(), get_all_symbols()
+      y sus respectivas caches self._*_cache. Actualizar __all__ en
+      scanner/__init__.py. Verificar que ningún caller externo use
+      estos métodos (solo scanner.py usa get_all_symbols()).
+    file:
+      - "src/royaltdn/scanner/universe.py"
+      - "src/royaltdn/scanner/__init__.py"
+    functions:
+      - "AssetUniverse.get_sp500_symbols() [delete]"
+      - "AssetUniverse.get_etf_symbols() [delete]"
+      - "AssetUniverse.get_all_symbols() [delete]"
+    verification: >
+      grep de get_sp500_symbols|get_etf_symbols|get_all_symbols
+      en universe.py retorna 0 matches después del cambio
+    depends_on: ["T-03", "T-04"]
+    status: pending
+
+  - id: "T-06"
+    domain: "universe"
+    step: 1
+    title: "Agregar manejo de errores: timeout, API falla, cache stale"
+    description: >
+      Envolver TradingClient.get_all_assets() en try/except.
+      Timeout de red: catch Exception, log warning, retornar [].
+      APIError de Alpaca: log warning + retornar [].
+      Cache stale con API caída: usar cache existente aunque
+      TTL expirado, log "usando cache stale".
+    file: "src/royaltdn/scanner/universe.py"
+    functions:
+      - "AssetUniverse._get_sp500_via_sdk()"
+      - "AssetUniverse.get_symbols()"
+    verification: >
+      Mock get_all_assets() raise Exception → get_symbols()
+      retorna [] (no crash) y cache stale se usa si existía
+    depends_on: ["T-03"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 2: RATE LIMITING — TokenBucket + Retry (filters.py)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-07"
+    domain: "rate-limiting"
+    step: 2
+    title: "Implementar TokenBucket class con _refill() y consume()"
+    description: >
+      Nueva clase TokenBucket en filters.py. __init__(max_tokens=200,
+      refill_rate=200/60). _refill() calcula tokens acumulados desde
+      último refill usando time.monotonic(). consume(tokens=1) bloquea
+      con time.sleep(min(wait, 0.1)) hasta tener tokens disponibles.
+      Property available_tokens para inspección.
+    file: "src/royaltdn/scanner/filters.py"
+    functions:
+      - "TokenBucket.__init__()"
+      - "TokenBucket._refill()"
+      - "TokenBucket.consume()"
+      - "TokenBucket.available_tokens"
+    verification: >
+      TokenBucket(200).consume(1) sin espera; después de 200
+      consumes, el 201 bloquea hasta refill
+    depends_on: []
+    status: pending
+
+  - id: "T-08"
+    domain: "rate-limiting"
+    step: 2
+    title: "Agregar _call_with_retry() en LiquidityFilter con backoff exponencial"
+    description: >
+      Nuevo método _call_with_retry(symbol, client) que envuelve
+      get_latest_bar() con retry: backoff [1,2,4,8] segundos,
+      máximo 5 intentos. HTTP 429/503/timeout → retry con backoff.
+      HTTP 401/403 → raise exception para abort. Otros errores
+      → retornar None y log debug. Consume 1 token antes de cada
+      intento (vía self._token_bucket.consume()).
+    file: "src/royaltdn/scanner/filters.py"
+    functions:
+      - "LiquidityFilter._call_with_retry()"
+    verification: >
+      Mock get_latest_bar() retorna 429 dos veces y éxito al tercero
+      → _call_with_retry() retorna bar sin error
+    depends_on: ["T-07"]
+    status: pending
+
+  - id: "T-09"
+    domain: "rate-limiting"
+    step: 2
+    title: "Integrar TokenBucket en LiquidityFilter.__init__() y filter()"
+    description: >
+      Agregar parámetro token_bucket: Optional[TokenBucket] = None
+      en __init__(). Si None, crear TokenBucket() por defecto.
+      En filter(), reemplazar data_client.get_latest_bar(symbol)
+      directo por self._call_with_retry(symbol, data_client).
+    file: "src/royaltdn/scanner/filters.py"
+    functions:
+      - "LiquidityFilter.__init__()"
+      - "LiquidityFilter.filter()"
+    verification: >
+      LiquidityFilter(token_bucket=mock).filter(["SPY"], mock_client)
+      consume exactamente 1 token por símbolo procesado
+    depends_on: ["T-08"]
+    status: pending
+
+  - id: "T-10"
+    domain: "rate-limiting"
+    step: 2
+    title: "Manejar auth errors (401/403) con abort flag en Scanner"
+    description: >
+      En LiquidityFilter._call_with_retry(), si el error contiene
+      "401" o "403", raise la excepción en vez de silenciarla.
+      En Scanner.__init__(), agregar self._auth_failed = False.
+      En Scanner.scan(), catch Exception y si es auth error,
+      setear self._auth_failed = True y break del scan loop.
+      Loggear "Auth error — abortando scan".
+    file:
+      - "src/royaltdn/scanner/filters.py"
+      - "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "LiquidityFilter._call_with_retry()"
+      - "Scanner.__init__()"
+      - "Scanner.scan()"
+    verification: >
+      Mock get_latest_bar() raise 401 → LiquidityFilter.filter()
+      propaga la excepción → Scanner.scan() setea _auth_failed=True
+    depends_on: ["T-09"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 3: BATCH DATA — Scanner batch download (scanner.py)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-11"
+    domain: "batch"
+    step: 3
+    title: "Implementar _batch_get_symbol_data() con batches de 100"
+    description: >
+      Nuevo método que recibe List[str] symbols, verifica cache
+      self._data_cache, agrupa los no cacheados en batches de 100.
+      Por batch: consume 1 token de self._token_bucket, llama
+      StockBarsRequest(symbol_or_symbols=batch, timeframe=Day, limit=60),
+      procesa respuesta en DataFrame y cachea por símbolo.
+      Si batch falla (timeout/error): log warning, skip batch.
+      Si auth error en batch: set _auth_failed=True, break.
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner._batch_get_symbol_data()"
+    verification: >
+      250 símbolos → exactamente 3 llamadas a get_stock_bars
+      (100+100+50) y 1 token por batch = 3 tokens consumidos
+    depends_on: ["T-10"]
+    status: pending
+
+  - id: "T-12"
+    domain: "batch"
+    step: 3
+    title: "Actualizar scan() para usar _batch_get_symbol_data()"
+    description: >
+      En scan(), después de liquidity_filter.filter(), llamar
+      self._batch_get_symbol_data(passed_symbols) que retorna
+      dict[symbol] -> DataFrame. Iterar sobre ese dict en vez
+      de llamar _get_symbol_data() por símbolo. Si _auth_failed
+      es True, salir del scan loop y no guardar resultados parciales.
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner.scan()"
+    verification: >
+      scan() con 50 passed_symbols llama _batch_get_symbol_data
+      una vez y no llama _get_symbol_data() individualmente
+    depends_on: ["T-11"]
+    status: pending
+
+  - id: "T-13"
+    domain: "batch"
+    step: 3
+    title: "Integrar TokenBucket en Scanner (inyectar a LiquidityFilter)"
+    description: >
+      En Scanner.__init__(), crear self._token_bucket = TokenBucket()
+      y pasarlo a liquidity_filter: self.liquidity_filter = LiquidityFilter(
+      ..., token_bucket=self._token_bucket). También exponer _auth_failed.
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner.__init__()"
+    verification: >
+      Scanner.__init__() setea self._token_bucket y
+      self.liquidity_filter._token_bucket apunta al mismo objeto
+    depends_on: ["T-10", "T-11"]
+    status: pending
+
+  - id: "T-14"
+    domain: "batch"
+    step: 3
+    title: "Eliminar _get_symbol_data() legacy de scanner.py"
+    description: >
+      Remover método _get_symbol_data(symbol) que ya no se usa.
+      El reemplazo es _batch_get_symbol_data(). No olvidar remover
+      imports de StockBarsRequest y TimeFrame del método viejo
+      (quedan en el nuevo).
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner._get_symbol_data() [delete]"
+    verification: >
+      scan() no contiene llamada a _get_symbol_data después del cambio
+    depends_on: ["T-12"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 4: ASYNC — Scanner async execution (orchestrator.py)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-15"
+    domain: "async"
+    step: 4
+    title: "Implementar _run_scanner() async con run_in_executor + timeout"
+    description: >
+      Nuevo método async. Si _is_scanning o _scanner is None,
+      retorna None. Setea _is_scanning=True, _pending_scan=False.
+      loop.run_in_executor(None, self._scanner.scan) con timeout
+      via asyncio.wait_for (default 300s de SCANNER_TIMEOUT env).
+      TimeoutError → log warning + future.cancel(). Otros errores
+      → log. finally: _is_scanning=False. Retorna signals list o None.
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator._run_scanner()"
+    verification: >
+      Llamar _run_scanner() con scanner mockeado → scan() se ejecuta
+      en executor sin bloquear y retorna signals
+    depends_on: []
+    status: pending
+
+  - id: "T-16"
+    domain: "async"
+    step: 4
+    title: "Agregar flags _is_scanning y _pending_scan en Orchestrator"
+    description: >
+      En __init__() o _setup(): self._is_scanning = False,
+      self._pending_scan = False. _is_scanning evita scans
+      concurrentes. _pending_scan es set True por _check_signals()
+      para scan manual y procesado por el legacy loop.
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator.__init__()"
+      - "Orchestrator._setup()"
+    verification: >
+      Al crear Orchestrator, _is_scanning y _pending_scan son False
+    depends_on: ["T-15"]
+    status: pending
+
+  - id: "T-17"
+    domain: "async"
+    step: 4
+    title: "Actualizar _check_signals() para usar _pending_scan en vez de scan() directo"
+    description: >
+      En _check_signals(), reemplazar self._scanner.scan() directo
+      por: setear self._pending_scan = True y log "Scan manual encolado".
+      No llamar scan() aquí (es síncrono). El legacy loop procesa
+      el pending scan en su próxima iteración con _run_scanner().
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator._check_signals()"
+    verification: >
+      Al detectar scan_now_signal.json, _check_signals() setea
+      _pending_scan=True y NO llama a scanner.scan()
+    depends_on: ["T-16"]
+    status: pending
+
+  - id: "T-18"
+    domain: "async"
+    step: 4
+    title: "Actualizar _setup() para pasar SCANNER_UNIVERSE a AssetUniverse"
+    description: >
+      En _setup(), línea 185: pasar universe_type=SCANNER_UNIVERSE
+      y cache_ttl=SCANNER_CACHE_TTL a AssetUniverse(). También
+      pasar _trading_client o api_key/secret_key según nuevo signature.
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator._setup()"
+    verification: >
+      AssetUniverse() en _setup() recibe universe_type=SCANNER_UNIVERSE
+      (no default "etfs")
+    depends_on: ["T-01"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 5: DISPLAY — Menu scanner fix (app.py)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-19"
+    domain: "display"
+    step: 5
+    title: "Corregir _show_scanner: leer top_signals en vez de symbols"
+    description: >
+      En _show_scanner(), reemplazar todas las ocurrencias de
+      last_scan.get("symbols", []) por last_scan.get("top_signals", []).
+      Son 2 ocurrencias: la tabla inicial (línea 1244) y la
+      post-forced-scan (línea 1291).
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_scanner()"
+    verification: >
+      _show_scanner con last_scan={"top_signals": [...]} renderiza
+      tabla; con {"symbols": [...]} ignora ese key
+    depends_on: []
+    status: pending
+
+  - id: "T-20"
+    domain: "display"
+    step: 5
+    title: "Implementar tabla rankeada con Symbol, Action, Price, Score, Strategy"
+    description: >
+      Reemplazar las tablas existentes (Symbol/Price/Signal/Score)
+      por tabla con columnas: # (índice), Symbol, Action, Price,
+      Score, Strategy. Rankear por score descendente. Score>0
+      en bold green. Price formateado $X,XXX.XX. Fallbacks:
+      symbol=None → "?", score=None → "—", strategy=None → "—".
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_scanner()"
+    verification: >
+      Tabla renderizada tiene 6 columnas exactas con datos de
+      top_signals y score>0 en verde
+    depends_on: ["T-19"]
+    status: pending
+
+  - id: "T-21"
+    domain: "display"
+    step: 5
+    title: "Agregar colores ANSI: BUY verde, SELL rojo, timestamp cyan"
+    description: >
+      Action BUY en green (ANSI 32), SELL en red (ANSI 31).
+      Timestamp del último scan en cyan. Score>0 en bold green.
+      Solo colores ANSI 16 — sin hex/RGB. Metrics panel ya funciona
+      vía scan_history[-1] (líneas 1217-1235), no tocar.
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_scanner()"
+    verification: >
+      BUY en green visible, SELL en rojo, timestamp en cyan,
+      sin emojis ni hex colors en la salida
+    depends_on: ["T-20"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 6: INTEGRATION — Auto-scan, tqdm, error chain (orchestrator.py, pyproject.toml)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-22"
+    domain: "integration"
+    step: 6
+    title: "Agregar tqdm como dependencia explícita en pyproject.toml"
+    description: >
+      Agregar "tqdm>=4.66,<5" a la lista dependencies en [project]
+      de pyproject.toml, después de "rich>=13.0.0". No en optional.
+    file: "pyproject.toml"
+    functions: []
+    verification: >
+      grep tqdm pyproject.toml → "tqdm>=4.66,<5" en [project].dependencies
+    depends_on: []
+    status: pending
+
+  - id: "T-23"
+    domain: "integration"
+    step: 6
+    title: "Implementar auto-scan en legacy loop con SCANNER_INTERVAL_MINUTES"
+    description: >
+      En _run_legacy_loop(), integrar _pending_scan y _run_scanner():
+      Al inicio de cada iteración, si _pending_scan y not _is_scanning,
+      llamar await self._run_scanner(). El auto-scan: si scanner_cycle >=
+      scanner_iterations y SCANNER_INTERVAL_MINUTES > 0, llamar
+      await self._run_scanner(). Si SCANNER_INTERVAL_MINUTES == 0,
+      no incrementar scanner_cycle. Reemplazar self._scanner.scan()
+      directo por await self._run_scanner(). Si signals retornadas,
+      ejecutar top_signals y continue (saltar SPY).
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator._run_legacy_loop()"
+    verification: >
+      Legacy loop con mock scanner: scan() ejecutado vía _run_scanner(),
+      no directo. _pending_scan=True dispara scan en siguiente iteración.
+    depends_on: ["T-17"]
+    status: pending
+
+  - id: "T-24"
+    domain: "integration"
+    step: 6
+    title: "Manejo de errores de API en cadena completa"
+    description: >
+      En _run_scanner(): catch TimeoutError, Exception con detección
+      de 401/403 para log error vs warning. En _run_legacy_loop():
+      si _run_scanner() retorna None, continuar con SPY normalmente.
+      En Orchestrator: si _scanner is None, skip auto-scan y manual
+      sin error. Si auth error, no reintentar hasta próxima iteración.
+    file: "src/royaltdn/orchestrator.py"
+    functions:
+      - "Orchestrator._run_scanner()"
+      - "Orchestrator._run_legacy_loop()"
+    verification: >
+      Scanner timeout → log warning, legacy loop continúa con SPY.
+      Scanner auth error → log error, no crash.
+    depends_on: ["T-15", "T-23"]
+    status: pending
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # STEP 7: TESTS
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: "T-25"
+    domain: "tests"
+    step: 7
+    title: "Tests de AssetUniverse: config, cache TTL, SDK fallback, invalid type"
+    description: >
+      Tests unitarios para: (1) universe_type=etfs retorna DEFAULT_ETFS
+      sin API call; (2) sp500 carga via SDK mock; (3) all carga ambos
+      deduplicados; (4) invalid type fallback a etfs con warning;
+      (5) cache hit dentro TTL no llama API; (6) cache miss fuera TTL
+      llama API; (7) SDK falla → lista vacía sin crash; (8) sp500
+      falla y universe_type=all → solo ETFs; (9) requests no importado.
+    file: "tests/test_scanner.py"
+    functions:
+      - "test_asset_universe_scanner_universe_etfs"
+      - "test_asset_universe_scanner_universe_sp500"
+      - "test_asset_universe_scanner_universe_all"
+      - "test_asset_universe_invalid_universe_type"
+      - "test_asset_universe_cache_ttl"
+      - "test_asset_universe_sdk_fallback"
+      - "test_asset_universe_requests_not_imported"
+    verification: >
+      pytest tests/test_scanner.py -k "asset_universe" — todos pasan
+    depends_on: ["T-06"]
+    status: pending
+
+  - id: "T-26"
+    domain: "tests"
+    step: 7
+    title: "Tests de TokenBucket y rate limiting en LiquidityFilter"
+    description: >
+      Tests para: (1) TokenBucket inicial con 200 tokens; (2) consume
+      reduce tokens; (3) refill rate 200/min; (4) consume bloquea
+      cuando bucket vacío; (5) LiquidityFilter.filter() consume
+      1 token por símbolo; (6) retry con backoff en _call_with_retry;
+      (7) HTTP 429 retry hasta 5 veces; (8) HTTP 401 aborta;
+      (9) éxito en 3er reintento continúa.
+    file: "tests/test_scanner.py"
+    functions:
+      - "test_token_bucket_initial_tokens"
+      - "test_token_bucket_consume"
+      - "test_token_bucket_refill"
+      - "test_liquidity_filter_rate_limiting"
+      - "test_liquidity_filter_retry_success"
+      - "test_liquidity_filter_retry_max"
+      - "test_liquidity_filter_auth_abort"
+    verification: >
+      pytest tests/test_scanner.py -k "token_bucket or rate_limiting or retry" — todos pasan
+    depends_on: ["T-09", "T-10"]
+    status: pending
+
+  - id: "T-27"
+    domain: "tests"
+    step: 7
+    title: "Tests de batch download y auth abort en Scanner"
+    description: >
+      Tests para: (1) _batch_get_symbol_data con 250 símbolos hace
+      3 llamadas batch; (2) batch parcial <100 símbolos; (3) error
+      en un batch no afecta otros; (4) HTTP 401 en batch aborta
+      scan completo; (5) cache hit no llama API; (6) _auth_failed
+      flag se setea correctamente.
+    file: "tests/test_scanner.py"
+    functions:
+      - "test_scanner_batch_get_symbol_data"
+      - "test_scanner_batch_partial"
+      - "test_scanner_batch_error_isolation"
+      - "test_scanner_auth_failure_aborts"
+    verification: >
+      pytest tests/test_scanner.py -k "batch or auth_failure" — todos pasan
+    depends_on: ["T-12", "T-13"]
+    status: pending
+
+  - id: "T-28"
+    domain: "tests"
+    step: 7
+    title: "Tests de _run_scanner: executor, timeout, concurrencia"
+    description: >
+      Tests para: (1) run_in_executor ejecuta scan sin bloquear;
+      (2) flag _is_scanning previene scans concurrentes; (3) timeout
+      cancela scan y no crashea; (4) error dentro del executor no
+      propaga; (5) _pending_scan se procesa correctamente.
+    file: "tests/test_scanner_orchestrator.py"
+    functions:
+      - "test_orchestrator_run_scanner_executor"
+      - "test_orchestrator_scanner_concurrent"
+      - "test_orchestrator_scanner_timeout"
+      - "test_orchestrator_scanner_error_isolation"
+    verification: >
+      pytest tests/test_scanner_orchestrator.py -k "scanner" — todos pasan
+    depends_on: ["T-15", "T-16", "T-18"]
+    status: pending
+
+  - id: "T-29"
+    domain: "tests"
+    step: 7
+    title: "Verificar tqdm en pyproject.toml y display bug fix"
+    description: >
+      Test que verifica "tqdm>=4.66,<5" presente en pyproject.toml
+      dependencies. Test que verifica _show_scanner usa top_signals.
+    file:
+      - "tests/test_scanner.py"
+      - "tests/test_scanner_orchestrator.py"
+    functions:
+      - "test_tqdm_dependency_declared"
+    verification: >
+      pytest tests/ -k "tqdm" — pasa; revisión manual de _show_scanner
+      confirma que no usa last_scan["symbols"]
+    depends_on: ["T-21", "T-22"]
+    status: pending

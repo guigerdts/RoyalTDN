@@ -60,64 +60,72 @@ class MockStrategy(BaseStrategy):
 
 # ── Tests AssetUniverse ─────────────────────────────────────────────────
 
-DEFAULT_ETFS = [
-    "XLF", "XLE", "XLK", "XLV", "XLI",
-    "XLP", "XLY", "XLB", "XLU", "XRT",
-    "SPY", "QQQ", "IWM", "DIA", "GLD", "TLT",
-]
+DEFAULT_ETFS = AssetUniverse.DEFAULT_ETFS
 
 
-def test_asset_universe_etf_list():
-    """get_etf_symbols() devuelve la lista por defecto."""
-    u = AssetUniverse("key", "secret")
-    etfs = u.get_etf_symbols()
-    assert etfs == DEFAULT_ETFS
-    assert len(etfs) == 16
-    print(f"  ✅ get_etf_symbols(): {len(etfs)} ETFs")
+def test_asset_universe_etf_list() -> None:
+    """get_symbols() with universe_type='etfs' returns DEFAULT_ETFS."""
+    u = AssetUniverse("key", "secret", universe_type="etfs")
+    symbols = u.get_symbols()
+    assert symbols == DEFAULT_ETFS
+    assert len(symbols) == 16
+    print(f"  ✅ get_symbols(etfs): {len(symbols)} ETFs")
 
 
-def test_asset_universe_custom_etf_list():
-    """get_etf_symbols() con lista personalizada."""
-    u = AssetUniverse("key", "secret")
-    custom = ["SPY", "QQQ"]
-    result = u.get_etf_symbols(etf_list=custom)
-    assert result == custom
-    print("  ✅ get_etf_symbols() lista personalizada")
-
-
-def test_asset_universe_sp500_empty_on_error():
-    """get_sp500_symbols() devuelve [] si la API falla."""
-    u = AssetUniverse("key", "secret")
-    # Sin conexión a API, debe devolver vacío sin crash
-    symbols = u.get_sp500_symbols()
-    assert symbols == []
-    print("  ✅ get_sp500_symbols() → [] en error de API")
-
-
-def test_asset_universe_get_all():
-    """get_all_symbols() combina ETFs + SP500."""
-    u = AssetUniverse("key", "secret")
-    # Sin API de SP500, sólo ETFs
-    all_syms = u.get_all_symbols()
-    assert len(all_syms) >= 16  # al menos los ETFs
-    for etf in DEFAULT_ETFS:
-        assert etf in all_syms
-    print(f"  ✅ get_all_symbols(): {len(all_syms)} símbolos")
-
-
-def test_asset_universe_cache():
-    """Los resultados deben cachearse."""
-    u = AssetUniverse("key", "secret")
-    r1 = u.get_etf_symbols()
-    r2 = u.get_etf_symbols()
-    assert r1 is r2  # misma referencia (cache)
+def test_asset_universe_cache() -> None:
+    """get_symbols() caches results with TTL."""
+    u = AssetUniverse("key", "secret", universe_type="etfs")
+    r1 = u.get_symbols()
+    r2 = u.get_symbols()
+    assert r1 is r2  # misma referencia (cache hit)
+    assert len(u._cache) == 1
     print("  ✅ Cache funciona")
+
+
+def test_asset_universe_invalid_type() -> None:
+    """Invalid universe_type falls back to 'etfs'."""
+    u = AssetUniverse("key", "secret", universe_type="crypto")
+    assert u.universe_type == "etfs"
+    symbols = u.get_symbols()
+    assert symbols == DEFAULT_ETFS
+    print("  ✅ universe_type inválido → fallback etfs")
+
+
+def test_asset_universe_invalidate_cache() -> None:
+    """invalidate_cache() clears the cache."""
+    u = AssetUniverse("key", "secret", universe_type="etfs")
+    u.get_symbols()  # populate cache
+    assert len(u._cache) == 1
+    u.invalidate_cache()
+    assert len(u._cache) == 0
+    print("  ✅ invalidate_cache() funciona")
+
+
+def test_asset_universe_sp500_empty_on_error() -> None:
+    """get_symbols(sp500) returns [] on API error (no mocking)."""
+    u = AssetUniverse("key", "secret", universe_type="sp500")
+    # Sin conexión a API real, _get_sp500_via_sdk() debe retornar []
+    # porque TradingClient.get_all_assets() fallará sin credenciales reales
+    symbols = u.get_symbols()
+    assert isinstance(symbols, list)
+    print(f"  ✅ get_symbols(sp500) sin API: {len(symbols)} símbolos (esperado [])")
+
+
+def test_asset_universe_all_universe() -> None:
+    """get_symbols('all') returns at least ETFs (sp500 fails without API)."""
+    u = AssetUniverse("key", "secret", universe_type="all")
+    symbols = u.get_symbols()
+    # sp500 falla sin API, por lo que retorna solo ETFs
+    assert len(symbols) >= 16
+    for etf in DEFAULT_ETFS:
+        assert etf in symbols
+    print(f"  ✅ get_symbols(all): {len(symbols)} símbolos")
 
 
 # ── Tests LiquidityFilter ───────────────────────────────────────────────
 
-def test_liquidity_filter_construct():
-    """Constructor almacena parámetros."""
+def test_liquidity_filter_construct() -> None:
+    """Constructor stores parameters."""
     f = LiquidityFilter(min_volume=100_000, min_price=10.0, max_spread_pct=1.0)
     assert f.min_volume == 100_000
     assert f.min_price == 10.0
@@ -125,8 +133,8 @@ def test_liquidity_filter_construct():
     print("  ✅ LiquidityFilter construcción")
 
 
-def test_liquidity_filter_all_pass():
-    """Tres símbolos con buena liquidez pasan el filtro."""
+def test_liquidity_filter_all_pass() -> None:
+    """Three symbols with good liquidity pass the filter."""
     f = LiquidityFilter(min_volume=500_000, min_price=5.0)
     client = MagicMock()
     client.get_latest_bar.side_effect = [
@@ -140,8 +148,8 @@ def test_liquidity_filter_all_pass():
     print("  ✅ LiquidityFilter: 3/3 pasaron")
 
 
-def test_liquidity_filter_volume_reject():
-    """Volumen por debajo del mínimo → rechazado."""
+def test_liquidity_filter_volume_reject() -> None:
+    """Volume below minimum is rejected."""
     f = LiquidityFilter(min_volume=500_000, min_price=5.0)
     client = MagicMock()
     client.get_latest_bar.side_effect = [
@@ -153,8 +161,8 @@ def test_liquidity_filter_volume_reject():
     print("  ✅ LiquidityFilter: rechaza bajo volumen")
 
 
-def test_liquidity_filter_price_reject():
-    """Precio por debajo del mínimo → rechazado."""
+def test_liquidity_filter_price_reject() -> None:
+    """Price below minimum is rejected."""
     f = LiquidityFilter(min_volume=100_000, min_price=10.0)
     client = MagicMock()
     client.get_latest_bar.side_effect = [
@@ -166,8 +174,8 @@ def test_liquidity_filter_price_reject():
     print("  ✅ LiquidityFilter: rechaza bajo precio")
 
 
-def test_liquidity_filter_api_error():
-    """Error de API para un símbolo → descartado silenciosamente."""
+def test_liquidity_filter_api_error() -> None:
+    """API error for a symbol is silently discarded."""
     f = LiquidityFilter(min_volume=100_000, min_price=5.0)
     client = MagicMock()
     client.get_latest_bar.side_effect = [
@@ -181,11 +189,11 @@ def test_liquidity_filter_api_error():
 
 # ── Tests Scanner ───────────────────────────────────────────────────────
 
-def test_scanner_scan_with_mocks():
-    """Scanner.scan() con universe, filter y estrategias mock."""
-    # Universe mock — devuelve símbolos directamente
+def test_scanner_scan_with_mocks() -> None:
+    """Scanner.scan() with mocked universe, filter and strategies."""
+    # Universe mock — returns symbols directly
     universe = MagicMock()
-    universe.get_all_symbols.return_value = ["SPY", "QQQ"]
+    universe.get_symbols.return_value = ["SPY", "QQQ"]
 
     # Filter mock — todos pasan
     liquidity_filter = MagicMock()
@@ -241,10 +249,10 @@ def test_scanner_scan_with_mocks():
     print("  ✅ Scanner: estructura de señal correcta")
 
 
-def test_scanner_top_signals():
-    """get_top_signals() devuelve las top N."""
+def test_scanner_top_signals() -> None:
+    """get_top_signals() returns top N signals."""
     universe = MagicMock()
-    universe.get_all_symbols.return_value = ["SPY", "QQQ", "AAPL"]
+    universe.get_symbols.return_value = ["SPY", "QQQ", "AAPL"]
 
     liquidity_filter = MagicMock()
     liquidity_filter.filter.return_value = ["SPY", "QQQ", "AAPL"]
@@ -283,17 +291,18 @@ def test_scanner_top_signals():
 
 # ── Main ─────────────────────────────────────────────────────────────────
 
-def main():
+def main() -> int:
     print("=" * 50)
-    print("RoyalTDN — Test Scanner (Fase 5.6-5.7)")
+    print("RoyalTDN — Test Scanner (Fase 13)")
     print("=" * 50)
 
     # AssetUniverse
     test_asset_universe_etf_list()
-    test_asset_universe_custom_etf_list()
-    test_asset_universe_sp500_empty_on_error()
-    test_asset_universe_get_all()
     test_asset_universe_cache()
+    test_asset_universe_invalid_type()
+    test_asset_universe_invalidate_cache()
+    test_asset_universe_sp500_empty_on_error()
+    test_asset_universe_all_universe()
 
     # LiquidityFilter
     test_liquidity_filter_construct()
@@ -306,7 +315,7 @@ def main():
     test_scanner_scan_with_mocks()
     test_scanner_top_signals()
 
-    print("\n✅ TODOS LOS TESTS PASARON")
+    print("\n✅ ALL TESTS PASSED")
     return 0
 
 

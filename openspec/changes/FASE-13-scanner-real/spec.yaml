@@ -1,0 +1,158 @@
+id: "FASE-13-scanner-universo-real"
+title: "FASE 13: Scanner con Universo Real de Activos"
+phase: spec
+created: "2026-06-20"
+
+summary: >
+  Professionalize the scanner for production: make SCANNER_UNIVERSE
+  operational, add rate limiting with exponential backoff, fix the menu
+  display bug, convert Scanner.scan() to async, migrate AssetUniverse
+  to alpaca-py SDK, add asset cache with TTL, batch data downloads,
+  declare tqdm dependency, and add post-scan metrics in the menu.
+
+domains:
+  universe:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/universe/spec.md"
+    requirements:
+      - REQ-UNIVERSE-CONFIG: "Universo configurable por entorno (etfs/sp500/all)"
+      - REQ-UNIVERSE-SDK: "AssetUniverse usa alpaca-py SDK en vez de requests"
+
+  rate-limiting:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/rate-limiting/spec.md"
+    requirements:
+      - REQ-RATE-LIMIT: "Token bucket rate limiter (200 req/min) para API calls"
+      - REQ-RETRY: "Exponential backoff retry para HTTP 429, 503, timeouts"
+
+  display:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/display/spec.md"
+    requirements:
+      - REQ-DISPLAY-FIX: "Menú scanner usa last_scan['top_signals'] y tabla rankeada"
+
+  async:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/async/spec.md"
+    requirements:
+      - REQ-ASYNC-SCAN: "Scanner.scan() no bloquea el event loop (run_in_executor)"
+
+  cache:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/cache/spec.md"
+    requirements:
+      - REQ-CACHE: "Asset cache in-memory con TTL configurable (default 300s)"
+      - REQ-BATCH-DATA: "get_stock_bars agrupado en batches de 100 símbolos"
+
+  integration:
+    type: full
+    path: "openspec/changes/FASE-13-scanner-real/specs/integration/spec.md"
+    requirements:
+      - REQ-AUTO-SCAN: "Auto-scan cada SCANNER_INTERVAL_MINUTES desde legacy loop"
+      - REQ-MANUAL-SCAN: "Scan manual desde opción 2 del menú"
+      - REQ-METRICS-PANEL: "Post-scan metrics panel en _show_scanner"
+      - REQ-TQDM-DEP: "tqdm como dependencia explícita en pyproject.toml"
+
+scenarios:
+  REQ-UNIVERSE-CONFIG:
+    - "SCANNER_UNIVERSE=etfs solo carga DEFAULT_ETFS (16 símbolos)"
+    - "SCANNER_UNIVERSE=sp500 carga hasta 500 equities activos"
+    - "SCANNER_UNIVERSE=all carga ambos deduplicados"
+    - "Variable no definida — default etfs"
+    - "Valor inválido — fallback a etfs con warning"
+    - "Transición de etfs a sp500 invalida cache"
+  REQ-UNIVERSE-SDK:
+    - "get_all_assets() con filtros correctos (status=active, exchange=NYSE|NASDAQ)"
+    - "Error de API en TradingClient — lista vacía, no crash"
+    - "Timeout de red — graceful fallback a símbolos por defecto"
+    - "Cache funciona y respeta TTL"
+    - "Respuesta vacía de Alpaca — lista vacía"
+  REQ-RATE-LIMIT:
+    - "Token bucket empieza con 200 tokens"
+    - "Refill rate: 200 tokens por minuto"
+    - "get_latest_bar en LiquidityFilter pasa por rate limiter"
+    - "Rate limiter bloquea hasta tener tokens disponibles"
+    - "Burst de requests consume tokens hasta vaciar el bucket"
+    - "Bucket vacío — espera hasta refill"
+    - "Refill después de 60 segundos"
+  REQ-RETRY:
+    - "HTTP 429 retry con backoff 1s, 2s, 4s, 8s"
+    - "Máximo 5 reintentos para un request"
+    - "HTTP 401 loguea error y aborta el scan"
+    - "HTTP 403 loguea error y aborta el scan"
+    - "Timeout de conexión — retry con backoff"
+    - "5to retry fallido — loguea warning, salta el símbolo"
+    - "Éxito en el 3er reintento — continúa normalmente"
+  REQ-DISPLAY-FIX:
+    - "Tabla usa top_signals en vez de symbols"
+    - "Tabla rankeada: Symbol, Action, Price, Score, Strategy"
+    - "Metrics panel se muestra después de scan forzado"
+    - "Refrescar resultados después de scan forzado"
+    - "Empty state cuando no hay top_signals"
+    - "Scan history muestra datos correctos"
+    - "Timestamp del último scan se muestra"
+    - "Símbolo inválido o faltante en top_signals"
+    - "Score faltante en una señal"
+  REQ-ASYNC-SCAN:
+    - "Scanner.scan() ejecutado con loop.run_in_executor()"
+    - "Timeout de scan (default 300s) cancela ejecución"
+    - "Estado 'scanneando' visible durante ejecución"
+    - "KeyboardInterrupt durante scan en executor"
+    - "Scan completado — resultados disponibles post-ejecución"
+    - "Error dentro del executor — no crashea el menú"
+    - "Múltiples scans consecutivos — no hay race conditions"
+    - "Timeout alcanzado — scan parcial descartado"
+  REQ-CACHE:
+    - "Cache de activos con TTL default 300s"
+    - "Cache hit retorna datos sin llamar API"
+    - "Cache miss — fetch de API + store"
+    - "TTL expirado — refetch en próximo acceso"
+    - "Invalidez al cambiar SCANNER_UNIVERSE"
+    - "Cache vacío — primer fetch funciona"
+    - "get_stock_bars con batches de 100 símbolos"
+    - "Reducción de ~400 calls a ~4 calls para 400 símbolos"
+    - "Batch parcial (<100 símbolos) se envía completo"
+    - "Error en un batch — no afecta otros batches"
+  REQ-AUTO-SCAN:
+    - "Auto-scan cada SCANNER_INTERVAL_MINUTES (default 60)"
+    - "Auto-scan no bloquea el legacy loop"
+    - "SCANNER_INTERVAL_MINUTES=0 — no hace auto-scan"
+    - "Scanner no disponible — auto-scan salta"
+  REQ-MANUAL-SCAN:
+    - "Opción 2 del menú dispara scan_forzado"
+    - "scan_forzado crea scan_now_signal.json"
+    - "No hay scanner disponible — mensaje informativo"
+  REQ-METRICS-PANEL:
+    - "Metrics panel después de scan: total, passed, signals, time"
+    - "0 señales generadas — metrics muestra 0"
+    - "0 símbolos pasaron filtro — metrics muestra 0/0"
+  REQ-TQDM-DEP:
+    - "tqdm>=4.66,<5 en pyproject.toml dependencies"
+    - "pip install instala tqdm explícitamente"
+
+color_contract:
+  system: "Console(color_system='standard') — 16-color ANSI only"
+  forbidden: ["#rrggbb hex", "24-bit RGB", "emoji in UI"]
+  styles:
+    "P&L positive": "bold green (ANSI 32)"
+    "P&L negative": "bold red (ANSI 31)"
+    "Panel title": "bold white"
+    "No data": "dim white"
+    "Table header": "bold white"
+    "Border": "white"
+    "Action BUY": "green"
+    "Action SELL": "red"
+
+coverage:
+  total_scenarios: 75
+  by_domain:
+    universe: 15
+    rate-limiting: 15
+    display: 10
+    async: 8
+    cache: 12
+    integration: 15
+  by_type:
+    happy_path: 28
+    edge_case: 28
+    error_case: 19
