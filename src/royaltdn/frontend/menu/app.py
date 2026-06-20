@@ -1229,6 +1229,7 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
     """Screen 2: Show last scan results, optionally trigger a new scan."""
     from rich.table import Table
     from rich.panel import Panel
+    from rich.text import Text
 
     try:
         data = state_loader.load_scanner_results()
@@ -1288,11 +1289,11 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                 strategy = str(s.get("strategy", "\u2014"))
                 table.add_row(
                     str(idx),
-                    symbol,
-                    f"[{action_style}]{action}[/]",
-                    price,
-                    f"[{score_style}]{score}[/]",
-                    strategy,
+                    Text(symbol),
+                    Text(action, style=action_style),
+                    Text(price),
+                    Text(score, style=score_style),
+                    Text(strategy),
                 )
             console.print(table)
         else:
@@ -1349,11 +1350,11 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                     strategy = str(s.get("strategy", "\u2014"))
                     table.add_row(
                         str(idx),
-                        symbol,
-                        f"[{action_style}]{action}[/]",
-                        price,
-                        f"[{score_style}]{score}[/]",
-                        strategy,
+                        Text(symbol),
+                        Text(action, style=action_style),
+                        Text(price),
+                        Text(score, style=score_style),
+                        Text(strategy),
                     )
                 console.print(table)
             else:

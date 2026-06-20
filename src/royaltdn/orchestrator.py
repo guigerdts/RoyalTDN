@@ -363,7 +363,7 @@ class Orchestrator:
                 _os.remove(scanner_file)
                 if self._scanner is not None and not self._is_scanning:
                     self._pending_scan = True
-                    logger.info("Scanner: scan manual encolado — se ejecutara en proxima iteracion")
+                    logger.info("Scanner manual: senal detectada — scan encolado")
             except Exception as e:
                 logger.warning("Error al procesar senal de scanner manual: {}", e)
 
@@ -1113,39 +1113,81 @@ class Orchestrator:
 
         while self._running and not self._killed:
             try:
+                # ── Fallback scanner init (Fase 13) ──
+                if self._scanner is None:
+                    try:
+                        data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+                        universe = AssetUniverse(
+                            self.api_key, self.secret_key,
+                            universe_type=SCANNER_UNIVERSE,
+                        )
+                        liquidity_filter = LiquidityFilter(
+                            min_volume=SCANNER_MIN_VOLUME,
+                            min_price=SCANNER_MIN_PRICE,
+                            max_spread_pct=SCANNER_MAX_SPREAD_PCT,
+                        )
+                        strategies = {}
+                        if "sma_crossover" in STRATEGIES_ENABLED:
+                            strategies["sma_crossover"] = SMAStrategy()
+                        if "bollinger_rsi" in STRATEGIES_ENABLED:
+                            strategies["bollinger_rsi"] = BollingerRSIStrategy()
+                        if "momentum_atr" in STRATEGIES_ENABLED:
+                            strategies["momentum_atr"] = MomentumATRStrategy()
+                        if "factor_rotation" in STRATEGIES_ENABLED:
+                            strategies["factor_rotation"] = FactorRotationStrategy()
+
+                        self._scanner = Scanner(universe, liquidity_filter, strategies, data_client)
+                        logger.info(
+                            "Scanner inicializado (fallback en legacy loop) — "
+                            "universo={} estrategias={}",
+                            SCANNER_UNIVERSE, list(strategies.keys()),
+                        )
+                    except Exception as e:
+                        logger.warning("Scanner fallback también falló ({})", e)
+                        self._scanner = None
+
                 # ── Console IPC signals (Fase 8) ──
                 self._check_signals()
+
+                # ── Scanner manual: se ejecuta INCLUSO si el bot está pausado ──
+                #     El scan manual solo actualiza scanner_results.json y guarda
+                #     señales; NO ejecuta trades cuando está pausado.
+                if self._scanner and self._pending_scan and not self._is_scanning:
+                    logger.info("Scanner manual: detectada senal — ejecutando scan...")
+                    signals = await self._run_scanner()
+                    if signals:
+                        top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
+                        logger.info(
+                            "Scanner manual: %d senales generadas — top %d",
+                            len(signals), len(top_signals),
+                        )
+                        # Solo ejecutar trades si el bot NO está pausado
+                        if not self.paused:
+                            for sig in top_signals:
+                                await self._execute_signal(sig)
+                        else:
+                            logger.info(
+                                "Scanner manual: bot PAUSADO — senales guardadas en "
+                                "scanner_results.json, trades NO ejecutados"
+                            )
+                    else:
+                        logger.warning("Scanner manual: NO se generaron senales")
+                    await asyncio.sleep(poll_interval)
+                    continue
+
                 if self.paused:
                     self._publish_status()
                     import time as _time
                     _time.sleep(60)
                     continue
 
-                # ── Scanner multi-estrategia (Fase 13 — async) ──
-                if self._scanner:
-                    # Check for pending manual scan first
-                    if self._pending_scan and not self._is_scanning:
-                        logger.info("Scanner: ejecutando scan manual encolado")
+                # ── Auto-scan (solo cuando el bot NO está pausado) ──
+                if self._scanner and scanner_iterations > 0:
+                    scanner_cycle += 1
+                    if scanner_cycle >= scanner_iterations:
+                        scanner_cycle = 0
+                        logger.info("Scanner: ejecutando escaneo automatico...")
                         signals = await self._run_scanner()
-                        self._pending_scan = False
-                        if signals:
-                            top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
-                            logger.info(
-                                "Scanner: %d senales generadas — ejecutando top %d",
-                                len(signals), len(top_signals),
-                            )
-                            for sig in top_signals:
-                                await self._execute_signal(sig)
-                            await asyncio.sleep(poll_interval)
-                            continue
-
-                    # Auto-scan based on interval (disabled when SCANNER_INTERVAL_MINUTES=0)
-                    if scanner_iterations > 0:
-                        scanner_cycle += 1
-                        if scanner_cycle >= scanner_iterations:
-                            scanner_cycle = 0
-                            logger.info("Scanner: ejecutando escaneo automatico...")
-                            signals = await self._run_scanner()
                         if signals:
                             top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
                             if top_signals:
