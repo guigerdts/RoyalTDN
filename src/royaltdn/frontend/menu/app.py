@@ -370,9 +370,12 @@ def _show_dashboard(state_loader, log_buffer, console) -> None:
 
             try:
                 prompt = input(
-                    "\u00bfAuto-refresh? (Enter=5s, n\u00famero=segundos, N=manual): "
+                    "\u00bfAuto-refresh? (Enter=5s, n\u00famero=segundos, 0=Volver, N=manual): "
                 ).strip()
             except (KeyboardInterrupt, EOFError):
+                return
+
+            if prompt == "0":
                 return
 
             if prompt == "":
@@ -870,16 +873,24 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
         console.print()
 
         if not all_lines:
-            console.print("[dim]No hay actividad registrada aún.[/]")
-            console.print("\n[dim]Presiona Enter para volver[/]")
-            _wait_enter()
+            console.print("[dim]No hay actividad registrada a\u00fan.[/]")
+            console.print("[bold cyan]0[/] Volver | Enter para continuar")
+            try:
+                sub = input().strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if sub == "0":
+                return
             return
 
         # Optional text search
-        console.print("[dim]Enter para ver todo, o texto para buscar: [/]", end="")
+        console.print("[bold cyan]0[/] Volver | Enter para ver todo, o texto para buscar: ", end="")
         try:
             search = input().strip()
         except (KeyboardInterrupt, EOFError):
+            return
+
+        if search == "0":
             return
 
         # Filter lines
@@ -889,9 +900,14 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
             filtered = all_lines
 
         if not filtered:
-            console.print("[dim]No hay entradas que coincidan con la búsqueda.[/]")
-            console.print("\n[dim]Presiona Enter para volver[/]")
-            _wait_enter()
+            console.print("[dim]No hay entradas que coincidan con la b\u00fasqueda.[/]")
+            console.print("[bold cyan]0[/] Volver | Enter para continuar")
+            try:
+                sub = input().strip()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if sub == "0":
+                return
             return
 
         # Show last 20 of filtered
@@ -917,11 +933,16 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
 
         if len(filtered) > 20:
             console.print(
-                f"\n[dim]Mostrando últimas 20 de {len(filtered)} entradas[/]"
+                f"\n[dim]Mostrando \u00faltimas 20 de {len(filtered)} entradas[/]"
             )
 
-        console.print("\n[dim]Presiona Enter para volver[/]")
-        _wait_enter()
+        console.print("\n[bold cyan]0[/] Volver | Enter para continuar")
+        try:
+            sub = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+        if sub == "0":
+            return
 
     except KeyboardInterrupt:
         return
@@ -1215,7 +1236,11 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
 
         # T-10: Post-scan metrics panel
         scan_history = data.get("scan_history", [])
-        if scan_history:
+        signals_list = last_scan.get("top_signals", []) if last_scan else []
+        has_real_data = any(
+            s.get("strategy", "") not in ("mock", "") for s in signals_list
+        )
+        if scan_history and has_real_data:
             latest = scan_history[-1]
             total_sym = latest.get("total_symbols", 0)
             passed_sym = latest.get("passed_symbols", 0)
@@ -1277,9 +1302,13 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
             console.print(f"\nTimestamp: [cyan]{last_scan['timestamp']}[/]")
 
         console.print()
+        console.print("[bold cyan]0[/] Volver al men\u00fa principal")
         try:
-            force = input("¿Forzar escaneo ahora? (s/n): ").strip().lower()
+            force = input("\u00bfForzar escaneo ahora? (s/n): ").strip().lower()
         except (KeyboardInterrupt, EOFError):
+            return
+
+        if force == "0":
             return
 
         if force == "s":
@@ -3011,6 +3040,18 @@ def _show_logs(log_buffer, console) -> None:
             lines = log_buffer.get_lines(
                 level_filter=current_level, text_filter=current_text, last_n=20
             )
+
+            if not lines:
+                # Fallback: read last 50 lines from logs/bot.log
+                import os as _os
+                bot_log_path = _os.path.join("logs", "bot.log")
+                try:
+                    with open(bot_log_path, "r", encoding="utf-8") as _f:
+                        all_log_lines = _f.readlines()
+                    # Take last 50
+                    lines = [l.rstrip("\n") for l in all_log_lines[-50:]]
+                except (FileNotFoundError, OSError, UnicodeDecodeError):
+                    lines = []
 
             if lines:
                 rendered = []
