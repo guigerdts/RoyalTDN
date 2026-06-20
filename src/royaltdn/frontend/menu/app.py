@@ -556,6 +556,19 @@ def _show_simulation(
             _wait_enter()
             return
 
+        # T-15: < 30 trades blocking warning
+        if len(all_trades) < 30:
+            console.print(
+                f"[bold yellow]\u26a0\ufe0f  Solo {len(all_trades)} trades hist\u00f3ricos. "
+                f"M\u00ednimo recomendado: 30 para resultados estad\u00edsticamente significativos.[/]"
+            )
+            try:
+                resp = input("\u00bfContinuar de todas formas? (s/N): ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return
+            if resp != "s":
+                return
+
         # ── Build strategy list from trades + state ──────────────
         strategy_names_in_trades: set[str] = set()
         for t in all_trades:
