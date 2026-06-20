@@ -1534,13 +1534,33 @@ def _quick_backtest(config: dict, console, logs_dir: str) -> None:
     table.add_column("M\u00e9trica", style="bold cyan")
     table.add_column("Valor", justify="right")
     table.add_row("Sharpe", f"{metrics.get('sharpe', 0):.2f}")
+    table.add_row("Sortino Ratio", f"{metrics.get('sortino_ratio', metrics.get('sortino', 0)):.2f}")
+    table.add_row("Calmar Ratio", f"{metrics.get('calmar_ratio', 0):.2f}")
     table.add_row("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
     table.add_row("Win Rate", f"{metrics.get('win_rate', 0)*100:.1f}%")
     table.add_row("Max Drawdown", f"{metrics.get('max_drawdown', 0)*100:.2f}%")
     table.add_row("CAGR", f"{metrics.get('cagr', 0)*100:.2f}%")
     table.add_row("Total Return", f"{metrics.get('total_return', 0)*100:.2f}%")
+    table.add_row("Expectancy", f"${metrics.get('expectancy', 0):+.2f}")
+    table.add_row("Avg Trade Duration", f"{metrics.get('avg_trade_duration', 0):.1f} h")
     table.add_row("Num Trades", str(metrics.get('num_trades', 0)))
     console.print(table)
+
+    # T-04: < 30 trades warning
+    num_trades = metrics.get('num_trades', 0)
+    if 0 < num_trades < 30:
+        console.print(
+            f"[bold yellow]\u26a0\ufe0f \u26a0\ufe0f  ADVERTENCIA: Solo {num_trades} trades generados. "
+            f"M\u00ednimo recomendado: 30. Resultados no estad\u00edsticamente significativos.[/]"
+        )
+
+    # T-06: B&H comparison, trade table
+    if not result.get("trades"):
+        console.print("[bold yellow]\u26a0\ufe0f No se generaron trades en este per\u00edodo.[/]")
+    else:
+        from royaltdn.strategy.backtesting import _display_buy_hold_comparison, _display_backtest_trades
+        _display_buy_hold_comparison(result.get("buy_hold_equity"), metrics, console)
+        _display_backtest_trades(result.get("trades", []), console)
 
 
 # ── Builder (12 stages) ──────────────────────────────────────────────
@@ -2048,6 +2068,8 @@ def _builder_flow(
             bt_table.add_column("M\u00e9trica", style="bold cyan")
             bt_table.add_column("Valor", justify="right")
             bt_table.add_row("Sharpe", f"{metrics.get('sharpe', 0):.2f}")
+            bt_table.add_row("Sortino Ratio", f"{metrics.get('sortino_ratio', metrics.get('sortino', 0)):.2f}")
+            bt_table.add_row("Calmar Ratio", f"{metrics.get('calmar_ratio', 0):.2f}")
             bt_table.add_row(
                 "Profit Factor", f"{metrics.get('profit_factor', 0):.2f}"
             )
@@ -2065,10 +2087,27 @@ def _builder_flow(
                 "Total Return",
                 f"{metrics.get('total_return', 0)*100:.2f}%",
             )
+            bt_table.add_row("Expectancy", f"${metrics.get('expectancy', 0):+.2f}")
+            bt_table.add_row("Avg Trade Duration", f"{metrics.get('avg_trade_duration', 0):.1f} h")
             bt_table.add_row(
                 "Num Trades", str(metrics.get('num_trades', 0))
             )
             console.print(bt_table)
+
+            # T-04 / T-06: warning, B&H, trade table
+            num_trades = metrics.get('num_trades', 0)
+            if 0 < num_trades < 30:
+                console.print(
+                    f"[bold yellow]\u26a0\ufe0f \u26a0\ufe0f  ADVERTENCIA: Solo {num_trades} trades generados. "
+                    f"M\u00ednimo recomendado: 30. Resultados no estad\u00edsticamente significativos.[/]"
+                )
+            if not result.get("trades"):
+                console.print("[bold yellow]\u26a0\ufe0f No se generaron trades en este per\u00edodo.[/]")
+            else:
+                from royaltdn.strategy.backtesting import _display_buy_hold_comparison, _display_backtest_trades
+                _display_buy_hold_comparison(result.get("buy_hold_equity"), metrics, console)
+                _display_backtest_trades(result.get("trades", []), console)
+
             backtest_ok = True
 
         # ── Stage 11: Save ────────────────────────────────────────────
