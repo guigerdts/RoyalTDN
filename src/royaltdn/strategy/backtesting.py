@@ -6,6 +6,7 @@ simulates portfolio returns, and computes metrics.
 
 import hashlib
 import json
+import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -117,11 +118,49 @@ def _compute_metrics(pf_close: pd.Series, trades_df: pd.DataFrame) -> dict:
         win_rate = avg_win = avg_loss = profit_factor = avg_trade = 0.0
         max_win = max_loss = total_fees = 0.0
 
+    # Compute new metrics
+    # sortino_ratio (same as sortino, keep as alias)
+    sortino_ratio = float(sortino)
+
+    # calmar_ratio: CAGR / abs(max_drawdown)
+    if max_dd != 0:
+        calmar_ratio = float(cagr) / abs(float(max_dd))
+    else:
+        calmar_ratio = float(cagr)
+
+    # expectancy: (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss))
+    if num_trades > 0:
+        expectancy = (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss))
+    else:
+        expectancy = 0.0
+
+    # avg_trade_duration: mean of (exit_date - entry_date) in hours
+    avg_trade_duration = 0.0
+    if trades_df is not None and num_trades > 0:
+        durations = []
+        for _, row in trades_df.iterrows():
+            entry_str = row.get("entry_date")
+            exit_str = row.get("exit_date")
+            if entry_str and exit_str:
+                try:
+                    entry_dt = pd.Timestamp(entry_str)
+                    exit_dt = pd.Timestamp(exit_str)
+                    delta_hours = (exit_dt - entry_dt).total_seconds() / 3600
+                    durations.append(delta_hours)
+                except Exception:
+                    continue
+        if durations:
+            avg_trade_duration = float(sum(durations) / len(durations))
+
     return {
         "total_return": float(total_return),
         "cagr": float(cagr),
         "sharpe": float(sharpe),
         "sortino": float(sortino),
+        "sortino_ratio": float(sortino_ratio),
+        "calmar_ratio": float(calmar_ratio),
+        "expectancy": float(expectancy),
+        "avg_trade_duration": float(avg_trade_duration),
         "max_drawdown": float(max_dd),
         "num_trades": int(num_trades),
         "win_rate": float(win_rate),
@@ -188,7 +227,13 @@ def run_backtest(
     exits = pd.Series(False, index=df.index)
 
     in_position = False
-    for i in range(1, len(df)):
+    from tqdm import tqdm
+    for i in tqdm(
+        range(1, len(df)),
+        desc=f"{symbol} {timeframe} ({period})",
+        bar_format="{desc} — {n}/{total} barras {bar} {percentage:.0f}% [{elapsed}<{remaining}]",
+        file=sys.stdout,
+    ):
         window = df.iloc[: i + 1]
         try:
             signal = strat.generate_signal(window)
@@ -228,7 +273,12 @@ def run_backtest(
     entry_price = 0.0
     trades_list = []
 
-    for i in range(1, len(df)):
+    for i in tqdm(
+        range(1, len(df)),
+        desc="Simulando cartera",
+        bar_format="{desc} — {n}/{total} barras {bar} {percentage:.0f}% [{elapsed}<{remaining}]",
+        file=sys.stdout,
+    ):
         price = close.iloc[i]
 
         if entries.iloc[i]:
@@ -297,6 +347,116 @@ def run_backtest(
         "dates": [str(d) for d in df.index],
         "prices": close.tolist(),
     }
+
+
+def _display_backtest_trades(trades: list, console) -> None:
+    """Render a Rich table with backtest trade details.
+
+    Columns: #, Entry Date, Exit Date, Entry Price, Exit Price, P&L, Return %, Duration, Fees.
+    P&L >= 0 in green, P&L < 0 in red.
+    Duration = (exit_date - entry_date) in days with 1 decimal.
+    Empty list shows a yellow warning message.
+    """
+    from rich.table import Table
+
+    if not trades:
+        console.print("[bold yellow]\u26a0\ufe0f No se generaron trades en este per\u00edodo.[/]")
+        return
+
+    table = Table(
+        title=None,
+        border_style="white",
+        header_style="bold white",
+    )
+    table.add_column("#", style="bold cyan")
+    table.add_column("Entry Date")
+    table.add_column("Exit Date")
+    table.add_column("Entry Price", justify="right")
+    table.add_column("Exit Price", justify="right")
+    table.add_column("P&L", justify="right")
+    table.add_column("Return %", justify="right")
+    table.add_column("Duration", justify="right")
+    table.add_column("Fees", justify="right")
+
+    for idx, t in enumerate(trades, start=1):
+        if not isinstance(t, dict):
+            continue
+        entry_date = t.get("entry_date", "")
+        exit_date = t.get("exit_date", "")
+        entry_price = f"${float(t.get('entry_price', 0)):.2f}"
+        exit_price = f"${float(t.get('exit_price', 0)):.2f}"
+        pnl_raw = float(t.get("pnl", 0))
+        pnl_style = "bold green" if pnl_raw >= 0 else "bold red"
+        pnl_str = f"${pnl_raw:+,.2f}"
+        return_pct = f"{float(t.get('return_pct', 0)):.2f}%"
+
+        # Duration in days
+        duration_str = "\u2014"
+        if entry_date and exit_date:
+            try:
+                from datetime import datetime as _dt
+                ed = _dt.fromisoformat(str(entry_date).replace("Z", "+00:00"))
+                xd = _dt.fromisoformat(str(exit_date).replace("Z", "+00:00"))
+                delta_days = (xd - ed).total_seconds() / 86400
+                duration_str = f"{delta_days:.1f}d"
+            except (ValueError, TypeError):
+                pass
+
+        fees = f"${float(t.get('fees', 0)):.2f}"
+
+        table.add_row(
+            str(idx),
+            entry_date,
+            exit_date,
+            entry_price,
+            exit_price,
+            f"[{pnl_style}]{pnl_str}[/]",
+            return_pct,
+            duration_str,
+            fees,
+        )
+
+    console.print(table)
+
+
+def _display_buy_hold_comparison(
+    buy_hold_equity: list | None, metrics: dict, console,
+) -> None:
+    """Render a Buy & Hold comparison panel.
+
+    Computes BH return, BH CAGR, and strategy vs BH difference.
+    Shows "No disponible" in gray if data is missing.
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+
+    if not buy_hold_equity or len(buy_hold_equity) < 2:
+        console.print(Panel(
+            "[dim]No disponible[/]",
+            title="\U0001f4ca  Comparaci\u00f3n: Estrategia vs Buy & Hold",
+            border_style="white",
+        ))
+        return
+
+    bh_return = (buy_hold_equity[-1] / buy_hold_equity[0]) - 1
+    # BH CAGR annualized
+    years = len(buy_hold_equity) / 252
+    bh_cagr = (buy_hold_equity[-1] / buy_hold_equity[0]) ** (1 / years) - 1 if years > 0 else 0.0
+    strat_return = metrics.get("total_return", 0)
+    diff = strat_return - bh_return
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(justify="left", ratio=1)
+    table.add_column(justify="right")
+    table.add_row("Buy & Hold Return", f"{bh_return * 100:.2f}%")
+    table.add_row("Buy & Hold CAGR", f"{bh_cagr * 100:.2f}%")
+    table.add_row("Estrategia vs B&H", f"{diff * 100:+.2f}%")
+
+    console.print(Panel(
+        table,
+        title="\U0001f4ca  Comparaci\u00f3n: Estrategia vs Buy & Hold",
+        border_style="white",
+    ))
 
 
 def config_hash(config: dict, symbol: str, timeframe: str, period: str) -> str:

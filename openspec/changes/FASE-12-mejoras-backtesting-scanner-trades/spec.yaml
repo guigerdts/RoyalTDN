@@ -1,0 +1,185 @@
+id: "FASE-12-mejoras-backtesting-scanner-trades"
+title: "FASE 12: Mejoras de Backtesting, Scanner y Trades"
+phase: spec
+created: "2026-06-19"
+
+# ── Overview ──
+summary: "Professionalize the backtesting, scanner, and trades screens of the Rich interactive menu.
+Adds tqdm progress bars, professional metrics (Sortino, Calmar, Expectancy, Avg Trade Duration),
+Buy & Hold comparison, enriched trade tables, single-key cumulative filters, ANSI color semantics,
+scanner progress bars with ETA, post-scan metrics, and statistical validity warnings."
+
+# ── Domains ──
+domains:
+  backtesting:
+    type: full
+    path: "openspec/changes/FASE-12-mejoras-backtesting-scanner-trades/specs/backtesting/spec.md"
+    requirements:
+      - RQ-BT-01: "Progress bar (tqdm) during run_backtest() signal and portfolio loops"
+      - RQ-BT-02: "ETA display in seconds/minutes format"
+      - RQ-BT-03: "New metrics: sortino_ratio, calmar_ratio, expectancy, avg_trade_duration"
+      - RQ-BT-04: "Non-blocking warning when num_trades < 30"
+      - RQ-BT-05: "Trade detail table with 9 columns after metrics"
+      - RQ-BT-06: "Buy & Hold comparison panel"
+
+  scanner:
+    type: full
+    path: "openspec/changes/FASE-12-mejoras-backtesting-scanner-trades/specs/scanner/spec.md"
+    requirements:
+      - RQ-SC-01: "tqdm in LiquidityFilter.filter() with percentage and ETA"
+      - RQ-SC-02: "tqdm in Scanner.scan() with symbol name, percentage and ETA"
+      - RQ-SC-03: "Post-scan metrics panel (total, passed, signals, time)"
+      - RQ-SC-04: "Initial ETA estimate message before scan"
+
+  trades:
+    type: delta
+    path: "openspec/changes/FASE-12-mejoras-backtesting-scanner-trades/specs/interactive-menu/spec.md"
+    requirements:
+      - RQ-TR-01: "Enhanced summary: Sharpe, Avg Trade, Max Drawdown, Expectancy"
+      - RQ-TR-02: "Enriched trade table with Fecha, Duración, Slippage, Retorno%, Estrategia"
+      - RQ-TR-03: "Single-key filters (S/E/F/T/X/V) with cumulative AND logic"
+      - RQ-TR-04: "ANSI 16-color contract: P&L green/red, WR >60% green"
+
+  simulation:
+    type: delta
+    path: "openspec/changes/FASE-12-mejoras-backtesting-scanner-trades/specs/what-if-simulation/spec.md"
+    requirements:
+      - RQ-SI-01: "Blocking warning when < 30 historical trades before simulation"
+
+# ── Scenario Inventory ──
+scenarios:
+  RQ-BT-01:
+    - "Progress bar shows during signal generation"
+    - "No progress bar when backtest errors before signal loop"
+    - "Portfolio simulation loop also shows progress"
+    - "KeyboardInterrupt during progress bar"
+  RQ-BT-02:
+    - "ETA shows seconds"
+    - "ETA shows minutes and seconds"
+    - "ETA shows on portfolio loop too"
+    - "ETA not shown on first iteration"
+  RQ-BT-03:
+    - "New metrics computed with valid trades"
+    - "Calmar ratio when Max Drawdown is zero"
+    - "Avg trade duration with no trades"
+    - "Expectancy formula correctness"
+    - "All zero trades"
+  RQ-BT-04:
+    - "Warning shown for 15 trades"
+    - "No warning for 30+ trades"
+    - "No warning for 0 trades"
+    - "Edge case — exactly 29 trades"
+  RQ-BT-05:
+    - "Table rendered with 5 trades"
+    - "No trades — empty state message"
+    - "Table with single trade"
+    - "Fee column shows zero when no fees field"
+    - "Return % formatting"
+  RQ-BT-06:
+    - "B&H comparison with valid equity data"
+    - "B&H data not available"
+    - "Buy & Hold returns match expected calculation"
+  RQ-SC-01:
+    - "Progress bar shows during filter"
+    - "Empty symbol list"
+    - "All symbols fail liquidity check"
+    - "KeyboardInterrupt during filter"
+  RQ-SC-02:
+    - "Progress bar shows during scan"
+    - "No symbols passed liquidity filter"
+    - "Mixed success — some symbols error"
+    - "Single symbol scan"
+  RQ-SC-03:
+    - "Metrics displayed after scan"
+    - "No signals generated"
+    - "All symbols pass but no signals"
+    - "Very fast scan (< 1 second)"
+  RQ-SC-04:
+    - "ETA shown for 500 symbols"
+    - "ETA for small symbol list (≤ 100)"
+    - "Zero symbols"
+    - "Message does not interfere with tqdm bars"
+  RQ-TR-01:
+    - "Enriched summary with new metrics"
+    - "Sharpe Ratio N/A with 0 or 1 trades"
+  RQ-TR-02:
+    - "Enriched trade table with all new columns"
+    - "Duration for sub-day trade"
+    - "Duration for multi-day trade"
+    - "No trades message"
+  RQ-TR-03:
+    - "Press S to filter by symbol"
+    - "Press E to filter by strategy"
+    - "Press F for date range filter"
+    - "Press T to reset all filters"
+    - "Press X to export"
+    - "Press V for advanced statistics"
+    - "Cumulative filters"
+    - "Reset then re-filter"
+    - "Cancel symbol filter with Enter"
+    - "Filter state not shown when no filters active"
+    - "Active filter indicator shown in blue italic"
+    - "Existing submenu preserved"
+  RQ-TR-04:
+    - "Positive P&L in green"
+    - "Negative P&L in red"
+    - "Zero P&L in white"
+    - "Win Rate > 60% in green"
+    - "Win Rate ≤ 60% in default white"
+    - "No hex codes or 24-bit colors"
+  RQ-SI-01:
+    - "Warning shown and user proceeds"
+    - "Warning shown and user declines"
+    - "No warning when ≥ 30 trades"
+    - "No trades at all"
+    - "Warning color"
+
+# ── Color/Style Contract (global) ──
+color_contract:
+  system: "Console(color_system='standard') — 16-color ANSI only"
+  forbidden: ["#rrggbb hex", "24-bit RGB", "emoji in UI (except ⚠️, 📊, 🔔, 💰, 🔼, 🔽)"]
+  styles:
+    "P&L positive": "bold green (ANSI 32)"
+    "P&L negative": "bold red (ANSI 31)"
+    "P&L zero": "white (default)"
+    "Warning": "bold yellow"
+    "Win Rate > 60%": "green (ANSI 32)"
+    "Win Rate ≤ 60%": "default white"
+    "Active filters label": "italic blue"
+    "No data / no trades": "dim (gray italic)"
+    "Table header": "bold white"
+    "Border": "white"
+
+# ── UI Text Contract (global) ──
+ui_text:
+  bt_warning: "⚠️ ⚠️  ADVERTENCIA: Solo {num_trades} trades generados. Mínimo recomendado: 30. Resultados no estadísticamente significativos."
+  bt_no_trades: "⚠️  No se generaron trades en este período."
+  bt_bh_title: "📊  Comparación: Estrategia vs Buy & Hold"
+  bt_bh_unavailable: "No disponible"
+
+  sc_progress_liquidity: "Filtrando por liquidez: {n}/{total} — {pct:.0f}% completado. ~{eta}"
+  sc_progress_scan: "Escaneando {symbol}: {n}/{total} — {pct:.0f}% completado. ~{eta}"
+  sc_results_title: "📊  Resultados del Escaneo"
+  sc_eta_initial: "Escaneando {N} símbolos... ~{X}min restante"
+
+  tr_symbol_prompt: "Ingrese símbolo (ENTER para cancelar):"
+  tr_strategy_prompt: "Ingrese estrategia (ENTER para cancelar):"
+  tr_active_filters: "Filtros activos: Símbolo={s}, Estrategia={e}"
+  tr_no_trades: "No hay trades para mostrar con los filtros actuales."
+  tr_sharpe_na: "N/A"
+
+  si_warning: "⚠️  Solo {N} trades históricos. Mínimo recomendado: 30 para resultados estadísticamente significativos."
+  si_confirm: "¿Continuar de todas formas? (s/N):"
+
+# ── Scenario Coverage ──
+coverage:
+  total_scenarios: 56
+  by_domain:
+    backtesting: 24
+    scanner: 16
+    trades: 18
+    simulation: 5
+  by_type:
+    happy_path: 17
+    edge_case: 24
+    error_case: 15

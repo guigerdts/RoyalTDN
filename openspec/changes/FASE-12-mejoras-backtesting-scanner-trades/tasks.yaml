@@ -1,0 +1,393 @@
+meta:
+  change: "FASE-12-mejoras-backtesting-scanner-trades"
+  total_tasks: 15
+  estimated_lines: 330
+  review_budget: 400
+
+tasks:
+  # ── Area 1: Backtest Profesional ──────────────────────────────────────
+
+  - id: "T-01"
+    title: "Add tqdm to signal generation loop in run_backtest()"
+    area: "backtest"
+    description: |
+      Wrap `for i in range(1, len(df)):` signal generation loop with tqdm in
+      `run_backtest()`. Lazy import `from tqdm import tqdm` inside function.
+      desc: `f"{symbol} {timeframe} ({period})"`. bar_format:
+      `"{desc} — {n}/{total} barras {bar} {percentage:.0f}% [{elapsed}<{remaining}]"`.
+      Use `file=sys.stdout`. Loop starts at line 191 in current code.
+    file: "src/royaltdn/strategy/backtesting.py"
+    functions:
+      - "run_backtest — wrap signal loop at line 191 with tqdm"
+    verification: |
+      1. Run quick backtest from strategy submenu
+      2. Confirm tqdm progress bar appears during signal generation
+      3. Verify bar format shows symbol, timeframe, period, count, percentage, elapsed/remaining
+      4. Confirm bar disappears cleanly after loop completes
+    depends_on: []
+    review_budget_lines: 5
+
+  - id: "T-02"
+    title: "Add tqdm to portfolio simulation loop in run_backtest()"
+    area: "backtest"
+    description: |
+      Wrap `for i in range(1, len(df)):` portfolio simulation loop with tqdm.
+      desc: `"Simulando cartera"`. Same bar_format as T-01. Uses existing lazy
+      tqdm import from T-01 (add if not already present). Loop at line 231,
+      only runs if there are entries.
+    file: "src/royaltdn/strategy/backtesting.py"
+    functions:
+      - "run_backtest — wrap portfolio loop at line 231 with tqdm"
+    verification: |
+      1. Run backtest on a strategy that generates trades (entry signals)
+      2. Confirm second tqdm bar shows "Simulando cartera" after signal generation
+      3. Verify bar format matches T-01
+    depends_on: ["T-01"]
+    review_budget_lines: 5
+
+  - id: "T-03"
+    title: "Add 4 new metrics to _compute_metrics()"
+    area: "backtest"
+    description: |
+      Add `sortino_ratio`, `calmar_ratio`, `expectancy`, `avg_trade_duration` to
+      the return dict in `_compute_metrics(pf_close, trades_df)`.
+      - sortino_ratio: same as existing sortino (keep `sortino` as alias)
+      - calmar_ratio: CAGR / abs(max_drawdown). Edge: max_drawdown == 0 → CAGR
+      - expectancy: (win_rate * avg_win) - ((1-win_rate) * abs(avg_loss)). Edge: num_trades == 0 → 0.0
+      - avg_trade_duration: mean of (exit_date - entry_date) in days. Edge: None/empty trades_df → 0.0.
+        Missing date fields → skip that trade.
+    file: "src/royaltdn/strategy/backtesting.py"
+    functions:
+      - "_compute_metrics — add 4 new keys to return dict with edge case handling"
+    verification: |
+      1. Run backtest with trades → verify new keys present in metrics dict
+      2. sortino_ratio == existing sortino value
+      3. calmar_ratio computes correctly (CAGR / |max_drawdown|)
+      4. With 0 trades: expectancy = 0.0, avg_trade_duration = 0.0
+      5. With trades missing date fields: avg_trade_duration skips them gracefully
+    depends_on: []
+    review_budget_lines: 25
+
+  - id: "T-04"
+    title: "Add <30 trades non-blocking warning to _quick_backtest()"
+    area: "backtest"
+    description: |
+      In `_quick_backtest()`, after the metrics table display (line 1543), check
+      `metrics.get('num_trades', 0) < 30 and metrics.get('num_trades', 0) > 0`.
+      If true, show:
+      `[bold yellow]⚠️ ⚠️  ADVERTENCIA: Solo {num_trades} trades generados. Mínimo recomendado: 30. Resultados no estadísticamente significativos.[/]`
+      NON-BLOCKING: just display, no confirmation prompt.
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_quick_backtest — add <30 trade warning after metrics table"
+    verification: |
+      1. Backtest a strategy that produces <30 trades → confirm yellow warning displayed
+      2. Backtest with 30+ trades → verify no warning appears
+      3. Backtest with 0 trades (error case) → no warning
+      4. Warning is informational only (no blocking prompt)
+    depends_on: []
+    review_budget_lines: 8
+
+  - id: "T-05"
+    title: "Create _display_backtest_trades() and _display_buy_hold_comparison()"
+    area: "backtest"
+    description: |
+      Two new helper functions in backtesting.py:
+      1. `_display_backtest_trades(trades: list, console) -> None`
+         - Rich Table: `#`, `Entry Date`, `Exit Date`, `Entry Price`, `Exit Price`,
+           `P&L`, `Return %`, `Duration`, `Fees`
+         - P&L green if >= 0, red if < 0
+         - Duration = (exit_date - entry_date) in days, 1 decimal
+         - Empty -> `"⚠️ No se generaron trades en este período."` yellow
+      2. `_display_buy_hold_comparison(buy_hold_equity: list, metrics: dict, console) -> None`
+         - BH return: (bh_equity[-1] / bh_equity[0]) - 1 if len >= 2
+         - BH CAGR: BH return annualized
+         - Strategy vs BH: metrics["total_return"] - bh_return
+         - Rich Panel title `"📊  Comparación: Estrategia vs Buy & Hold"`
+         - Empty/None -> `"No disponible"` gray
+    file: "src/royaltdn/strategy/backtesting.py"
+    functions:
+      - "_display_backtest_trades (new)"
+      - "_display_buy_hold_comparison (new)"
+    verification: |
+      1. Call _display_backtest_trades with 5 trades -> verify all 9 columns render
+      2. Call with empty list -> verify yellow message shown
+      3. Call _display_buy_hold_comparison with valid equity -> verify panel with BH return
+      4. Call with None equity -> verify "No disponible" gray text
+      5. Verify P&L is green for >=0, red for <0
+    depends_on: []
+    review_budget_lines: 60
+
+  - id: "T-06"
+    title: "Update _quick_backtest() to display new metrics and helpers"
+    area: "backtest"
+    description: |
+      In `_quick_backtest()` after existing metrics table (line 1543):
+      1. Add 4 new rows to metrics table: Sortino Ratio, Calmar Ratio, Expectancy,
+         Avg Trade Duration (from metrics dict from T-03)
+      2. Add T-04's <30 warning logic
+      3. Call `_display_buy_hold_comparison(result["buy_hold_equity"], metrics, console)`
+      4. Call `_display_backtest_trades(result.get("trades", []), console)`
+      5. If no trades: `if not result.get("trades"):` -> `"⚠️ No se generaron trades en este período."`
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_quick_backtest — add new metric rows, call B&H panel, call trade table"
+    verification: |
+      1. Run quick backtest with trades -> verify 4 new metric rows visible
+      2. Verify B&H comparison panel shown
+      3. Verify trade detail table shown
+      4. Run backtest with no trades -> verify "No se generaron trades" message
+      5. Run with <30 trades -> verify warning (from T-04)
+    depends_on: ["T-01", "T-02", "T-03", "T-04", "T-05"]
+    review_budget_lines: 30
+
+  # ── Area 2: Scanner Real ─────────────────────────────────────────────
+
+  - id: "T-07"
+    title: "Add tqdm to LiquidityFilter.filter()"
+    area: "scanner"
+    description: |
+      Wrap `for symbol in symbols:` loop in `LiquidityFilter.filter()` with tqdm.
+      desc: `"Filtrando por liquidez"`. bar_format:
+      `"{desc}: {n}/{total} — {percentage:.0f}% completado. ~{remaining}"`.
+      Lazy import tqdm inside the method.
+      Empty symbols list -> returns empty list gracefully.
+      KeyboardInterrupt -> tqdm closes cleanly.
+    file: "src/royaltdn/scanner/filters.py"
+    functions:
+      - "LiquidityFilter.filter — wrap symbol loop with tqdm"
+    verification: |
+      1. Trigger scanner with 100+ symbols -> confirm tqdm bar showing for liquidity filter
+      2. Verify format: "Filtrando por liquidez: 45/100 — 45% completado. ~..."
+      3. Empty symbols list -> no crash, returns []
+      4. Ctrl+C during filter -> clean exit
+    depends_on: []
+    review_budget_lines: 10
+
+  - id: "T-08"
+    title: "Add tqdm + initial ETA to Scanner.scan()"
+    area: "scanner"
+    description: |
+      In `Scanner.scan()`:
+      1. Before scan loop: compute initial ETA
+         `_start = time.monotonic()`
+         `est_seconds = len(passed_symbols) * 0.3`
+         `est_minutes = math.ceil(est_seconds / 60)`
+         `tqdm.write(f"Escaneando {len(passed_symbols)} símbolos... ~{est_minutes}min restante")`
+      2. Replace `for symbol in passed_symbols:` with tqdm wrapper:
+         `pbar = tqdm(passed_symbols, desc="Escaneando", unit="sym", file=sys.stdout,
+          bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}")`
+         `for symbol in pbar:`
+         `    pbar.set_description(f"Escaneando {symbol}")`
+      Lazy import tqdm, math, time inside the method.
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner.scan — add initial ETA message and tqdm progress wrapper"
+    verification: |
+      1. Trigger scanner -> confirm "Escaneando N símbolos... ~Xmin restante" message
+      2. Confirm tqdm bar shows with symbol name, count, percentage, ETA
+      3. 0 passed symbols -> ETA message not shown (empty loop)
+      4. Single symbol -> progress bar still renders correctly
+    depends_on: []
+    review_budget_lines: 20
+
+  - id: "T-09"
+    title: "Persist elapsed_seconds in scanner results"
+    area: "scanner"
+    description: |
+      After scan loop in `Scanner.scan()`:
+      `self._last_scan_elapsed = time.monotonic() - _start`
+      Add to scan_entry dict before appending to `_scan_history`:
+      `"elapsed_seconds": round(self._last_scan_elapsed, 1)`
+      In `_publish_scanner_results()`: ensure elapsed time included in written JSON.
+      Edge: no passed symbols -> store 0.0.
+    file: "src/royaltdn/scanner/scanner.py"
+    functions:
+      - "Scanner.scan — store elapsed time after loop"
+      - "Scanner._publish_scanner_results — include elapsed_seconds in output"
+    verification: |
+      1. Run scan -> check scan_entry dict has `elapsed_seconds` key
+      2. Check scanner_results.json -> confirm elapsed_seconds present
+      3. No passed symbols -> elapsed_seconds = 0.0
+    depends_on: []
+    review_budget_lines: 10
+
+  - id: "T-10"
+    title: "Add post-scan metrics panel to _show_scanner()"
+    area: "scanner"
+    description: |
+      In `_show_scanner()`, after loading `data` and before displaying the table:
+      Read `data.get("scan_history", [])` to get latest entry.
+      If scan_history exists, display Panel with:
+      Total: {total_symbols}, Passed: {passed}/{total} ({pct_passed:.0f}%),
+      Signals: {signals_count}, Time: {elapsed_seconds:.1f}s
+      If no history, show nothing (existing table still shows).
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_scanner — add post-scan metrics panel from scan_history"
+    verification: |
+      1. View scanner screen with scan_history data -> verify metrics panel shows
+      2. Verify: total symbols, passed/total %, signals count, elapsed time
+      3. View scanner screen with no scan_history -> no panel shown (existing behavior)
+      4. Verify panel renders before the symbol table
+    depends_on: ["T-07", "T-08", "T-09"]
+    review_budget_lines: 35
+
+  # ── Area 3: Trades Rediseñados ───────────────────────────────────────
+
+  - id: "T-11"
+    title: "Add Sharpe, Avg Trade, Max DD, Expectancy to _show_trades() summary"
+    area: "trades"
+    description: |
+      In `_show_trades()`, compute and add to the unfiltered summary grid:
+      - Sharpe: mean(pnl_list) / std(pnl_list) * sqrt(252). If < 2 trades -> "N/A"
+      - Avg Trade: mean(pnl_list). Green if > 0, red if < 0
+      - Max Drawdown: from cumulative P&L peak-to-trough
+      - Expectancy: (WR * avg_win) - ((1-WR) * |avg_loss|)
+      Add 4 extra cells to the summary Table.grid after Total P&L cell.
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_trades — add 4 new metrics to summary panel"
+    verification: |
+      1. View trades screen with 10+ trades -> verify 4 new metric values shown
+      2. View with 0 trades -> Sharpe shows "N/A"
+      3. View with 1 trade -> Sharpe shows "N/A"
+      4. Avg Trade colored green if positive, red if negative
+    depends_on: []
+    review_budget_lines: 35
+
+  - id: "T-12"
+    title: "Enrich trade table columns in _show_trades()"
+    area: "trades"
+    description: |
+      Enrich the trade detail table columns to:
+      `#`, `Fecha` (entry_at formatted YYYY-MM-DD HH:MM), `Símbolo`, `Lado`,
+      `Qty`, `Entry`, `Exit`, `P&L`, `Retorno%`, `Duración`, `Slippage`, `Estrategia`
+      - Duration: `f"{days}d {hours}h"` if days > 0, `"< 1h"` if < 1h
+      - Slippage: `f"{slippage_bps} bps"` via `.get("slippage_bps", 0)`
+      - Entry/Exit: `{price:.2f}`
+      - P&L colored green/red (maintain existing)
+      - Empty state: `"No hay trades para mostrar con los filtros actuales."` gray italic
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_trades — enrich trade table with 12 columns and formatting"
+    verification: |
+      1. View trades -> verify all 12 columns present
+      2. Fecha shows YYYY-MM-DD HH:MM format
+      3. Duration shows "3d 5h" for multi-day, "< 1h" for same-day
+      4. Slippage shows "0 bps" when field missing
+      5. No trades -> gray italic empty message
+    depends_on: []
+    review_budget_lines: 40
+
+  - id: "T-13"
+    title: "Implement single-key cumulative AND filters in _show_trades()"
+    area: "trades"
+    description: |
+      Restructure _show_trades() while loop:
+      - `active_filters = {}` dict with optional keys: symbol, strategy, date_range
+      - Remove existing inline symbol filter input (line 2276) and period filter block (lines 2290-2331)
+      - Submenu always shows: [S] Símbolo [E] Estrategia [F] Fecha [T] Reset [X] Exportar [V] Stats [P] Estrategia [0] Volver
+      - S -> prompt for symbol, set active_filters["symbol"]
+      - E -> prompt for strategy, set active_filters["strategy"]
+      - F -> date submenu (1=Today, 2=Week, 3=Month, 4=All, 5=Custom), set active_filters["date_range"]
+      - T -> active_filters = {} (reset all)
+      - X -> _export_trades(filtered, console, logs_dir)
+      - V -> _show_advanced_stats(filtered, console)
+      - P -> _show_performance_by_strategy(filtered, console)
+      - 0 -> return
+      - Filters apply cumulatively (AND) to all_trades
+      - Show active filters header in italic blue if any active
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_trades — replace inline filters with active_filters dict + single-key submenu"
+    verification: |
+      1. Press S -> prompted for symbol -> filter applied
+      2. Press E -> prompted for strategy -> filter applied (AND with symbol)
+      3. Press F -> date submenu -> date filter applied
+      4. Press T -> all filters reset, show all trades
+      5. Press X -> export triggered
+      6. Press V -> advanced stats shown
+      7. Active filters shown in italic blue header
+    depends_on: []
+    review_budget_lines: 70
+
+  - id: "T-14"
+    title: "Apply ANSI 16-color rules to _show_trades()"
+    area: "trades"
+    description: |
+      Ensure all colors in _show_trades() use only 16-color ANSI names:
+      - P&L >= 0: "bold green" (ANSI 32)
+      - P&L < 0: "bold red" (ANSI 31)
+      - P&L == 0: white (default)
+      - Win Rate > 60%: green, ≤ 60%: default white
+      - Active filters label: "italic blue"
+      - No data: "dim" (gray italic)
+      - No hex/RGB colors anywhere in the function
+      Also apply WR coloring in the summary grid: check win_rate value and set style.
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_trades — ensure all colors are 16-color ANSI only, style WR conditionally"
+    verification: |
+      1. Verify P&L >= 0 is "bold green" (not hex, not RGB)
+      2. Verify P&L < 0 is "bold red"
+      3. Verify Win Rate > 60% shown in green, ≤ 60% in default white
+      4. grep for hex colors in function -> none found
+    depends_on: []
+    review_budget_lines: 15
+
+  # ── Area 4: Simulación ──────────────────────────────────────────────
+
+  - id: "T-15"
+    title: "Add <30 trades blocking warning to _show_simulation()"
+    area: "simulation"
+    description: |
+      In `_show_simulation()`, right after `all_trades = trades_data.get("trades", [])`
+      (current line 553), insert:
+      ```
+      if len(all_trades) < 30:
+          console.print(f"[bold yellow]⚠️  Solo {len(all_trades)} trades históricos. Mínimo recomendado: 30 para resultados estadísticamente significativos.[/]")
+          try:
+              resp = input("¿Continuar de todas formas? (s/N): ").strip().lower()
+          except (KeyboardInterrupt, EOFError):
+              return
+          if resp != "s":
+              return
+      ```
+      BLOCKING: must answer 's' to proceed, anything else returns.
+    file: "src/royaltdn/frontend/menu/app.py"
+    functions:
+      - "_show_simulation — add blocking <30 trades check after loading trades"
+    verification: |
+      1. Simulate with <30 trades -> yellow warning displayed
+      2. Press 's' -> simulation proceeds
+      3. Press any other key -> returns to menu
+      4. Simulate with 30+ trades -> no warning
+      5. Ctrl+C during prompt -> clean return
+    depends_on: []
+    review_budget_lines: 15
+
+# ── Dependencies ─────────────────────────────────────────────────────
+
+dependencies:
+  T-06: ["T-01", "T-02", "T-03", "T-04", "T-05"]
+  T-10: ["T-07", "T-08", "T-09"]
+  T-11: []
+  T-12: []
+  T-13: []
+  T-14: []
+  T-15: []
+
+# ── Review Workload ──────────────────────────────────────────────────
+
+review_workload:
+  estimated_changed_lines: 330
+  chained_prs_recommended: false
+  decision_needed_before_apply: false
+  recommendation: |
+    Estimated ~330 changed lines across 4 files. Under the 400-line review budget.
+    The 4 areas (backtest, scanner, trades, simulation) are independent and can
+    be reviewed as a single PR. No chained PRs needed.
+    Delivery: order applies within each area — T-01→T-06 sequentially for backtest,
+    T-07→T-10 sequentially for scanner, T-11→T-14 independent for trades,
+    T-15 standalone for simulation.

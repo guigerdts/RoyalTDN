@@ -63,6 +63,7 @@ def test_builder_flow_full():
         "1D",                  # Stage 8: timeframe
         "1m",                  # Stage 9: period
         "n",                   # Stage 11: save? no
+        "",                    # _wait_enter() after backtest trade display
     ]
 
     with patch("builtins.input", side_effect=inputs):

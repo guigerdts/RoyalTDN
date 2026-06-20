@@ -84,7 +84,27 @@ class Scanner:
         # 3. Para cada símbolo que pasa, descargar datos y ejecutar estrategias
         signals = []
 
-        for symbol in passed_symbols:
+        import sys
+        import time as _time
+        import math
+        from tqdm import tqdm
+        _start = _time.monotonic()
+        if passed_symbols:
+            est_seconds = len(passed_symbols) * 0.3
+            est_minutes = math.ceil(est_seconds / 60)
+            tqdm.write(
+                f"Escaneando {len(passed_symbols)} s\u00edmbolos... ~{est_minutes}min restante"
+            )
+
+        pbar = tqdm(
+            passed_symbols,
+            desc="Escaneando",
+            unit="sym",
+            file=sys.stdout,
+            bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}",
+        )
+        for symbol in pbar:
+            pbar.set_description(f"Escaneando {symbol}")
             try:
                 # Descargar datos (cachear por símbolo)
                 data = self._get_symbol_data(symbol)
@@ -117,6 +137,8 @@ class Scanner:
                 logger.debug("Scanner: error procesando {}: {}", symbol, e)
                 continue
 
+        self._last_scan_elapsed = _time.monotonic() - _start
+
         # 4. Rankear señales
         ranked = self._rank_signals(signals)
         self._last_scan_results = ranked
@@ -127,6 +149,7 @@ class Scanner:
             "total_symbols": total_symbols,
             "passed_symbols": passed_count,
             "signals_count": len(ranked),
+            "elapsed_seconds": round(self._last_scan_elapsed, 1),
             "top_signals": [
                 {
                     "symbol": s.get("symbol"),
@@ -245,13 +268,19 @@ class Scanner:
                 "score": s.get("score"),
             })
 
+        scan_history = self._scan_history[-10:]
+        # Ensure each scan_entry has elapsed_seconds; fill 0.0 for legacy entries
+        for entry in scan_history:
+            if "elapsed_seconds" not in entry:
+                entry["elapsed_seconds"] = 0.0
+
         data = {
             "last_scan": {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "total_signals": len(last_scan),
                 "top_signals": top_list,
             },
-            "scan_history": self._scan_history[-10:],
+            "scan_history": scan_history,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         _atomic_write(LOGS_DIR / "scanner_results.json", data)

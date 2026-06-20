@@ -41,9 +41,20 @@ class LiquidityFilter:
         Returns:
             Lista de símbolos que pasan el filtro.
         """
-        passed = []
+        if not symbols:
+            return []
 
-        for symbol in symbols:
+        passed = []
+        from tqdm import tqdm
+        import sys
+
+        for symbol in tqdm(
+            symbols,
+            desc="Filtrando por liquidez",
+            unit="sym",
+            file=sys.stdout,
+            bar_format="{desc}: {n}/{total} — {percentage:.0f}% completado. ~{remaining}",
+        ):
             try:
                 bar = data_client.get_latest_bar(symbol)
 
