@@ -1185,17 +1185,55 @@ def _build_summary(
     sections.append(Panel(table, title="Trade Summary", border_style="white"))
 
 
+# ── Noise patterns for log filtering ──────────────────────────────────
+# Lines matching any of these are considered initialization/config noise
+# and excluded from the dashboard and default log view.
+_LOG_NOISE_PATTERNS = (
+    "DEBUG",
+    "Redis no disponible",
+    "Conectado a Redis",
+    "Estrategia de usuario cargada",
+    "Status inicial publicado",
+    "Status final publicado",
+    "Status publish error",
+    "Error publicando status final",
+    "MODO FALLBACK LEGACY",
+    "MODO LEGACY ACTIVO",
+    "Risk manager:",
+    "Alertas Telegram:",
+    "TWAP:",
+    "====",
+    "RoyalTDN — Arquitectura Modular",
+    "Arquitectura Modular Iniciando",
+    "Esperando datos",
+    "User strategies watcher error",
+    "TimescaleDB no disponible",
+    "Strategy store no disponible",
+    "Scanner no disponible",
+    "Status final publicado en logs",
+)
+
+
+def _is_noise(line: str) -> bool:
+    """Return True if *line* is initialization/config noise."""
+    for pattern in _LOG_NOISE_PATTERNS:
+        if pattern in line:
+            return True
+    return False
+
+
 def _build_log_section(
     log_lines: list[str],
     sections: list,
     Panel: type,
     Text: type,
 ) -> None:
-    """Build logs section with colorized levels."""
-    if not log_lines:
+    """Build logs section — shows last 8 relevant runtime lines."""
+    relevant = [l for l in log_lines if not _is_noise(l)]
+    if not relevant:
         sections.append(
             Panel(
-                Text("No log entries", style="dim white"),
+                Text("No runtime log entries", style="dim white"),
                 title="Logs",
                 border_style="white",
             )
@@ -1203,7 +1241,7 @@ def _build_log_section(
         return
 
     lines = []
-    for line in log_lines[-20:]:
+    for line in relevant[-8:]:
         style = "white"
         if "CRITICAL" in line or "ERROR" in line:
             style = "bold red"
@@ -1211,14 +1249,12 @@ def _build_log_section(
             style = "yellow"
         elif "INFO" in line:
             style = "green"
-        elif "DEBUG" in line:
-            style = "dim white"
         lines.append(Text(line.strip(), style=style))
 
     from rich.console import Group as RichGroup
 
     sections.append(
-        Panel(RichGroup(*lines), title="Logs", border_style="white")
+        Panel(RichGroup(*lines), title="Logs (runtime)", border_style="white")
     )
 
 
@@ -3057,8 +3093,12 @@ def _show_logs(log_buffer, console) -> None:
             _print_header(console)
 
             lines = log_buffer.get_lines(
-                level_filter=current_level, text_filter=current_text, last_n=20
+                level_filter=current_level, text_filter=current_text, last_n=50
             )
+
+            # By default (no level filter), exclude initialization noise
+            if current_level is None:
+                lines = [l for l in lines if not _is_noise(l)]
 
             if not lines:
                 # Fallback: read last 50 lines from logs/bot.log
@@ -3069,6 +3109,9 @@ def _show_logs(log_buffer, console) -> None:
                         all_log_lines = _f.readlines()
                     # Take last 50
                     lines = [l.rstrip("\n") for l in all_log_lines[-50:]]
+                    # Also filter fallback lines
+                    if current_level is None:
+                        lines = [l for l in lines if not _is_noise(l)]
                 except (FileNotFoundError, OSError, UnicodeDecodeError):
                     lines = []
 
