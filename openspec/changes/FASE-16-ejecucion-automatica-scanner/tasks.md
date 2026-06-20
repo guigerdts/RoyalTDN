@@ -40,8 +40,8 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: UI + Tests (PR 3 — base: PR 2 branch)
 
-- [ ] **3.1** `src/royaltdn/alerts.py` — ADD `notify_scanner_entry(signal, portfolio)` with symbol, action, qty, price + portfolio context (open count, total exposure). ADD `notify_scanner_rejection(symbol, reason)`. Verify: messages contain expected fields.
-- [ ] **3.2** `src/royaltdn/frontend/menu/app.py` — MODIFY `_build_positions()` to handle multi-symbol position lists from PPM (already reads `open_positions` list, but verify display handles scanner + legacy positions). Verify: dashboard shows all open positions.
-- [ ] **3.3** `tests/test_portfolio_manager.py` — Unit tests for PPM: open/close/get/all/count/has/exposure/close_all/dup-rejection/max-positions. Verify: 10+ test cases pass.
-- [ ] **3.4** `tests/test_scanner_execution.py` — Integration tests for `_execute_scanner_signals()`: mock Alpaca, test 7-gate pipeline, legacy coexistence (SPY skip when legacy holds SPY), kill switch (`close_all_positions()` includes legacy SPY). Verify: all scenarios from spec pass.
-- [ ] **3.5** `tests/test_risk_manager.py` — ADD tests for `check_portfolio_risk()` and crypto-aware `get_atr()`. Verify: portfolio gate, crypto ATR client dispatch.
+- [x] **3.1** `src/royaltdn/alerts.py` — ADD `notify_scanner_entry(signal, portfolio)` with symbol, action, qty, price + portfolio context (open count, total exposure). ADD `notify_scanner_rejection(symbol, reason)`. Verify: messages contain expected fields.
+- [x] **3.2** `src/royaltdn/frontend/menu/app.py` — MODIFY `_build_positions()` to handle multi-symbol position lists from PPM (already reads `open_positions` list, but verify display handles scanner + legacy positions). Verify: dashboard shows all open positions.
+- [x] **3.3** `tests/test_portfolio_manager.py` — Unit tests for PPM: open/close/get/all/count/has/exposure/close_all/dup-rejection/max-positions. Verify: 10+ test cases pass.
+- [x] **3.4** `tests/test_scanner_execution.py` — Integration tests for `_execute_scanner_signals()`: mock Alpaca, test 7-gate pipeline, legacy coexistence (SPY skip when legacy holds SPY), kill switch (`close_all_positions()` includes legacy SPY). Verify: all scenarios from spec pass.
+- [x] **3.5** `tests/test_risk_manager.py` — ADD tests for `check_portfolio_risk()` and crypto-aware `get_atr()`. Verify: portfolio gate, crypto ATR client dispatch.

@@ -1046,14 +1046,15 @@ def _build_positions(
 
     table = Table(title=None, border_style="white", header_style="bold white")
     table.add_column("Symbol", style="bold white")
-    table.add_column("Side")
     table.add_column("Qty", justify="right")
     table.add_column("Entry", justify="right")
+    table.add_column("Current", justify="right")
     table.add_column("P&L", justify="right")
+    table.add_column("Strategy", style="cyan")
+    table.add_column("Source", style="dim white")
 
     for pos in positions:
         symbol = str(pos.get("symbol", "\u2014"))
-        side = str(pos.get("side", pos.get("direction", "\u2014")))
         qty_raw = pos.get("qty", pos.get("quantity", "\u2014"))
         qty = (
             f"{qty_raw:.2f}"
@@ -1062,6 +1063,8 @@ def _build_positions(
         )
         entry_raw = pos.get("entry_price", pos.get("avg_entry_price", 0))
         entry = f"${float(entry_raw):,.2f}" if entry_raw else "\u2014"
+        current_raw = pos.get("current_price", 0)
+        current = f"${float(current_raw):,.2f}" if current_raw else "\u2014"
         pnl_raw = pos.get("unrealized_pl", pos.get("pnl", 0))
         pnl = (
             f"${float(pnl_raw):+,.2f}"
@@ -1073,7 +1076,9 @@ def _build_positions(
             if (isinstance(pnl_raw, (int, float)) and pnl_raw >= 0)
             else "red"
         )
-        table.add_row(symbol, side, qty, entry, f"[{pnl_style}]{pnl}[/]")
+        strategy = str(pos.get("strategy", "\u2014"))
+        source = "Scanner" if strategy == "scanner" else "Legacy"
+        table.add_row(symbol, qty, entry, current, f"[{pnl_style}]{pnl}[/]", strategy, source)
 
     sections.append(Panel(table, title="Open Positions", border_style="white"))
 

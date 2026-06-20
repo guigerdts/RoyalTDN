@@ -102,5 +102,20 @@ async def notify_kill_switch(reason: str) -> None:
 async def notify_error(error: str) -> None:
     """Notifica error crítico en el bot."""
     await send_telegram_message_async(
-        f"⚠️ <b>ERROR</b>\n{error}"
+        f"\u26a0\ufe0f <b>ERROR</b>\n{error}"
+    )
+
+
+async def notify_scanner_entry(symbol: str, action: str, qty: int, price: float, strategy: str = "scanner") -> None:
+    """Notifica ejecución de una señal del Scanner."""
+    await send_telegram_message_async(
+        f"\U0001f514 <b>SCANNER: {action.upper()}</b>\n"
+        f"{action.upper()} {qty} {symbol} @ ${price:.2f} ({strategy})"
+    )
+
+
+async def notify_scanner_rejection(symbol: str, reason: str) -> None:
+    """Notifica que una señal del Scanner fue rechazada."""
+    await send_telegram_message_async(
+        f"\u26a0\ufe0f <b>Scanner:</b> se\u00f1al rechazada para {symbol} \u2014 {reason}"
     )
