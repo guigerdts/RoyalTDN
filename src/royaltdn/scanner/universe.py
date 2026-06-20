@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetClass, AssetStatus
+from alpaca.trading.requests import GetAssetsRequest
 
 
 class AssetUniverse:
@@ -136,10 +137,11 @@ class AssetUniverse:
             List of symbols, or [] if the API fails.
         """
         try:
-            assets = self._trading_client.get_all_assets(
-                status=AssetStatus.ACTIVE,
+            req = GetAssetsRequest(
                 asset_class=AssetClass.US_EQUITY,
+                asset_status=AssetStatus.ACTIVE,
             )
+            assets = self._trading_client.get_all_assets(req)
 
             symbols = [
                 a.symbol
