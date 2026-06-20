@@ -70,9 +70,9 @@ def _atomic_write(path: Path, data: dict) -> bool:
 
 # ── Constantes de entorno (Scanner) ───────────────────────────────────────
 
-SCANNER_MIN_VOLUME = int(os.getenv("SCANNER_MIN_VOLUME", "500000"))
+SCANNER_MIN_VOLUME = int(os.getenv("SCANNER_MIN_VOLUME", "100000"))
 SCANNER_MIN_PRICE = float(os.getenv("SCANNER_MIN_PRICE", "5.0"))
-SCANNER_MAX_SPREAD_PCT = float(os.getenv("SCANNER_MAX_SPREAD_PCT", "0.5"))
+SCANNER_MAX_SPREAD_PCT = float(os.getenv("SCANNER_MAX_SPREAD_PCT", "1.0"))
 SCANNER_INTERVAL_MINUTES = int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
 STRATEGIES_ENABLED = os.getenv("STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr").split(",")
 SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N", "3"))

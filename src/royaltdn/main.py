@@ -230,9 +230,9 @@ def cmd_run():
             universe_type=os.getenv("SCANNER_UNIVERSE", "etfs"),
         )
         liquidity_filter = LiquidityFilter(
-            min_volume=float(os.getenv("SCANNER_MIN_VOLUME", "500000")),
+            min_volume=int(os.getenv("SCANNER_MIN_VOLUME", "100000")),
             min_price=float(os.getenv("SCANNER_MIN_PRICE", "5.0")),
-            max_spread_pct=float(os.getenv("SCANNER_MAX_SPREAD_PCT", "0.5")),
+            max_spread_pct=float(os.getenv("SCANNER_MAX_SPREAD_PCT", "1.0")),
         )
         strategies = {}
         strategies_enabled = os.getenv(

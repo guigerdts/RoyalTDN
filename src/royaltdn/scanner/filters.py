@@ -5,10 +5,11 @@ Fase 13 — Scanner con Universo Real de Activos
 
 TokenBucket: rate limiting for Alpaca API calls (200 req/min).
 LiquidityFilter: filters symbols by volume, price, and spread,
-with rate limiting and exponential retry on each get_latest_bar().
+with rate limiting and exponential retry on each get_stock_bars().
 """
 
 import time
+from datetime import datetime, timedelta
 from typing import List, Optional, Any
 
 from loguru import logger
@@ -72,22 +73,23 @@ class TokenBucket:
 class LiquidityFilter:
     """Filters symbols by liquidity criteria.
 
-    Uses Alpaca data_client.get_latest_bar() to get the latest
-    bar for each symbol and checks volume, price, and spread.
+    Uses Alpaca data_client.get_stock_bars() to fetch the last 5 daily
+    bars for each symbol and checks avg volume and latest close price.
     Integrates TokenBucket for rate limiting and retry with backoff.
 
     Args:
-        min_volume: Minimum volume (default 500,000).
+        min_volume: Minimum avg daily volume (default 100,000).
         min_price: Minimum price (default $5.0).
-        max_spread_pct: Maximum spread percentage (default 0.5%).
+        max_spread_pct: Maximum spread percentage (default 1.0%) — unused
+                        with daily bars, kept for API compatibility.
         token_bucket: TokenBucket instance. If None, creates a default one.
     """
 
     def __init__(
         self,
-        min_volume: int = 500_000,
+        min_volume: int = 100_000,
         min_price: float = 5.0,
-        max_spread_pct: float = 0.5,
+        max_spread_pct: float = 1.0,
         token_bucket: Optional[TokenBucket] = None,
     ):
         self.min_volume = min_volume
@@ -96,7 +98,10 @@ class LiquidityFilter:
         self.token_bucket = token_bucket or TokenBucket()
 
     def filter(self, symbols: List[str], data_client: Any) -> List[str]:
-        """Filters a symbol list by liquidity with rate limiting.
+        """Filters a symbol list by liquidity using daily bars.
+
+        Fetches the last 5 daily bars via get_stock_bars(), computes
+        average volume and latest close price for each symbol.
 
         Args:
             symbols: List of symbols to filter.
@@ -108,9 +113,15 @@ class LiquidityFilter:
         if not symbols:
             return []
 
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
         passed = []
         from tqdm import tqdm
         import sys
+
+        end = datetime.now()
+        start = end - timedelta(days=10)  # 10-day window for 5 trading days
 
         for symbol in tqdm(
             symbols,
@@ -119,91 +130,33 @@ class LiquidityFilter:
             file=sys.stdout,
             bar_format="{desc}: {n}/{total} — {percentage:.0f}% completado. ~{remaining}",
         ):
-            bar = self._call_with_retry(symbol, data_client)
-            if bar is None:
-                continue
+            try:
+                self.token_bucket.consume(1)
+                request = StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=end,
+                )
+                bars = data_client.get_stock_bars(request)
+                df = bars.df
 
-            # Check bar has data
-            volume = getattr(bar, "volume", None)
-            close = getattr(bar, "close", None)
-
-            # Volume filter
-            if volume is None or volume < self.min_volume:
-                continue
-
-            # Price filter
-            if close is None or close < self.min_price:
-                continue
-
-            # Spread filter (if available)
-            bid = getattr(bar, "bid_price", None)
-            ask = getattr(bar, "ask_price", None)
-            if bid is not None and ask is not None and bid > 0 and ask > 0:
-                spread_pct = ((ask - bid) / ((ask + bid) / 2)) * 100
-                if spread_pct > self.max_spread_pct:
+                if df.empty:
                     continue
 
-            passed.append(symbol)
+                avg_volume = df["volume"].mean()
+                last_close = df["close"].iloc[-1]
 
-        logger.info("LiquidityFilter: {}/{} symbols passed", len(passed), len(symbols))
-        return passed
-
-    def _call_with_retry(self, symbol: str, data_client: Any) -> Optional[Any]:
-        """Wrapper with retry for get_latest_bar.
-
-        Implements exponential backoff: 1s -> 2s -> 4s -> 8s.
-        Maximum 5 attempts (initial + 4 retries).
-        HTTP 401/403 abort immediately (no retry).
-        HTTP 429/503/timeout retry with backoff.
-
-        Args:
-            symbol: Symbol to query.
-            data_client: StockHistoricalDataClient from alpaca-py.
-
-        Returns:
-            Bar object on success, None if all 5 attempts fail.
-        """
-        backoff = [1, 2, 4, 8]  # seconds between retries
-
-        for attempt in range(5):  # initial + 4 retries
-            try:
-                # Consume token BEFORE each attempt
-                self.token_bucket.consume(1)
-                return data_client.get_latest_bar(symbol)
+                if avg_volume >= self.min_volume and last_close >= self.min_price:
+                    passed.append(symbol)
 
             except Exception as e:
-                err_str = str(e).lower()
-
-                # Auth errors — abort immediately
-                if "401" in err_str or "403" in err_str:
-                    logger.error(
-                        "LiquidityFilter: auth error ({}) for {} — aborting",
-                        e, symbol,
-                    )
-                    raise  # propagate to caller
-
-                # Rate limit or server error — retry with backoff
-                if "429" in err_str or "503" in err_str or "timeout" in err_str:
-                    if attempt < 4:
-                        delay = backoff[attempt]
-                        logger.debug(
-                            "LiquidityFilter: error {} for {} — retry {}/5 in {}s",
-                            e, symbol, attempt + 1, delay,
-                        )
-                        time.sleep(delay)
-                        continue
-
-                    logger.warning(
-                        "LiquidityFilter: max retries (5) reached for {}",
-                        symbol,
-                    )
-                    return None
-
-                # Unknown error — skip silently
                 logger.debug(
-                    "LiquidityFilter: unexpected error for {}: {} — skipping",
-                    symbol, e,
+                    "LiquidityFilter: error for {}: {} — skipping", symbol, e,
                 )
-                return None
+                continue
 
-        return None
+        logger.info(
+            "LiquidityFilter: {}/{} symbols passed", len(passed), len(symbols),
+        )
+        return passed
