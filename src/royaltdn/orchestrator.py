@@ -271,7 +271,7 @@ class Orchestrator:
                 self._position_qty = 0
 
             logger.info(
-                "Estado inicial — Capital: $%.2f | Posición: %s (%d acc)",
+                "Estado inicial — Capital: ${:.2f} | Posición: {} ({} acc)",
                 self._initial_equity,
                 self._position or "none",
                 self._position_qty,

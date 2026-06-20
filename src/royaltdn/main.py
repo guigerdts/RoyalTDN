@@ -212,6 +212,24 @@ def cmd_run():
     logger.info("  TimescaleDB: {}", "SÍ" if DATABASE_URL else "NO")
     logger.info("=" * 50)
 
+    # ── Reconfigurar Loguru: stderr solo WARNING+ para no ensuciar el menú ──
+    logger.remove()  # quitar todos los sinks (file + stderr)
+    logger.add(
+        "logs/bot.log", rotation="10 MB", retention="7 days",
+        level="INFO", encoding="utf-8",
+        format=(
+            "{time:YYYY-MM-DD HH:mm:ss,SSS} | {level: <8} | "
+            "{name}:{function}:{line} | {message}"
+        ),
+    )
+    logger.add(
+        sys.stderr, colorize=True, level="WARNING",
+        format=(
+            "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | "
+            "<level>{message}</level>"
+        ),
+    )
+
     from royaltdn.frontend.menu.app import run_menu
 
     # ── Scanner: inicializar antes del Orchestrator ──
