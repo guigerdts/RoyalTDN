@@ -1107,8 +1107,9 @@ class Orchestrator:
         )
 
         # Contador para el scanner (se ejecuta cada SCANNER_INTERVAL_MINUTES)
+        # Cuando SCANNER_INTERVAL_MINUTES=0, auto-scan está deshabilitado
         scanner_cycle = 0
-        scanner_iterations = max(1, int((SCANNER_INTERVAL_MINUTES * 60) / poll_interval))
+        scanner_iterations = int((SCANNER_INTERVAL_MINUTES * 60) / poll_interval) if SCANNER_INTERVAL_MINUTES > 0 else 0
 
         while self._running and not self._killed:
             try:
@@ -1138,12 +1139,13 @@ class Orchestrator:
                             await asyncio.sleep(poll_interval)
                             continue
 
-                    # Auto-scan based on interval
-                    scanner_cycle += 1
-                    if scanner_cycle >= scanner_iterations:
-                        scanner_cycle = 0
-                        logger.info("Scanner: ejecutando escaneo automatico...")
-                        signals = await self._run_scanner()
+                    # Auto-scan based on interval (disabled when SCANNER_INTERVAL_MINUTES=0)
+                    if scanner_iterations > 0:
+                        scanner_cycle += 1
+                        if scanner_cycle >= scanner_iterations:
+                            scanner_cycle = 0
+                            logger.info("Scanner: ejecutando escaneo automatico...")
+                            signals = await self._run_scanner()
                         if signals:
                             top_signals = self._scanner.get_top_signals(n=SCANNER_TOP_N)
                             if top_signals:
