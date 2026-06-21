@@ -109,18 +109,19 @@ class Scanner:
             symbol_data = self._batch_get_symbol_data(passed_symbols)
 
             # Process each symbol with strategies
+            total = len(symbol_data)
             pbar = tqdm(
                 list(symbol_data.keys()),
-                desc="Escaneando",
+                desc="Analizando...",
                 unit="sym",
                 file=sys.stdout,
-                bar_format="{desc}: {n_fmt}/{total_fmt} — {percentage:.0f}% completado. ~{remaining}",
+                bar_format="{desc}  {percentage:.0f}% completado.  ~{remaining}",
             )
-            for symbol in pbar:
+            for idx, symbol in enumerate(pbar, start=1):
                 if self._auth_failed:
                     logger.warning("Scanner: auth failure detected — aborting scan loop")
                     break
-                pbar.set_description(f"Procesando {symbol}")
+                pbar.set_description(f"Analizando {symbol} ({idx}/{total})")
                 data = symbol_data.get(symbol)
                 if data is None or len(data) < 60:
                     continue
