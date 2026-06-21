@@ -1707,13 +1707,23 @@ def _quick_backtest(config: dict, console, logs_dir: str) -> None:
     config.setdefault("version", 1)
     ok, err = validate_config(config)
     if not ok:
-        console.print(f"[red]Configuraci\u00f3n inv\u00e1lida: {err}[/]")
+        console.print(f"[red]Configuración inválida: {err}[/]")
         return
+
+    # Wire crypto broker when symbol contains "/"
+    broker = None
+    if "/" in symbol:
+        api_key = os.getenv("BINANCE_API_KEY")
+        secret_key = os.getenv("BINANCE_SECRET_KEY")
+        if api_key and secret_key:
+            from royaltdn.brokers.binance import BinanceBroker
+            broker = BinanceBroker(api_key=api_key, secret_key=secret_key, testnet=True)
 
     console.print("[yellow]Ejecutando backtest...[/]")
     try:
         result = _run_bt(
             config, symbol=symbol, timeframe=default_timeframe, period=period,
+            broker=broker,
         )
     except Exception as e:
         console.print(f"[red]Error en backtest: {e}[/]")
@@ -2221,6 +2231,16 @@ def _builder_flow(
                 _wait_enter()
                 return
 
+            # Wire crypto broker when symbol contains "/"
+            _broker = None
+            if "/" in symbol:
+                import os as _os
+                _api_key = _os.getenv("BINANCE_API_KEY")
+                _secret_key = _os.getenv("BINANCE_SECRET_KEY")
+                if _api_key and _secret_key:
+                    from royaltdn.brokers.binance import BinanceBroker
+                    _broker = BinanceBroker(api_key=_api_key, secret_key=_secret_key, testnet=True)
+
             console.print("[yellow]Ejecutando backtest...[/]")
             try:
                 result = run_backtest(
@@ -2228,6 +2248,7 @@ def _builder_flow(
                     symbol=symbol,
                     timeframe=timeframe,
                     period=period,
+                    broker=_broker,
                 )
             except Exception as e:
                 console.print(f"[red]Error en backtest: {e}[/]")

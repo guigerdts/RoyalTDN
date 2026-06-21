@@ -43,10 +43,10 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: PR #3 — NaN guard + crypto broker routing (Bugs 2, 5)
 
-- [ ] 3.1 `filters.py` `LiquidityFilter.filter()`: guard `df.empty or df["volume"].isna().all()` before `df["volume"].mean()`; log debug and `continue` on skip
-- [ ] 3.2 `backtesting.py` `_download_data()`: add `broker: Optional[BaseBroker] = None` param; when `"/" in symbol and broker`, call `broker.get_bars()` and normalize columns to lowercase OHLCV
-- [ ] 3.3 `backtesting.py` `run_backtest()`: accept optional `broker` param; forward to `_download_data()`
-- [ ] 3.4 `app.py` `_quick_backtest()` / `_builder_flow()`: wire BinanceBroker from env when symbol contains `/`; pass to `run_backtest()`
-- [ ] 3.5 Test: LiquidityFilter skips empty/NaN DataFrame without crash; logs debug message
-- [ ] 3.6 Test: `/` symbol routes to `broker.get_bars()`; stock symbol uses yfinance
-- [ ] 3.7 Test: no broker configured with `/` symbol raises clear error
+- [x] 3.1 `filters.py` `LiquidityFilter.filter()`: guard `df.empty or df["volume"].isna().all()` before `df["volume"].mean()`; log debug and `continue` on skip
+- [x] 3.2 `backtesting.py` `_download_data()`: add `broker: Optional[BaseBroker] = None` param; when `"/" in symbol and broker`, call `broker.get_bars()` and normalize columns to lowercase OHLCV
+- [x] 3.3 `backtesting.py` `run_backtest()`: accept optional `broker` param; forward to `_download_data()`
+- [x] 3.4 `app.py` `_quick_backtest()` / `_builder_flow()`: wire BinanceBroker from env when symbol contains `/`; pass to `run_backtest()`
+- [x] 3.5 Test: LiquidityFilter skips empty/NaN DataFrame without crash; logs debug message
+- [x] 3.6 Test: `/` symbol routes to `broker.get_bars()`; stock symbol uses yfinance
+- [x] 3.7 Test: no broker configured with `/` symbol raises clear error

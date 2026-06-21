@@ -359,6 +359,37 @@ def test_liquidity_filter_auth_error_isolation() -> None:
     print("  ✅ LiquidityFilter: auth error skipped, other symbols continue")
 
 
+def test_liquidity_filter_empty_dataframe() -> None:
+    """Empty DataFrame from broker skips gracefully (Bug 2)."""
+    f = LiquidityFilter(
+        min_volume=100_000, min_price=5.0,
+        brokers={"crypto": MagicMock(get_bars=MagicMock(return_value=pd.DataFrame()))},
+    )
+    client = MagicMock()
+    result = f.filter(["BTC/USD"], client)
+    assert result == []
+    print("  ✅ LiquidityFilter: empty DataFrame skipped without crash")
+
+
+def test_liquidity_filter_nan_volume() -> None:
+    """All-NaN volume DataFrame skips gracefully (Bug 2)."""
+    df_nan = pd.DataFrame({
+        "open": [100.0, 101.0],
+        "high": [102.0, 103.0],
+        "low": [99.0, 100.0],
+        "close": [101.0, 102.0],
+        "volume": [float("nan"), float("nan")],
+    })
+    f = LiquidityFilter(
+        min_volume=100_000, min_price=5.0,
+        brokers={"crypto": MagicMock(get_bars=MagicMock(return_value=df_nan))},
+    )
+    client = MagicMock()
+    result = f.filter(["BTC/USD"], client)
+    assert result == []
+    print("  ✅ LiquidityFilter: NaN volume skipped without crash")
+
+
 # ── Tests Scanner ───────────────────────────────────────────────────────
 
 def test_scanner_scan_with_mocks() -> None:
@@ -670,6 +701,8 @@ def main() -> int:
     test_liquidity_filter_retry_success_on_3rd()
     test_liquidity_filter_retry_max_exhausted()
     test_liquidity_filter_auth_abort()
+    test_liquidity_filter_empty_dataframe()
+    test_liquidity_filter_nan_volume()
 
     # Scanner
     test_scanner_scan_with_mocks()

@@ -7,6 +7,7 @@ import tempfile
 
 import pandas as pd
 import numpy as np
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -133,6 +134,63 @@ def test_run_backtest_no_trades():
     print(f"  ✅ No-trades config handled (error={result.get('error', 'none')})")
 
 
+# ── Bug 5: Crypto broker routing ───────────────────────────────────────
+
+
+def test_download_data_crypto_routes_to_broker():
+    """Symbol with / routes to broker.get_bars() (Bug 5)."""
+    from royaltdn.strategy.backtesting import _download_data
+    from unittest.mock import MagicMock
+
+    broker = MagicMock()
+    df = pd.DataFrame({
+        "open": [100.0],
+        "high": [101.0],
+        "low": [99.0],
+        "close": [100.5],
+        "volume": [1_000_000],
+    })
+    broker.get_bars.return_value = df
+
+    result = _download_data("BTC/USDT", "1D", "2 years", broker=broker)
+    assert result is not None
+    assert not result.empty
+    assert list(result.columns) == ["open", "high", "low", "close", "volume"]
+    broker.get_bars.assert_called_once()
+    print("  ✅ Crypto symbol routes to broker.get_bars()")
+
+
+@patch("yfinance")
+def test_download_data_stock_uses_yfinance(mock_yf):
+    """Stock symbol without / uses yfinance (Bug 5)."""
+    from royaltdn.strategy.backtesting import _download_data
+
+    mock_ticker = MagicMock()
+    mock_yf.Ticker.return_value = mock_ticker
+    df = pd.DataFrame({
+        "Open": [100.0],
+        "High": [101.0],
+        "Low": [99.0],
+        "Close": [100.5],
+        "Volume": [1_000_000],
+    })
+    mock_ticker.history.return_value = df
+
+    result = _download_data("SPY", "1D", "2 years")
+    assert result is not None
+    mock_yf.Ticker.assert_called_once_with("SPY")
+    print("  ✅ Stock symbol uses yfinance")
+
+
+def test_download_data_crypto_no_broker_returns_none():
+    """Symbol with / but no broker returns None (Bug 5)."""
+    from royaltdn.strategy.backtesting import _download_data
+
+    result = _download_data("BTC/USDT", "1D", "2 years")
+    assert result is None
+    print("  ✅ Crypto without broker returns None")
+
+
 # ── Main ────────────────────────────────────────────────────────────────
 
 
@@ -147,6 +205,11 @@ def main():
     test_compute_metrics_with_trades()
     test_run_backtest_invalid_config()
     test_run_backtest_no_trades()
+
+    # Bug 5: Crypto broker routing
+    test_download_data_crypto_routes_to_broker()
+    test_download_data_stock_uses_yfinance()
+    test_download_data_crypto_no_broker_returns_none()
 
     print()
     print("✅ TODOS LOS TESTS PASARON")

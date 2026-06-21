@@ -172,7 +172,11 @@ class LiquidityFilter:
                     bars = data_client.get_stock_bars(request)
                     df = bars.df
 
-                if df.empty:
+                if df.empty or df["volume"].isna().all():
+                    logger.debug(
+                        "LiquidityFilter[{}]: empty/all-NaN volume data — skipping",
+                        symbol,
+                    )
                     continue
 
                 avg_volume = df["volume"].mean()

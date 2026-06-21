@@ -41,9 +41,38 @@ PERIOD_DAYS_MAP: dict[str, int] = {
 
 
 def _download_data(
-    symbol: str, timeframe: str, period: str, max_retries: int = 2,
+    symbol: str,
+    timeframe: str,
+    period: str,
+    max_retries: int = 2,
+    broker: Optional["BaseBroker"] = None,
 ) -> Optional[pd.DataFrame]:
-    """Download OHLCV data from yfinance."""
+    """Download OHLCV data — yfinance for stocks, broker for crypto."""
+    from royaltdn.brokers.base import BaseBroker
+
+    # Crypto routing via broker
+    if "/" in symbol and broker is not None:
+        days = PERIOD_DAYS_MAP.get(period, 365)
+        start = pd.Timestamp.now() - pd.Timedelta(days=days)
+        end = pd.Timestamp.now()
+        bars = broker.get_bars(
+            symbol,
+            timeframe,
+            start.to_pydatetime(),
+            end.to_pydatetime(),
+        )
+        if bars is not None and not bars.empty:
+            bars.columns = [c.lower() for c in bars.columns]
+            required = {"open", "high", "low", "close", "volume"}
+            if required.issubset(bars.columns):
+                return bars
+        return None
+
+    # Fall through to yfinance for stocks
+    # Crypto symbols without a broker cannot be fetched
+    if "/" in symbol:
+        return None
+
     import yfinance as yf
 
     interval = YF_INTERVAL_MAP.get(timeframe, "1d")
@@ -182,6 +211,7 @@ def run_backtest(
     init_cash: float = 10_000.0,
     fee_pct: float = 0.001,  # 0.1%
     slippage_pct: float = 0.0005,  # 0.05%
+    broker: Optional["BaseBroker"] = None,
 ) -> dict:
     """Run a full backtest for a DynamicStrategy config.
 
@@ -193,6 +223,7 @@ def run_backtest(
         init_cash: Initial capital.
         fee_pct: Fee per trade as fraction.
         slippage_pct: Slippage per trade as fraction.
+        broker: Optional broker for crypto data routing.
 
     Returns:
         Dict with keys: metrics (dict), equity_series (list), drawdown_series (list),
@@ -207,7 +238,7 @@ def run_backtest(
         return {"error": f"Invalid config: {err}"}
 
     # Download data
-    df = _download_data(symbol, timeframe, period)
+    df = _download_data(symbol, timeframe, period, broker=broker)
     if df is None or df.empty:
         return {"error": f"Could not download data for {symbol}"}
 
