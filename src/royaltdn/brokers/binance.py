@@ -137,10 +137,20 @@ class BinanceBroker(BaseBroker):
             "limit": 500,
         }
 
-        data = self._signed_request("GET", "/api/v3/klines", params)
+        # /api/v3/klines is a PUBLIC endpoint — no timestamp/signature needed.
+        url = f"{self._base_url}/api/v3/klines"
+        resp = requests.get(url, params=params, timeout=10)
 
         # Guard: if Binance returns an error object (dict with "code"/"msg")
         # instead of a klines array, log and return empty.
+        if not resp.ok:
+            logger.warning(
+                "BinanceBroker: klines HTTP {} for {} — {}",
+                resp.status_code, params.get("symbol", symbol), resp.text[:200],
+            )
+            return pd.DataFrame()
+
+        data = resp.json()
         if isinstance(data, dict):
             logger.warning(
                 "BinanceBroker: klines API error for {} — {}",
