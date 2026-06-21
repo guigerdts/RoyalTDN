@@ -1,3 +1,6 @@
+import sys
+sys.dont_write_bytecode = True
+
 # RoyalTDN — Algoritmic Trading Bot
 #
 # Roadmap Fase 0: Los Cimientos

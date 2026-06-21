@@ -39,6 +39,7 @@ from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
 from royaltdn.strategy.momentum_atr import MomentumATRStrategy
 from royaltdn.strategy.factor_rotation import FactorRotationStrategy
 from royaltdn.scanner import Scanner
+from royaltdn.scanner.universe import is_crypto_symbol
 from royaltdn.execution.twap import execute_twap
 from royaltdn.risk.portfolio import PortfolioPositionManager
 from royaltdn.risk_manager import (
@@ -337,7 +338,7 @@ class Orchestrator:
         Returns:
             BaseBroker instance.
         """
-        if "/" in symbol and "crypto" in self._brokers:
+        if is_crypto_symbol(symbol) and "crypto" in self._brokers:
             return self._brokers["crypto"]
         return self._brokers.get("stocks", self._broker)
 

@@ -44,6 +44,12 @@ class AssetUniverse:
         "DOGE/USD", "SHIB/USD",
     ]
 
+    DEFAULT_CRYPTO_BINANCE: list[str] = [
+        "BTCUSDT", "ETHUSDT", "LTCUSDT", "BCHUSDT",
+        "LINKUSDT", "UNIUSDT", "AAVEUSDT", "MATICUSDT",
+        "DOGEUSDT", "SHIBUSDT",
+    ]
+
     VALID_UNIVERSE_TYPES = ("etfs", "sp500", "all", "crypto")
 
     def __init__(
@@ -53,10 +59,12 @@ class AssetUniverse:
         use_paper: bool = True,
         universe_type: str = "all",
         cache_ttl: int = 300,
+        broker_type: str = "alpaca",
     ):
         self.api_key = api_key
         self.secret_key = secret_key
         self.use_paper = use_paper
+        self._broker_type = broker_type
 
         # Validate universe_type
         if universe_type not in self.VALID_UNIVERSE_TYPES:
@@ -136,7 +144,9 @@ class AssetUniverse:
         return self.DEFAULT_ETFS.copy()
 
     def _get_default_crypto(self) -> List[str]:
-        """Returns a copy of DEFAULT_CRYPTO. No API call needed."""
+        """Returns a copy of the broker-specific crypto constant. No API call needed."""
+        if self._broker_type == "binance":
+            return self.DEFAULT_CRYPTO_BINANCE.copy()
         return self.DEFAULT_CRYPTO.copy()
 
     def _get_sp500_via_sdk(self) -> List[str]:
@@ -203,3 +213,20 @@ class AssetUniverse:
                 result.append(sym)
 
         return result
+
+
+# ── Crypto symbol helpers ──────────────────────────────────────────────
+
+_CRYPTO_SYMBOLS: frozenset = frozenset(
+    s.replace("/", "").upper() for s in AssetUniverse.DEFAULT_CRYPTO
+) | frozenset(AssetUniverse.DEFAULT_CRYPTO_BINANCE)
+
+
+def is_crypto_symbol(symbol: str) -> bool:
+    """Return True if symbol is a known crypto pair (with or without slash).
+
+    Checks for a ``"/"`` in the symbol AND membership in a frozenset built
+    from the union of ``DEFAULT_CRYPTO`` (Alpaca) and ``DEFAULT_CRYPTO_BINANCE``
+    — so both ``"BTC/USD"`` and ``"BTCUSDT"`` are recognised as crypto.
+    """
+    return "/" in symbol or symbol.upper() in _CRYPTO_SYMBOLS
