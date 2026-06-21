@@ -26,12 +26,12 @@ Chain strategy: feature-branch-chain
 
 ## Phase 1: PR #1 — Mock filter, crypto default, version setdefault (Bugs 1, 3, 4)
 
-- [ ] 1.1 `app.py` `_show_scanner()`: filter out entries where `strategy == "mock"` from `top_signals` before table render; use filtered list for empty check
-- [ ] 1.2 `app.py` `_quick_backtest()`: set `default_symbol = "BTC/USDT"` when `os.getenv("SCANNER_UNIVERSE") == "crypto"`, else `"SPY"`
-- [ ] 1.3 `app.py` `_quick_backtest()`: add `config.setdefault("version", 1)` one line before `validate_config(config)`
-- [ ] 1.4 Test: scanner with all mock entries shows empty state; mixed entries show only real signals
-- [ ] 1.5 Test: crypto universe defaults to BTC/USDT; stocks universe defaults to SPY
-- [ ] 1.6 Test: config missing version passes validation; explicit version != 1 still raises error
+- [x] 1.1 `app.py` `_show_scanner()`: filter out entries where `strategy == "mock"` from `top_signals` before table render; use filtered list for empty check
+- [x] 1.2 `app.py` `_quick_backtest()`: set `default_symbol = "BTC/USDT"` when `os.getenv("SCANNER_UNIVERSE") == "crypto"`, else `"SPY"`
+- [x] 1.3 `app.py` `_quick_backtest()`: add `config.setdefault("version", 1)` one line before `validate_config(config)`
+- [x] 1.4 Test: scanner with all mock entries shows empty state; mixed entries show only real signals
+- [x] 1.5 Test: crypto universe defaults to BTC/USDT; stocks universe defaults to SPY
+- [x] 1.6 Test: config missing version passes validation; explicit version != 1 still raises error
 
 ## Phase 2: PR #2 — Header timing fix (Bug 6)
 

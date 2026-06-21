@@ -1401,8 +1401,13 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                 f"pero ninguna estrategia gener\u00f3 se\u00f1ales.[/]"
             )
 
-        elif top_signals:
-            console.print(_render_signals_table(top_signals))
+        else:
+            real_signals = [s for s in top_signals if s.get("strategy") != "mock"]
+            if real_signals:
+                console.print(_render_signals_table(real_signals))
+            else:
+                console.print()
+                console.print("[dim]No se generaron se\u00f1ales en este escaneo.[/]")
 
         # ── Prompt and force scan ─────────────────────────────────────
         console.print()
@@ -1458,8 +1463,13 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                     f"[cyan]\u2139\ufe0f  {passed_sym} s\u00edmbolos pasaron el filtro "
                     f"pero ninguna estrategia gener\u00f3 se\u00f1ales.[/]"
                 )
-            elif top_signals:
-                console.print(_render_signals_table(top_signals))
+            else:
+                real_signals = [s for s in top_signals if s.get("strategy") != "mock"]
+                if real_signals:
+                    console.print(_render_signals_table(real_signals))
+                else:
+                    console.print()
+                    console.print("[dim]No se generaron se\u00f1ales en este escaneo.[/]")
 
         console.print("\n[dim]Presiona Enter para volver[/]")
         _wait_enter()
@@ -1659,6 +1669,7 @@ def _input_confirm(prompt: str) -> str:
 
 def _quick_backtest(config: dict, console, logs_dir: str) -> None:
     """Run a quick backtest from the strategy submenu — no save option."""
+    import os
     from rich.table import Table
 
     # Determine defaults from config
@@ -1670,7 +1681,10 @@ def _quick_backtest(config: dict, console, logs_dir: str) -> None:
         if isinstance(syms, list) and syms:
             default_symbol = syms[0]
     if not default_symbol:
-        default_symbol = "SPY"
+        if os.getenv("SCANNER_UNIVERSE", "all") == "crypto":
+            default_symbol = "BTC/USDT"
+        else:
+            default_symbol = "SPY"
 
     default_timeframe = config.get("timeframe", "1D")
     default_period = "2y"
@@ -1690,6 +1704,7 @@ def _quick_backtest(config: dict, console, logs_dir: str) -> None:
     from royaltdn.strategy.backtesting import run_backtest as _run_bt
     from royaltdn.strategy.schema import validate_config
 
+    config.setdefault("version", 1)
     ok, err = validate_config(config)
     if not ok:
         console.print(f"[red]Configuraci\u00f3n inv\u00e1lida: {err}[/]")
