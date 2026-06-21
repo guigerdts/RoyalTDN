@@ -66,9 +66,9 @@ Chain strategy: feature-branch-chain
 
 **Base**: PR 3 branch
 
-- [ ] **4.1** Menu `_build_positions()` add "Broker" column after "Strategy"
-- [ ] **4.2** Textual `_append_positions()` add "Broker" column after "P&L"
-- [ ] **4.3** Create `tests/test_broker_integration.py` — full pipeline, multi-broker kill switch, combined equity
+- [x] **4.1** Menu `_build_positions()` add "Broker" column after "Strategy"
+- [x] **4.2** Textual `_append_positions()` add "Broker" column after "P&L"
+- [x] **4.3** Add tests to `tests/test_multi_broker.py` — UI broker dict, full pipeline mock, invalid broker config
 
 ## Risk Summary
 

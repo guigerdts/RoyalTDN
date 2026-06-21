@@ -136,6 +136,7 @@ class DashboardScreen(Screen):
         table.add_column("Qty", justify="right")
         table.add_column("Entry", justify="right")
         table.add_column("P&L", justify="right")
+        table.add_column("Broker", style="yellow")
 
         for pos in positions:
             symbol = str(pos.get("symbol", "\u2014"))
@@ -147,7 +148,8 @@ class DashboardScreen(Screen):
             pnl_raw = pos.get("unrealized_pl", pos.get("pnl", 0))
             pnl = f"${float(pnl_raw):+,.2f}" if isinstance(pnl_raw, (int, float)) else "\u2014"
             pnl_style = "green" if (isinstance(pnl_raw, (int, float)) and pnl_raw >= 0) else "red"
-            table.add_row(symbol, side, qty, entry, f"[{pnl_style}]{pnl}[/]")
+            broker = str(pos.get("broker", "\u2014"))
+            table.add_row(symbol, side, qty, entry, f"[{pnl_style}]{pnl}[/]", broker)
 
         sections.append(Panel(table, title="Open Positions", border_style="white"))
 

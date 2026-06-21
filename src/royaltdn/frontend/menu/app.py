@@ -1051,6 +1051,7 @@ def _build_positions(
     table.add_column("Current", justify="right")
     table.add_column("P&L", justify="right")
     table.add_column("Strategy", style="cyan")
+    table.add_column("Broker", style="yellow")
     table.add_column("Source", style="dim white")
 
     for pos in positions:
@@ -1077,8 +1078,9 @@ def _build_positions(
             else "red"
         )
         strategy = str(pos.get("strategy", "\u2014"))
+        broker = str(pos.get("broker", "\u2014"))
         source = "Scanner" if strategy == "scanner" else "Legacy"
-        table.add_row(symbol, qty, entry, current, f"[{pnl_style}]{pnl}[/]", strategy, source)
+        table.add_row(symbol, qty, entry, current, f"[{pnl_style}]{pnl}[/]", strategy, broker, source)
 
     sections.append(Panel(table, title="Open Positions", border_style="white"))
 

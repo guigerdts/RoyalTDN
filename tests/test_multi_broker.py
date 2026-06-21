@@ -433,3 +433,166 @@ class TestPPMBackwardCompat:
         pos = ppm.get_position("BTC/USD")
         assert pos is not None
         assert pos.broker == "binance"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 10. UI position dict includes broker (PR 4 — 4.1/4.2)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestUIPositionDictIncludesBroker:
+    """_build_positions_list() returns dicts with broker key for UI display."""
+
+    def _make_orchestrator(self):
+        from royaltdn.orchestrator import Orchestrator
+        from royaltdn.risk.portfolio import PortfolioPositionManager
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._portfolio = PortfolioPositionManager()
+        orch._last_known_price = 150.0
+        return orch
+
+    def test_ui_position_dict_includes_broker(self):
+        """Each position dict from _build_positions_list() has a broker key."""
+        orch = self._make_orchestrator()
+
+        orch._portfolio.open_position(
+            "AAPL", qty=10, entry_price=150.0,
+            strategy="scanner", broker="alpaca",
+        )
+        orch._portfolio.open_position(
+            "BTC/USD", qty=0.5, entry_price=50000.0,
+            strategy="scanner", broker="binance",
+        )
+
+        result = orch._build_positions_list()
+        assert len(result) == 2
+
+        for pos_dict in result:
+            assert "broker" in pos_dict, f"Missing broker key in {pos_dict}"
+
+        aapl = [p for p in result if p["symbol"] == "AAPL"][0]
+        assert aapl["broker"] == "alpaca"
+
+        btc = [p for p in result if p["symbol"] == "BTC/USD"][0]
+        assert btc["broker"] == "binance"
+
+    def test_ui_position_dict_broker_empty_list(self):
+        """_build_positions_list() returns empty list when no positions."""
+        orch = self._make_orchestrator()
+        assert orch._build_positions_list() == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 11. Full pipeline mock (PR 4 — 4.3)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestFullPipelineMock:
+    """End-to-end broker routing: both brokers, verify per-symbol delegation."""
+
+    def test_full_pipeline_broker_routing(self, mock_brokers):
+        """Stock vs crypto symbols route through correct broker for ALL operations.
+
+        Verifies _get_broker_for_symbol, _is_market_open, and close_position
+        all delegate to the correct broker instance.
+        """
+        from royaltdn.orchestrator import Orchestrator
+        from royaltdn.risk.portfolio import PortfolioPositionManager
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._brokers = mock_brokers
+        orch._broker = mock_brokers.get("stocks")
+        orch._portfolio = PortfolioPositionManager()
+
+        # 1. Symbol → broker routing
+        assert orch._get_broker_for_symbol("SPY") is mock_brokers["stocks"]
+        assert orch._get_broker_for_symbol("AAPL") is mock_brokers["stocks"]
+        assert orch._get_broker_for_symbol("BTC/USD") is mock_brokers["crypto"]
+        assert orch._get_broker_for_symbol("ETH/USD") is mock_brokers["crypto"]
+
+        # 2. is_market_open delegates per symbol
+        orch._is_market_open("MSFT")
+        mock_brokers["stocks"].is_market_open.assert_called_with("MSFT")
+
+        orch._is_market_open("BTC/USD")
+        mock_brokers["crypto"].is_market_open.assert_called_with("BTC/USD")
+
+        # 3. close_position delegates per symbol
+        orch.close_position("AAPL")
+        mock_brokers["stocks"].close_position.assert_called_once_with("AAPL")
+
+        mock_brokers["crypto"].close_position.reset_mock()
+        orch.close_position("ETH/USD")
+        mock_brokers["crypto"].close_position.assert_called_once_with("ETH/USD")
+
+    def test_full_pipeline_stock_only_fallback(self, mock_stocks_broker):
+        """Without crypto broker, all symbols route to stocks broker."""
+        from royaltdn.orchestrator import Orchestrator
+        from royaltdn.risk.portfolio import PortfolioPositionManager
+
+        brokers = {"stocks": mock_stocks_broker}
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._brokers = brokers
+        orch._broker = mock_stocks_broker
+        orch._portfolio = PortfolioPositionManager()
+
+        # Even crypto symbols route to stocks fallback
+        assert orch._get_broker_for_symbol("BTC/USD") is mock_stocks_broker
+        assert orch._get_broker_for_symbol("SPY") is mock_stocks_broker
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 12. Invalid broker config (PR 4 — 4.3)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestInvalidBrokerConfig:
+    """Empty or invalid brokers dict: graceful fallback, no crashes."""
+
+    def test_empty_brokers_dict(self):
+        """Empty brokers dict returns 0 equity, empty positions, None routing.
+
+        No crash or exception at any point.
+        """
+        from royaltdn.orchestrator import Orchestrator
+        from royaltdn.risk.portfolio import PortfolioPositionManager
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._brokers = {}
+        orch._broker = None
+        orch._portfolio = PortfolioPositionManager()
+        orch._last_known_equity = 0.0
+        orch._initial_equity = 0.0
+
+        # Equity returns 0.0 (no crash)
+        assert orch._get_current_equity() == 0.0
+
+        # Positions list returns [] (no crash)
+        assert orch._build_positions_list() == []
+
+        # Broker routing returns None
+        assert orch._get_broker_for_symbol("SPY") is None
+        assert orch._get_broker_for_symbol("BTC/USD") is None
+
+    def test_empty_brokers_build_positions_list(self):
+        """PPM with positions but empty brokers: positions still listed."""
+        from royaltdn.orchestrator import Orchestrator
+        from royaltdn.risk.portfolio import PortfolioPositionManager
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._brokers = {}
+        orch._broker = None
+        orch._portfolio = PortfolioPositionManager()
+        orch._last_known_price = 200.0
+
+        # Position tracked in PPM (added via _execute_signal, not broker sync)
+        orch._portfolio.open_position(
+            "AAPL", qty=10, entry_price=150.0,
+            strategy="scanner", broker="alpaca",
+        )
+
+        result = orch._build_positions_list()
+        assert len(result) == 1
+        assert result[0]["symbol"] == "AAPL"
+        assert result[0]["broker"] == "alpaca"
