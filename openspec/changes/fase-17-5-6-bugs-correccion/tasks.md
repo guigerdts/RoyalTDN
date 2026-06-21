@@ -35,11 +35,11 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: PR #2 — Header timing fix (Bug 6)
 
-- [ ] 2.1 `app.py` `_print_header()`: add `logs_dir: str = "logs"` parameter; pass to `_is_bot_paused()`
-- [ ] 2.2 `app.py` `_show_control()`: after `resume_bot(logs_dir)` returns, write `{logs_dir}/status.json` with `bot_status: ONLINE, paused: false, timestamp` using `_atomic_write`
-- [ ] 2.3 `app.py`: thread `logs_dir` through all `_print_header()` and `_is_bot_paused()` call sites
-- [ ] 2.4 Test: resume writes status.json synchronously; header reflects ONLINE on next render
-- [ ] 2.5 Test: `logs_dir` threaded correctly — status.json written to correct path
+- [x] 2.1 `app.py` `_print_header()`: add `logs_dir: str = "logs"` parameter; pass to `_is_bot_paused()`
+- [x] 2.2 `app.py` `_show_control()`: after `resume_bot(logs_dir)` returns, write `{logs_dir}/status.json` with `bot_status: ONLINE, paused: false, timestamp` using `_atomic_write`
+- [x] 2.3 `app.py`: thread `logs_dir` through all `_print_header()` and `_is_bot_paused()` call sites
+- [x] 2.4 Test: resume writes status.json synchronously; header reflects ONLINE on next render
+- [x] 2.5 Test: `logs_dir` threaded correctly — status.json written to correct path
 
 ## Phase 3: PR #3 — NaN guard + crypto broker routing (Bugs 2, 5)
 
