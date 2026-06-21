@@ -107,15 +107,35 @@ SHOW status (Estado, PAUSADO bold yellow when paused, Modo, Uptime). Submenu: 1.
 | Invalid | — | "abc" | error+retry |
 | Corrupt file | invalid JSON | open | defaults silently |
 
-### Requirement: PAUSADO Status Display
+### Requirement: PAUSADO Status Display — Immediate refresh on resume
 
 MUST render `bot_status` in header, Control, Dashboard KPI. `_log_activity()` on pause/resume.
 
-| Scenario | GIVEN | WHEN | THEN |
-|----------|-------|------|------|
-| Pause → PAUSADO | ONLINE | user pauses | header "PAUSADO" bold yellow, Control "Bot: PAUSADO", Dashboard KPI "PAUSADO" |
-| Resume → ONLINE | PAUSADO | user resumes | header + Control "ONLINE" |
-| Immediate switch | ONLINE | pause_signal.json `action:"pause"` | status.json `bot_status` → "PAUSADO" |
+On resume, the status.json rewrite SHALL be synchronous (not deferred to a thread). The header SHALL read `logs_dir` parameter (instead of a hardcoded `logs/` path) to locate `status.json`. After writing, the system SHALL wait for the file to be readable before returning.
+(Previously: status.json could be written asynchronously, causing stale "PAUSADO" in header after resume)
+
+#### Scenario: Pause → PAUSADO
+- GIVEN bot ONLINE
+- WHEN user pauses
+- THEN header "PAUSADO" bold yellow, Control "Bot: PAUSADO", Dashboard KPI "PAUSADO"
+
+#### Scenario: Resume → ONLINE — immediate refresh
+- GIVEN bot was PAUSADO
+- WHEN user resumes
+- THEN status.json is rewritten synchronously
+- AND the header reflects "ONLINE" on the next render cycle
+- AND no stale "PAUSADO" remains
+
+#### Scenario: logs_dir parameter threaded correctly
+- GIVEN the menu uses a `logs_dir` parameter (not hardcoded `"logs/"`)
+- WHEN resume writes status.json
+- THEN the file path is `{logs_dir}/status.json`
+- AND the file is readable immediately after write
+
+#### Scenario: Immediate switch via signal file
+- GIVEN ONLINE status
+- WHEN pause_signal.json `action:"pause"` is detected
+- THEN status.json `bot_status` → "PAUSADO" synchronously
 
 ### Requirement: Menu Badges
 

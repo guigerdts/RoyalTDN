@@ -1,10 +1,6 @@
-# Display — Specification
+# Delta for scanner-display
 
-## Purpose
-
-Fix the scanner display in the interactive menu (`_show_scanner`) so it correctly reads `last_scan["top_signals"]` instead of the non-existent `last_scan["symbols"]` key. Show a ranked table with Symbol, Action, Price, Score, and Strategy columns. Display a metrics panel with total symbols, passed, signals, and elapsed time.
-
-## Requirements
+## MODIFIED Requirements
 
 ### REQ-DISPLAY-FIX — Menú scanner usa top_signals y tabla rankeada
 
@@ -14,6 +10,7 @@ Fix the scanner display in the interactive menu (`_show_scanner`) so it correctl
 - After a forced scan (trigger_scanner + sleep), the screen SHALL reload and display the updated results.
 - **Before rendering, SHALL filter out entries where `strategy == "mock"`.** The empty/missing check SHALL use the filtered list. When the filtered list is empty or `top_signals` is empty/missing, SHALL show an empty state message: `"No hay resultados de escaneo aún."`
 - The post-scan metrics panel SHALL be shown regardless of whether top_signals is empty.
+(Previously: top_signals displayed as-is without filtering mock entries; empty check only considered raw list)
 
 #### Scenario: Tabla usa top_signals en vez de symbols
 
@@ -47,13 +44,6 @@ Fix the scanner display in the interactive menu (`_show_scanner`) so it correctl
 - THEN `state_loader.load_scanner_results()` is called again
 - AND the table re-renders with updated `top_signals`
 
-#### Scenario: Empty state cuando no hay top_signals
-
-- GIVEN `last_scan` is `{}` or `{"top_signals": []}`
-- WHEN `_show_scanner` renders
-- THEN the text `"No hay resultados de escaneo aún."` is displayed in dim style
-- AND no table is rendered
-
 #### Scenario: All mock entries show empty state
 
 - GIVEN `last_scan["top_signals"]` contains only entries with `strategy: "mock"`
@@ -76,6 +66,13 @@ Fix the scanner display in the interactive menu (`_show_scanner`) so it correctl
 - WHEN the table is rendered
 - THEN all 5 entries appear (no filtering applied)
 - AND behavior is identical to pre-fix flow
+
+#### Scenario: Empty state cuando no hay top_signals
+
+- GIVEN `last_scan` is `{}` or `{"top_signals": []}`
+- WHEN `_show_scanner` renders
+- THEN the text `"No hay resultados de escaneo aún."` is displayed in dim style
+- AND no table is rendered
 
 #### Scenario: Scan history muestra datos correctos
 
@@ -113,21 +110,3 @@ Fix the scanner display in the interactive menu (`_show_scanner`) so it correctl
 - THEN the BUY action is displayed with green ANSI color
 - AND the SELL action is displayed with red ANSI color
 - AND no 24-bit hex colors are used
-
-### REQ-DISPLAY-CRYPTO — Crypto universe label in scanner screen
-
-`_show_scanner()` MUST include `"crypto": "Crypto (10 pairs)"` in the `universe_label` dictionary so that `SCANNER_UNIVERSE=crypto` renders `"Universo: Crypto (10 pairs)"`.
-
-#### Scenario: crypto universe label renders correctly
-
-- GIVEN `SCANNER_UNIVERSE=crypto`
-- WHEN `_show_scanner()` renders the universe info panel
-- THEN the label `"Crypto (10 pairs)"` is displayed
-- AND the text `"Universo: Crypto (10 pairs)"` appears in the panel
-
-#### Scenario: Other universe labels unchanged
-
-- GIVEN `SCANNER_UNIVERSE=sp500`
-- WHEN `_show_scanner()` renders
-- THEN the label shows `"S&P 500"` (unchanged from existing behavior)
-- AND `"etfs"` and `"all"` labels are also unchanged

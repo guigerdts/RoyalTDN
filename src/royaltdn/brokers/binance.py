@@ -10,11 +10,12 @@ Mapping:  https://testnet.binance.vision  (testnet)
 import hashlib
 import hmac
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import pandas as pd
 import requests
+from loguru import logger
 
 from royaltdn.brokers.base import BaseBroker, OrderResult
 
@@ -99,13 +100,16 @@ class BinanceBroker(BaseBroker):
         self,
         symbol: str,
         timeframe: str,
-        start: datetime,
-        end: datetime,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
     ) -> pd.DataFrame:
         """Return OHLCV klines from Binance as a DataFrame.
 
         Columns: timestamp (index), open, high, low, close, volume.
         Uses the GET /api/v3/klines endpoint.
+
+        Calculates startTime/endTime in UTC with millisecond precision.
+        Default window: last 90 days when start/end are not provided.
         """
         interval_map = {
             "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
@@ -114,30 +118,73 @@ class BinanceBroker(BaseBroker):
         }
         interval = interval_map.get(timeframe, "1h")
 
+        # Compute timestamps in UTC with millisecond precision.
+        end_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        start_ts = int(
+            (datetime.now(timezone.utc) - timedelta(days=90)).timestamp() * 1000
+        )
+
+        logger.info(
+            "BinanceBroker: {} — startTime={}, endTime={}",
+            self.normalize_symbol(symbol), start_ts, end_ts,
+        )
+
         params = {
             "symbol": self.normalize_symbol(symbol),
             "interval": interval,
-            "startTime": int(start.timestamp() * 1000),
-            "endTime": int(end.timestamp() * 1000),
+            "startTime": start_ts,
+            "endTime": end_ts,
             "limit": 500,
         }
 
-        data = self._signed_request("GET", "/api/v3/klines", params)
+        # /api/v3/klines is a PUBLIC endpoint — no timestamp/signature needed.
+        url = f"{self._base_url}/api/v3/klines"
+        resp = requests.get(url, params=params, timeout=10)
+
+        # Guard: if Binance returns an error object (dict with "code"/"msg")
+        # instead of a klines array, log and return empty.
+        if not resp.ok:
+            logger.warning(
+                "BinanceBroker: klines HTTP {} for {} — {}",
+                resp.status_code, params.get("symbol", symbol), resp.text[:200],
+            )
+            return pd.DataFrame()
+
+        data = resp.json()
+        if isinstance(data, dict):
+            logger.warning(
+                "BinanceBroker: klines API error for {} — {}",
+                params.get("symbol", symbol),
+                data.get("msg", data),
+            )
+            return pd.DataFrame()
 
         rows = []
         for k in data:
-            rows.append({
-                "timestamp": datetime.fromtimestamp(k[0] / 1000),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            })
+            try:
+                rows.append({
+                    "timestamp": datetime.fromtimestamp(k[0] / 1000),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                })
+            except (IndexError, ValueError, TypeError) as exc:
+                logger.warning(
+                    "BinanceBroker: skipping malformed kline for {} — {}",
+                    params.get("symbol", symbol), exc,
+                )
+                continue
 
         df = pd.DataFrame(rows)
         if not df.empty:
             df.set_index("timestamp", inplace=True)
+
+        logger.info(
+            "BinanceBroker: {} — {} velas obtenidas (intervalo={})",
+            params.get("symbol", symbol), len(df), interval,
+        )
         return df
 
     # ── Orders ───────────────────────────────────────────────────────────

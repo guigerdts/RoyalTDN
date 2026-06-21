@@ -149,6 +149,10 @@ class LiquidityFilter:
                         df = crypto_broker.get_bars(
                             symbol, timeframe="1d", start=start, end=end,
                         )
+                        logger.info(
+                            "LiquidityFilter[crypto]: {} — {} velas obtenidas",
+                            symbol, len(df),
+                        )
                     elif crypto_data_client is not None:
                         request = CryptoBarsRequest(
                             symbol_or_symbols=symbol,
@@ -158,6 +162,10 @@ class LiquidityFilter:
                         )
                         bars = crypto_data_client.get_crypto_bars(request)
                         df = bars.df
+                        logger.info(
+                            "LiquidityFilter[crypto/alpaca]: {} — {} velas obtenidas",
+                            symbol, len(df),
+                        )
                     else:
                         logger.debug(
                             "LiquidityFilter: no crypto broker/client — skipping {}", symbol,
@@ -187,7 +195,7 @@ class LiquidityFilter:
                     passed.append(symbol)
 
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "LiquidityFilter: error for {}: {} — skipping", symbol, e,
                 )
                 continue
