@@ -40,13 +40,13 @@ class AssetUniverse:
 
     DEFAULT_CRYPTO = [
         "BTC/USD", "ETH/USD", "LTC/USD", "BCH/USD",
-        "LINK/USD", "UNI/USD", "AAVE/USD", "MATIC/USD",
+        "LINK/USD", "UNI/USD", "AAVE/USD", "POL/USD",
         "DOGE/USD", "SHIB/USD",
     ]
 
     DEFAULT_CRYPTO_BINANCE: list[str] = [
         "BTCUSDT", "ETHUSDT", "LTCUSDT", "BCHUSDT",
-        "LINKUSDT", "UNIUSDT", "AAVEUSDT", "MATICUSDT",
+        "LINKUSDT", "UNIUSDT", "AAVEUSDT", "POLUSDT",
         "DOGEUSDT", "SHIBUSDT",
     ]
 

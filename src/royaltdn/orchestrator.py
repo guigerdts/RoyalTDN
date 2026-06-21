@@ -644,7 +644,7 @@ class Orchestrator:
             "pnl_day_pct": pnl_day_pct,
             "drawdown": 0.0,
             "drawdown_pct": 0.0,
-            "sharpe": None,
+            "sharpe": 0.0,
             "equity_curve": equity_curve,
             "updated_at": now.isoformat(),
             "stale": self._equity_stale,
