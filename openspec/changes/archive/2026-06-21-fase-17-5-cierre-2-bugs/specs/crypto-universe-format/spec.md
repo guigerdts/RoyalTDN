@@ -1,12 +1,8 @@
-# Crypto Scanner Specification
+# Delta for crypto-universe-format
 
-## Purpose
+## MODIFIED Requirements
 
-Add Alpaca Crypto API support for 24/7 crypto pair scanning. Fix `int(b.volume)` crash on crypto Decimal volumes. Ten hardcoded pairs, no dynamic discovery.
-
-## Requirements
-
-### REQ-CRYPTO-UNIVERSE — Crypto asset universe
+### Requirement: REQ-CRYPTO-UNIVERSE — Crypto asset universe
 
 `AssetUniverse` MUST accept `"crypto"` as a valid universe type (via `VALID_UNIVERSE_TYPES`) and SHALL return exactly 10 hardcoded pairs from broker-aware constants when universe is `"crypto"`.
 
@@ -35,7 +31,7 @@ Add Alpaca Crypto API support for 24/7 crypto pair scanning. Fix `int(b.volume)`
 - THEN exactly the 10 `DEFAULT_CRYPTO_BINANCE` pairs are returned (e.g. `BTCUSDT`, `ETHUSDT`)
 - AND no API call is made
 
-### REQ-CRYPTO-LIQUIDITY — Liquidity filter routes crypto through broker, handles NaN
+### Requirement: REQ-CRYPTO-LIQUIDITY — Liquidity filter routes crypto through broker, handles NaN
 
 `LiquidityFilter` MUST detect `/` in the symbol to route to the correct data source:
 - `/` present → `broker.get_bars()` (uses the broker assigned to crypto assets)
@@ -77,36 +73,12 @@ Add Alpaca Crypto API support for 24/7 crypto pair scanning. Fix `int(b.volume)`
 
 #### Scenario: Valid crypto data passes filter
 
-- GIVEN `broker.get_bars()` returns a valid DataFrame with sufficient volume (> SCANNER_CRYPTO_MIN_VOLUME)
+- GIVEN `broker.get_bars()` returns a valid DataFrame with sufficient volume (`> SCANNER_CRYPTO_MIN_VOLUME`)
 - WHEN `LiquidityFilter.filter()` processes the symbol
 - THEN the symbol passes liquidity (returns True)
 - AND volume is computed correctly using float arithmetic
 
-### REQ-CRYPTO-SCANNER — Scanner multi-broker data routing
-
-`Scanner` MUST accept a `brokers: Dict[str, BaseBroker]` parameter in `__init__()`. `_batch_get_symbol_data()` SHALL route crypto symbols (containing `/`) to `brokers["crypto"].get_bars()` and stock symbols to `StockHistoricalDataClient`. MUST use `float(b.volume)` universally (replacing `int(b.volume)`).
-
-#### Scenario: Mixed batch routes by broker
-
-- GIVEN `_batch_get_symbol_data()` receives stock and crypto symbols
-- WHEN batches are formed
-- THEN stock symbols use `StockHistoricalDataClient` (unchanged)
-- AND crypto symbols use `brokers["crypto"].get_bars()`
-
-#### Scenario: Decimal volume does not crash
-
-- GIVEN a crypto bar with `volume=Decimal('1234.5678')`
-- WHEN `int(b.volume)` would have been called
-- THEN `float(b.volume)` succeeds
-- AND the signal is generated without `TypeError`
-
-#### Scenario: All-stock batch unchanged
-
-- GIVEN only stock symbols (no `/`)
-- WHEN `_batch_get_symbol_data()` runs
-- THEN behavior is identical to the pre-crypto flow
-
-### REQ-CRYPTO-MAIN — Multi-broker initialization in main.py
+### Requirement: REQ-CRYPTO-MAIN — Multi-broker initialization in main.py
 
 `main.py` MUST create `BinanceBroker` when `BINANCE_API_KEY` is set and pass it via a `brokers: Dict[str, BaseBroker]` dict to `Scanner.__init__()` and `Orchestrator.__init__()`.
 

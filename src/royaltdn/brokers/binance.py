@@ -15,6 +15,7 @@ from typing import List, Optional
 
 import pandas as pd
 import requests
+from loguru import logger
 
 from royaltdn.brokers.base import BaseBroker, OrderResult
 
@@ -124,20 +125,42 @@ class BinanceBroker(BaseBroker):
 
         data = self._signed_request("GET", "/api/v3/klines", params)
 
+        # Guard: if Binance returns an error object (dict with "code"/"msg")
+        # instead of a klines array, log and return empty.
+        if isinstance(data, dict):
+            logger.warning(
+                "BinanceBroker: klines API error for {} — {}",
+                params.get("symbol", symbol),
+                data.get("msg", data),
+            )
+            return pd.DataFrame()
+
         rows = []
         for k in data:
-            rows.append({
-                "timestamp": datetime.fromtimestamp(k[0] / 1000),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            })
+            try:
+                rows.append({
+                    "timestamp": datetime.fromtimestamp(k[0] / 1000),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                })
+            except (IndexError, ValueError, TypeError) as exc:
+                logger.warning(
+                    "BinanceBroker: skipping malformed kline for {} — {}",
+                    params.get("symbol", symbol), exc,
+                )
+                continue
 
         df = pd.DataFrame(rows)
         if not df.empty:
             df.set_index("timestamp", inplace=True)
+
+        logger.info(
+            "BinanceBroker: {} — {} velas obtenidas (intervalo={})",
+            params.get("symbol", symbol), len(df), interval,
+        )
         return df
 
     # ── Orders ───────────────────────────────────────────────────────────
