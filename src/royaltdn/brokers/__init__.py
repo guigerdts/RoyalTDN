@@ -6,5 +6,6 @@ for each exchange/broker (Alpaca, Binance, etc.).
 
 from .base import BaseBroker, OrderResult
 from .alpaca import AlpacaBroker
+from .binance import BinanceBroker
 
-__all__ = ["BaseBroker", "OrderResult", "AlpacaBroker"]
+__all__ = ["BaseBroker", "OrderResult", "AlpacaBroker", "BinanceBroker"]

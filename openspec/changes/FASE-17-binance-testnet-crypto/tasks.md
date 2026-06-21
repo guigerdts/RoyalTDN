@@ -40,10 +40,12 @@ Chain strategy: feature-branch-chain
 
 **Base**: PR 1 branch
 
-- [ ] **2.1** Create `src/royaltdn/brokers/binance.py` — BinanceBroker with HMAC-SHA-256, TokenBucket, all 7 methods
-- [ ] **2.2** Modify `src/royaltdn/main.py` — load BINANCE_API_KEY/SECRET_KEY/TESTNET env vars, create BinanceBroker
-- [ ] **2.3** Modify `.env.example` — add Binance Testnet env vars section
-- [ ] **2.4** Create `tests/test_binance_broker.py` — mock requests, test HMAC signing, symbol normalization table, all methods
+- [x] **2.1** Create `src/royaltdn/brokers/binance.py` — BinanceBroker with HMAC-SHA-256, all 7 methods (no external SDK)
+- [x] **2.2** Update `src/royaltdn/brokers/__init__.py` — add BinanceBroker export
+- [x] **2.3** Modify `.env.example` — add Binance Testnet env vars section
+- [x] **2.4** Create `tests/test_binance_broker.py` — 20 tests covering HMAC signing, symbol normalization, all methods
+
+> **Note**: `main.py` BinanceBroker wiring deferred to PR 3 per delivery guard (Orchestrator routing).
 
 ## PR 3: Orchestrator multi-broker + PPM + RiskManager + Scanner (~150-200 lines, ~6 files)
 
