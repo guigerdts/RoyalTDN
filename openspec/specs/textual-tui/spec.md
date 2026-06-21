@@ -53,6 +53,20 @@ All screens MUST render without errors when StateLoader returns empty dicts. Sho
 - WHEN DashboardScreen renders
 - THEN KPI cards show "—" AND no errors
 
+### Requirement: Dashboard Broker Column
+
+SHALL display a "Broker" column in the DashboardScreen's positions DataTable, positioned after the "P&L" column. Each row SHALL show the broker name (`"Alpaca"` or `"Binance"`) for the corresponding position.
+
+#### Scenario: Mixed broker positions
+- GIVEN positions from both Alpaca and Binance are loaded
+- WHEN the DashboardScreen renders the positions DataTable
+- THEN the "Broker" column shows `"Alpaca"` for stock positions and `"Binance"` for crypto positions
+
+#### Scenario: All Alpaca positions
+- GIVEN only Alpaca positions exist
+- WHEN the DashboardScreen renders the positions DataTable
+- THEN the "Broker" column shows `"Alpaca"` for all rows
+
 ### Requirement: Screen Composition
 
 Dashboard: Static KPIs, DataTable positions, ListView signals, Static risk, LogPanel.

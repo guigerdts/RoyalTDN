@@ -126,6 +126,20 @@ Detect signals/trades via mtime vs `_last_menu_visit`. Badges: "2 Scanner 🔔 (
 | New signals | 3 since last visit | badge on option 2 |
 | First visit | no baseline | none |
 
+### Requirement: Dashboard Broker Column
+
+SHALL display a "Broker" column in the positions table, positioned after the "Strategy" column. Each row SHALL show the broker name (`"Alpaca"` or `"Binance"`) for the corresponding position. The column header SHALL be `"Broker"` with `header_style="bold white"`.
+
+#### Scenario: Mixed broker positions
+- GIVEN positions from both Alpaca and Binance are loaded
+- WHEN the Dashboard renders the positions table
+- THEN the "Broker" column shows `"Alpaca"` for stock positions and `"Binance"` for crypto positions
+
+#### Scenario: All Alpaca positions
+- GIVEN only Alpaca positions exist
+- WHEN the Dashboard renders the positions table
+- THEN the "Broker" column shows `"Alpaca"` for all rows
+
 ### Requirement: Rendering
 
 MUST use `Console(color_system="standard")`. Colors: basic ANSI only (bold, dim, white, green, red, yellow, cyan, magenta, blue). Tables `show_header=True`, `border_style="white"`, `header_style="bold white"`. NO 24-bit hex. Empty: "—" or "[dim]No data[/]".
