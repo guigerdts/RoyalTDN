@@ -38,10 +38,16 @@ class BaseStrategy(ABC):
                 ...
     """
 
-    def __init__(self, timeframe: str = "1d"):
+    def __init__(self, timeframe: str = "1d", category: str = "swing"):
         self.timeframe = timeframe
+        self._category = category
 
     # ── Propiedades obligatorias ────────────────────────────────────────
+
+    @property
+    def category(self) -> str:
+        """Categoría de la estrategia (ej: 'swing', 'intraday')."""
+        return self._category
 
     @property
     @abstractmethod
@@ -52,13 +58,19 @@ class BaseStrategy(ABC):
     # ── Métodos abstractos ──────────────────────────────────────────────
 
     @abstractmethod
-    def generate_signal(self, data: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Genera una señal de trading a partir de un DataFrame OHLCV.
 
         Args:
             data: DataFrame con columnas ``open``, ``high``, ``low``,
                   ``close``, ``volume`` (al menos ``close`` es obligatorio).
                   Puede contener más columnas (depende de la estrategia).
+            symbol: Opcional. Símbolo del activo, usado para resolver
+                    perfiles de parámetros (crypto vs stocks).
 
         Returns:
             Dict con la estructura:
@@ -71,7 +83,6 @@ class BaseStrategy(ABC):
         """
         ...
 
-    @abstractmethod
     def get_parameters(self) -> Dict[str, Any]:
         """Retorna los parámetros actuales de la estrategia.
 
@@ -79,7 +90,7 @@ class BaseStrategy(ABC):
             Dict serializable con todos los parámetros,
             ej: {"fast_period": 5, "slow_period": 20}
         """
-        ...
+        return {"timeframe": self.timeframe, "category": self._category}
 
     # ── Métodos con implementación por defecto ─────────────────────────
 

@@ -137,6 +137,15 @@ class AssetUniverse:
         """Currently active universe type."""
         return self._universe_type
 
+    @universe_type.setter
+    def universe_type(self, value: str) -> None:
+        if value not in self.VALID_UNIVERSE_TYPES:
+            raise ValueError(
+                f"Invalid universe type: {value!r}. Valid: {self.VALID_UNIVERSE_TYPES}"
+            )
+        self._universe_type = value
+        self.invalidate_cache()
+
     # ── Private methods ───────────────────────────────────────────────
 
     def _get_etfs(self) -> List[str]:

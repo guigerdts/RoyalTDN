@@ -53,6 +53,20 @@ class BollingerRSIStrategy(BaseStrategy):
     o tras max_bars_hold barras.
     """
 
+    # Perfiles de parámetros duales crypto / stocks
+    _PROFILES: Dict[str, Dict[str, Any]] = {
+        "crypto": {
+            "bb_period": 15, "bb_std": 2.5,
+            "rsi_period": 10, "rsi_oversold": 25, "rsi_overbought": 75,
+            "max_bars_hold": 20, "timeframe": "5min",
+        },
+        "stocks": {
+            "bb_period": 20, "bb_std": 2.0,
+            "rsi_period": 14, "rsi_oversold": 30, "rsi_overbought": 70,
+            "max_bars_hold": 30, "timeframe": "15min",
+        },
+    }
+
     def __init__(
         self,
         bb_period: int = 20,
@@ -64,8 +78,9 @@ class BollingerRSIStrategy(BaseStrategy):
         exit_rsi_overbought: bool = True,
         max_bars_hold: int = 30,
         timeframe: str = "5min",
+        category: str = "swing",
     ):
-        super().__init__(timeframe=timeframe)
+        super().__init__(timeframe=timeframe, category=category)
         self.bb_period = bb_period
         self.bb_std = bb_std
         self.rsi_period = rsi_period
@@ -83,40 +98,77 @@ class BollingerRSIStrategy(BaseStrategy):
 
     # ── Indicadores ─────────────────────────────────────────────────────
 
-    def _compute_bollinger(self, close: pd.Series) -> Dict[str, pd.Series]:
+    def _compute_bollinger(
+        self,
+        close: pd.Series,
+        bb_period: Optional[int] = None,
+        bb_std: Optional[float] = None,
+    ) -> Dict[str, pd.Series]:
         """Calcula Bollinger Bands.
+
+        Args:
+            close: Serie de precios de cierre.
+            bb_period: Período opcional (default: self.bb_period).
+            bb_std: Desviación opcional (default: self.bb_std).
 
         Returns:
             dict con 'middle', 'upper', 'lower' (pd.Series).
         """
-        middle = compute_sma(close, self.bb_period)
-        std = close.rolling(window=self.bb_period, min_periods=self.bb_period).std()
-        upper = middle + self.bb_std * std
-        lower = middle - self.bb_std * std
+        _bb_period = bb_period if bb_period is not None else self.bb_period
+        _bb_std = bb_std if bb_std is not None else self.bb_std
+        middle = compute_sma(close, _bb_period)
+        std = close.rolling(window=_bb_period, min_periods=_bb_period).std()
+        upper = middle + _bb_std * std
+        lower = middle - _bb_std * std
         return {"middle": middle, "upper": upper, "lower": lower}
 
     # ── BaseStrategy ────────────────────────────────────────────────────
 
-    def generate_signal(self, data: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Genera señal de mean reversion.
 
         Args:
             data: DataFrame con columna ``close`` (obligatorio).
+            symbol: Opcional. Si es crypto usa perfil crypto.
 
         Returns:
             Dict con action, price y metadata, o None.
         """
+        # Resolver perfil a variables locales — no mutar self.*
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            bb_period: int = profile["bb_period"]
+            bb_std: float = profile["bb_std"]
+            rsi_period: int = profile["rsi_period"]
+            rsi_oversold: int = profile["rsi_oversold"]
+            rsi_overbought: int = profile["rsi_overbought"]
+            max_bars_hold: int = profile["max_bars_hold"]
+        else:
+            bb_period = self.bb_period
+            bb_std = self.bb_std
+            rsi_period = self.rsi_period
+            rsi_oversold = self.rsi_oversold
+            rsi_overbought = self.rsi_overbought
+            max_bars_hold = self.max_bars_hold
+
         if "close" not in data.columns:
             logger.warning("generate_signal: faltan columnas (close)")
             return None
 
         close = data["close"]
-        if len(close) < max(self.bb_period, self.rsi_period) + 1:
+        if len(close) < max(bb_period, rsi_period) + 1:
             return None  # datos insuficientes
 
         # Calcular indicadores
-        bb = self._compute_bollinger(close)
-        rsi = compute_rsi(close, self.rsi_period)
+        bb = self._compute_bollinger(close, bb_period=bb_period, bb_std=bb_std)
+        rsi = compute_rsi(close, rsi_period)
 
         last_close = float(close.iloc[-1])
         last_lower = float(bb["lower"].iloc[-1])
@@ -131,7 +183,7 @@ class BollingerRSIStrategy(BaseStrategy):
         }
 
         # SEÑAL BUY: precio en banda inferior + RSI sobrevendido
-        if last_close <= last_lower and last_rsi < self.rsi_oversold:
+        if last_close <= last_lower and last_rsi < rsi_oversold:
             return {
                 "action": "BUY",
                 "price": last_close,
@@ -142,7 +194,7 @@ class BollingerRSIStrategy(BaseStrategy):
         sell_signal = False
         if self.exit_bb_middle and last_close >= last_middle:
             sell_signal = True
-        if self.exit_rsi_overbought and last_rsi > self.rsi_overbought:
+        if self.exit_rsi_overbought and last_rsi > rsi_overbought:
             sell_signal = True
 
         if sell_signal:
@@ -154,19 +206,42 @@ class BollingerRSIStrategy(BaseStrategy):
 
         return None
 
-    def get_parameters(self) -> Dict[str, Any]:
-        """Retorna los parámetros actuales."""
-        return {
-            "bb_period": self.bb_period,
-            "bb_std": self.bb_std,
-            "rsi_period": self.rsi_period,
-            "rsi_oversold": self.rsi_oversold,
-            "rsi_overbought": self.rsi_overbought,
-            "exit_bb_middle": self.exit_bb_middle,
-            "exit_rsi_overbought": self.exit_rsi_overbought,
-            "max_bars_hold": self.max_bars_hold,
-            "timeframe": self.timeframe,
-        }
+    def get_parameters(
+        self,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retorna los parámetros actuales.
+
+        Args:
+            symbol: Opcional. Si es ``None`` retorna ambos perfiles
+                    con prefijos ``crypto_*`` y ``stocks_*``.
+                    Si es crypto retorna el perfil crypto.
+                    En cualquier otro caso retorna el perfil stocks.
+        """
+        if symbol is None:
+            crypto = self._PROFILES["crypto"]
+            stocks = self._PROFILES["stocks"]
+            return {
+                "crypto_bb_period": crypto["bb_period"],
+                "crypto_bb_std": crypto["bb_std"],
+                "crypto_rsi_period": crypto["rsi_period"],
+                "crypto_rsi_oversold": crypto["rsi_oversold"],
+                "crypto_rsi_overbought": crypto["rsi_overbought"],
+                "crypto_max_bars_hold": crypto["max_bars_hold"],
+                "crypto_timeframe": crypto["timeframe"],
+                "stocks_bb_period": stocks["bb_period"],
+                "stocks_bb_std": stocks["bb_std"],
+                "stocks_rsi_period": stocks["rsi_period"],
+                "stocks_rsi_oversold": stocks["rsi_oversold"],
+                "stocks_rsi_overbought": stocks["rsi_overbought"],
+                "stocks_max_bars_hold": stocks["max_bars_hold"],
+                "stocks_timeframe": stocks["timeframe"],
+            }
+        from royaltdn.scanner.universe import is_crypto_symbol
+
+        if is_crypto_symbol(symbol):
+            return dict(self._PROFILES["crypto"])
+        return dict(self._PROFILES["stocks"])
 
     def validate(self) -> bool:
         """Valida parámetros."""
