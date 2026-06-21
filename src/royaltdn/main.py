@@ -199,12 +199,40 @@ def cmd_scanner():
     trigger_scanner()
     print("✅ Scanner disparado. Los resultados aparecerán en el próximo ciclo.")
 
+def _load_seed_trades() -> None:
+    """Copy mock trades from tests/fixtures/ into logs/trades.json."""
+    import json
+    from pathlib import Path
+
+    src = Path("tests/fixtures/mock_trades.json")
+    dst = Path("logs/trades.json")
+    if not src.exists():
+        logger.warning("Seed trades no encontrado en {}", src)
+        return
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        logger.info("Seed trades cargados: {} trades sintéticos en {}", data.get("total_trades", 0), dst)
+    except Exception as e:
+        logger.warning("Error cargando seed trades: {}", e)
+
 
 # ── Comando: run ───────────────────────────────────────────────────────────
+
 
 def cmd_run():
     """Arranca el bot con arquitectura modular + consola interactiva."""
     setup_logging()
+
+    # ── Parse extra flags ────────────────────────────────────────────
+    seed_trades = "--seed-trades" in sys.argv[2:]
+    if seed_trades:
+        _load_seed_trades()
+
     if not API_KEY or not API_SECRET:
         logger.error("ALPACA_API_KEY y ALPACA_SECRET_KEY deben estar en .env")
         sys.exit(1)
@@ -216,6 +244,7 @@ def cmd_run():
     logger.info("  Broker:      Alpaca Paper (IEX)")
     logger.info("  Redis:       {}", REDIS_URL)
     logger.info("  TimescaleDB: {}", "SÍ" if DATABASE_URL else "NO")
+    logger.info("  Seed trades: {}", "SÍ" if seed_trades else "NO")
     logger.info("=" * 50)
 
     # ── Reconfigurar Loguru: stderr solo WARNING+ para no ensuciar el menú ──
