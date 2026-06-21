@@ -20,7 +20,7 @@ import os
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from loguru import logger
 import pandas as pd
@@ -31,6 +31,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
+from royaltdn.brokers.base import BaseBroker, OrderResult
+from royaltdn.brokers.alpaca import AlpacaBroker
 from royaltdn.ingestion.data_ingestor import DataIngestor
 from royaltdn.strategy.sma_strategy import SMAStrategy
 from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
@@ -114,6 +116,7 @@ class Orchestrator:
         scanner: Optional[Scanner] = None,
         auto_execute: bool = False,
         max_positions: int = 5,
+        brokers: Optional[Dict[str, BaseBroker]] = None,
     ):
         self.api_key = api_key
         self.secret_key = secret_key
@@ -128,6 +131,10 @@ class Orchestrator:
         self.twap_enabled = twap_enabled
         self.auto_execute = auto_execute
         self.max_positions = max_positions
+
+        # Brokers
+        self._brokers: Dict[str, BaseBroker] = brokers or {}
+        self._broker: Optional[BaseBroker] = None
 
         # Clientes
         self._trading: Optional[TradingClient] = None
@@ -184,6 +191,12 @@ class Orchestrator:
         """Inicializa conexiones y sincroniza estado del broker."""
         # Trading client (sincrónico, se usa en executor)
         self._trading = TradingClient(self.api_key, self.secret_key, paper=True)
+
+        # Set up default AlpacaBroker if not provided via brokers dict
+        if not self._broker:
+            self._broker = AlpacaBroker(self.api_key, self.secret_key, paper=True)
+            if "stocks" not in self._brokers:
+                self._brokers["stocks"] = self._broker
 
         # Scanner — viene desde main.py; el Orchestrator no lo crea
         if self._scanner is not None:
@@ -323,6 +336,17 @@ class Orchestrator:
             return False
         return 9 <= now_et.hour < 16  # 9:30-16:00 simplified
 
+    def close_position(self, symbol: str) -> bool:
+        """Close an open position via the active broker.
+
+        Args:
+            symbol: Symbol to close.
+
+        Returns:
+            True if the position was closed successfully.
+        """
+        return self._broker.close_position(symbol)
+
     async def _get_atr_value(self) -> float:
         """Calcula ATR usando Alpaca REST (sincrónico en executor)."""
         loop = asyncio.get_running_loop()
@@ -369,7 +393,7 @@ class Orchestrator:
     # ── Status publishing (Fase 6) ────────────────────────────────────
 
     def _get_current_equity(self) -> float:
-        """Fetch current equity from Alpaca, cache per cycle.
+        """Fetch current equity from the active broker, cache per cycle.
 
         Returns:
             float: current equity value.
@@ -377,8 +401,7 @@ class Orchestrator:
         On error: returns last known value, sets _equity_stale.
         """
         try:
-            account = self._trading.get_account()
-            equity = float(account.equity)
+            equity = self._broker.get_account_balance()
             self._last_known_equity = equity
             self._equity_stale = False
             return equity
@@ -728,37 +751,40 @@ class Orchestrator:
 
             return results
 
-        # Orden directa (normal)
-        order = self._trading.submit_order(
-            MarketOrderRequest(
-                symbol=symbol or self.symbol,
-                qty=qty,
-                side=side,
-                time_in_force=TimeInForce.DAY,
-            )
+        # Orden directa (normal) — delegated to active broker
+        result = self._broker.submit_order(
+            symbol=symbol or self.symbol,
+            side=side.name.lower(),
+            qty=qty,
         )
-        logger.info("📤 Orden: {} {} {} — ID: {}", side.name, qty, symbol or self.symbol, order.id)
+        if result:
+            logger.info(
+                "📤 Orden: {} {} {} — ID: {}",
+                side.name, qty, symbol or self.symbol, result.order_id,
+            )
 
-        if self._db and self._db.is_connected:
-            await self._db.insert_order({
-                "order_id": order.id,
-                "symbol": symbol or self.symbol,
-                "side": side.name,
-                "qty": qty,
-                "order_type": "market",
-                "status": getattr(order, "status", "new"),
-                "filled_price": float(order.filled_avg_price) if hasattr(order, "filled_avg_price") and order.filled_avg_price else None,
-                "filled_qty": int(order.filled_qty) if hasattr(order, "filled_qty") and order.filled_qty else None,
-                "created_at": datetime.now(),
-            })
+            if self._db and self._db.is_connected:
+                await self._db.insert_order({
+                    "order_id": result.order_id,
+                    "symbol": symbol or self.symbol,
+                    "side": side.name,
+                    "qty": qty,
+                    "order_type": "market",
+                    "status": result.status,
+                    "filled_price": result.price if result.price else None,
+                    "filled_qty": qty,  # market order approximation
+                    "created_at": datetime.now(),
+                })
 
-        return order
+        return result
 
     @staticmethod
     def _get_order_id(result: object) -> Optional[str]:
-        """Extrae order_id de un resultado de orden (single o TWAP)."""
+        """Extrae order_id de un resultado de orden (single, OrderResult o TWAP)."""
         if result is None:
             return None
+        if isinstance(result, OrderResult):
+            return result.order_id
         if isinstance(result, list):
             # TWAP: usar ID del último lote
             last = result[-1] if result else {}
@@ -770,6 +796,8 @@ class Orchestrator:
         """Extrae filled_avg_price de un resultado de orden."""
         if result is None:
             return None
+        if isinstance(result, OrderResult):
+            return result.price if result.price else None
         if isinstance(result, list) or isinstance(result, dict):
             return None  # TWAP: no hay filled price agregado
         if hasattr(result, "filled_avg_price") and result.filled_avg_price:

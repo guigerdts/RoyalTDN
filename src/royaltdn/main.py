@@ -23,6 +23,7 @@ from loguru import logger
 
 from alpaca.trading.client import TradingClient
 
+from royaltdn.brokers.alpaca import AlpacaBroker
 from royaltdn.frontend.console.loguru_config import setup_logging
 from royaltdn.orchestrator import Orchestrator
 
@@ -285,6 +286,10 @@ def cmd_run():
     except Exception as e:
         logger.warning("Scanner no disponible desde main ({})", e)
 
+    # ── Brokers: AlpacaBroker for stocks/ETFs ──
+    alpaca_broker = AlpacaBroker(API_KEY, API_SECRET, paper=True)
+    brokers = {"stocks": alpaca_broker}
+
     orch = Orchestrator(
         api_key=API_KEY,
         secret_key=API_SECRET,
@@ -294,6 +299,7 @@ def cmd_run():
         scanner=scanner,
         auto_execute=AUTO_EXECUTE,
         max_positions=MAX_POSITIONS,
+        brokers=brokers,
     )
 
     def _run_orchestrator():
