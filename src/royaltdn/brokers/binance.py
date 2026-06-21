@@ -10,7 +10,7 @@ Mapping:  https://testnet.binance.vision  (testnet)
 import hashlib
 import hmac
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import pandas as pd
@@ -100,13 +100,16 @@ class BinanceBroker(BaseBroker):
         self,
         symbol: str,
         timeframe: str,
-        start: datetime,
-        end: datetime,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
     ) -> pd.DataFrame:
         """Return OHLCV klines from Binance as a DataFrame.
 
         Columns: timestamp (index), open, high, low, close, volume.
         Uses the GET /api/v3/klines endpoint.
+
+        Calculates startTime/endTime in UTC with millisecond precision.
+        Default window: last 90 days when start/end are not provided.
         """
         interval_map = {
             "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
@@ -115,11 +118,22 @@ class BinanceBroker(BaseBroker):
         }
         interval = interval_map.get(timeframe, "1h")
 
+        # Compute timestamps in UTC with millisecond precision.
+        end_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        start_ts = int(
+            (datetime.now(timezone.utc) - timedelta(days=90)).timestamp() * 1000
+        )
+
+        logger.info(
+            "BinanceBroker: {} — startTime={}, endTime={}",
+            self.normalize_symbol(symbol), start_ts, end_ts,
+        )
+
         params = {
             "symbol": self.normalize_symbol(symbol),
             "interval": interval,
-            "startTime": int(start.timestamp() * 1000),
-            "endTime": int(end.timestamp() * 1000),
+            "startTime": start_ts,
+            "endTime": end_ts,
             "limit": 500,
         }
 
