@@ -28,7 +28,7 @@ def run_menu(logs_dir: str = "logs") -> None:
     try:
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
             badges = _check_notifications(state_loader)
             _print_menu(console, badges=badges)
             try:
@@ -39,7 +39,7 @@ def run_menu(logs_dir: str = "logs") -> None:
 
             if cmd == "1":
                 _last_menu_visit = time.time()
-                _show_dashboard(state_loader, log_buffer, console)
+                _show_dashboard(state_loader, log_buffer, console, logs_dir)
             elif cmd == "2":
                 _last_menu_visit = time.time()
                 _show_scanner(state_loader, console, logs_dir)
@@ -51,7 +51,7 @@ def run_menu(logs_dir: str = "logs") -> None:
                 _show_trades(state_loader, console, logs_dir)
             elif cmd == "5":
                 _last_menu_visit = time.time()
-                _show_logs(log_buffer, console)
+                _show_logs(log_buffer, console, logs_dir)
             elif cmd == "6":
                 _last_menu_visit = time.time()
                 _show_control(console, logs_dir)
@@ -93,7 +93,7 @@ def _clear_screen() -> None:
     print("\033[2J\033[H", end="")
 
 
-def _print_header(console) -> None:
+def _print_header(console, logs_dir: str = "logs") -> None:
     """Render a Rich Panel header with bot title and PAUSADO status."""
     from rich.panel import Panel
     from rich.text import Text
@@ -108,7 +108,7 @@ def _print_header(console) -> None:
             padding=(0, 1),
         )
     )
-    if _is_bot_paused():
+    if _is_bot_paused(logs_dir=logs_dir):
         console.print(Text("PAUSADO", style="bold yellow"))
 
 
@@ -333,7 +333,7 @@ def _toggle_strategy(
 # ── Dashboard ──────────────────────────────────────────────────────────
 
 
-def _show_dashboard(state_loader, log_buffer, console) -> None:
+def _show_dashboard(state_loader, log_buffer, console, logs_dir: str = "logs") -> None:
     """Screen 1: Dashboard with KPIs, positions, signals, summary, logs.
 
     Supports auto-refresh countdown: prompts for interval, then re-renders
@@ -349,7 +349,7 @@ def _show_dashboard(state_loader, log_buffer, console) -> None:
     def _render() -> None:
         """Re-render full dashboard — clear, header, all sections."""
         _clear_screen()
-        _print_header(console)
+        _print_header(console, logs_dir=logs_dir)
 
         state = state_loader.load_all()
         signals = state_loader._load_file("signals.json", {})
@@ -458,7 +458,7 @@ def _show_alert_config(console, logs_dir: str = "logs") -> None:
     try:
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
 
             thresholds = _load()
 
@@ -590,7 +590,7 @@ def _show_simulation(
         sorted_names = sorted(strategy_names_in_trades)
 
         _clear_screen()
-        _print_header(console)
+        _print_header(console, logs_dir=logs_dir)
         console.print()
         console.print("[bold]Seleccionar estrategia para simular[/]")
         for idx, name in enumerate(sorted_names, start=1):
@@ -706,7 +706,7 @@ def _show_simulation(
 
         # ── Comparison table ─────────────────────────────────────
         _clear_screen()
-        _print_header(console)
+        _print_header(console, logs_dir=logs_dir)
 
         table = Table(
             title=f"Simulación: {strategy_name} — {param_key} = {new_val}",
@@ -869,7 +869,7 @@ def _show_activity(console, logs_dir: str = "logs") -> None:
             all_lines = []
 
         _clear_screen()
-        _print_header(console)
+        _print_header(console, logs_dir=logs_dir)
         console.print()
 
         if not all_lines:
@@ -1489,7 +1489,7 @@ def _show_estrategias(state_loader, console, logs_dir: str = "logs") -> None:
     try:
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
 
             # ── Load both sources ─────────────────────────────────────
             state_strategies = state_loader.load_strategies()
@@ -1589,7 +1589,7 @@ def _strategy_submenu(entry: dict, console, logs_dir: str) -> None:
 
     while True:
         _clear_screen()
-        _print_header(console)
+        _print_header(console, logs_dir=logs_dir)
 
         console.print(Panel(f"[bold]{name}[/]", border_style="white"))
         console.print(f"  Tipo: {entry['type']}")
@@ -2478,7 +2478,7 @@ def _show_trades(state_loader, console, logs_dir: str = "logs") -> None:
 
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
 
             data = state_loader.load_trades()
             all_trades = data.get("trades", [])
@@ -3158,7 +3158,7 @@ def _show_advanced_stats(trades: list[dict], console) -> None:
 # ── Logs ───────────────────────────────────────────────────────────────
 
 
-def _show_logs(log_buffer, console) -> None:
+def _show_logs(log_buffer, console, logs_dir: str = "logs") -> None:
     """Screen 5: Log viewer with level filter and text search."""
     from rich.text import Text
     from rich.panel import Panel
@@ -3170,7 +3170,7 @@ def _show_logs(log_buffer, console) -> None:
 
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
 
             lines = log_buffer.get_lines(
                 level_filter=current_level, text_filter=current_text, last_n=50
@@ -3280,7 +3280,7 @@ def _show_control(console, logs_dir: str) -> None:
     try:
         while True:
             _clear_screen()
-            _print_header(console)
+            _print_header(console, logs_dir=logs_dir)
 
             # Load status
             from royaltdn.frontend.console.commands import get_bot_status
@@ -3335,6 +3335,21 @@ def _show_control(console, logs_dir: str) -> None:
                 from royaltdn.frontend.console.commands import resume_bot
 
                 resume_bot(logs_dir)
+                # Sync status.json immediately so header reflects ONLINE
+                import json as _json
+                import os as _os
+                from datetime import datetime as _dt
+                _os.makedirs(logs_dir, exist_ok=True)
+                status_path = _os.path.join(logs_dir, "status.json")
+                try:
+                    with open(status_path, "w") as _f:
+                        _json.dump({
+                            "bot_status": "ONLINE",
+                            "paused": False,
+                            "timestamp": _dt.now().isoformat(),
+                        }, _f)
+                except Exception:
+                    pass  # orchestrator will overwrite on next cycle anyway
                 _log_activity("Usuario reanudó el bot", logs_dir)
                 console.print("[bold green]✅ Bot reanudado[/]")
                 _wait_enter()

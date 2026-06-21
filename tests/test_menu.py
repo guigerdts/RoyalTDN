@@ -348,3 +348,66 @@ def test_schema_explicit_version_1_passes():
     }
     ok, err = validate_config(config)
     assert ok
+
+
+# ── Bug 6: Header timing fix ───────────────────────────────────────────
+
+
+def test_resume_writes_status_json_sync(tmp_path):
+    """Resume writes status.json synchronously with ONLINE status."""
+    from royaltdn.frontend.menu.app import _show_control
+    from rich.console import Console
+    import io
+    import json
+
+    logs_dir = str(tmp_path / "logs")
+    console = Console(file=io.StringIO())
+
+    # Need 3 inputs: "2" for resume, "" for _wait_enter(), "0" to exit loop
+    inputs = iter([
+        "2",   # option 2: resume
+        "",    # _wait_enter() after resume
+        "0",   # back to menu (exit loop)
+    ])
+
+    with patch("builtins.input", side_effect=inputs):
+        with patch("royaltdn.frontend.console.commands.resume_bot") as mock_resume:
+            _show_control(console, logs_dir)
+
+    # After _show_control exits, verify resume_bot was called
+    mock_resume.assert_called_once_with(logs_dir)
+
+    # Verify status.json was written synchronously with ONLINE status
+    status_path = tmp_path / "logs" / "status.json"
+    assert status_path.exists(), "status.json should exist after resume"
+    data = json.loads(status_path.read_text())
+    assert data["bot_status"] == "ONLINE"
+    assert data["paused"] is False
+    assert "timestamp" in data
+
+
+def test_resume_status_json_written_to_correct_path(tmp_path):
+    """status.json is written to the correct logs_dir path."""
+    from royaltdn.frontend.menu.app import _show_control
+    from rich.console import Console
+    import io
+
+    custom_logs = str(tmp_path / "custom_logs_dir")
+    console = Console(file=io.StringIO())
+
+    # Need 3 inputs: "2" for resume, "" for _wait_enter(), "0" to exit loop
+    inputs = iter([
+        "2",   # option 2: resume
+        "",    # _wait_enter() after resume
+        "0",   # back
+    ])
+
+    with patch("builtins.input", side_effect=inputs):
+        with patch("royaltdn.frontend.console.commands.resume_bot"):
+            _show_control(console, custom_logs)
+
+    # Verify status.json is in custom_logs_dir, not in default "logs/"
+    status_path = tmp_path / "custom_logs_dir" / "status.json"
+    assert status_path.exists(), f"status.json should be in custom_logs_dir"
+    default_path = tmp_path / "logs" / "status.json"
+    assert not default_path.exists(), "status.json should NOT be in default logs/ dir"
