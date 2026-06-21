@@ -82,8 +82,12 @@ class TestPortfolioPositionManager:
         ppm.open_position("MSFT", 20, 300.0)
         all_pos = ppm.get_all_positions()
         assert len(all_pos) == 2
-        assert "AAPL" in all_pos
-        assert "MSFT" in all_pos
+        # Keys are composite ("broker:symbol")
+        assert "alpaca:AAPL" in all_pos
+        assert "alpaca:MSFT" in all_pos
+        # Position objects have the right symbol
+        assert all_pos["alpaca:AAPL"].symbol == "AAPL"
+        assert all_pos["alpaca:MSFT"].symbol == "MSFT"
 
     def test_get_symbol_exposure(self):
         ppm = PortfolioPositionManager()

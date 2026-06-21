@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 import pandas as pd
 
+from royaltdn.brokers.base import BaseBroker
+
 # ── Atomic write helper (same pattern as orchestrator) ────────────────
 
 LOGS_DIR = Path("logs")
@@ -56,12 +58,14 @@ class Scanner:
         strategies: Dict[str, BaseStrategy],
         data_client: Any,
         crypto_data_client: Optional[Any] = None,
+        brokers: Optional[Dict[str, BaseBroker]] = None,
     ):
         self.universe = universe
         self.liquidity_filter = liquidity_filter
         self.strategies = strategies
         self.data_client = data_client
         self.crypto_data_client = crypto_data_client
+        self._brokers: Dict[str, BaseBroker] = brokers or {}
         self._data_cache: Dict[str, pd.DataFrame] = {}
         self._last_scan_results: List[dict] = []
         self._scan_history: List[dict] = []  # Fase 6 — last 10 scans
@@ -184,12 +188,26 @@ class Scanner:
         )
         return ranked
 
+    def _get_broker_for_symbol(self, symbol: str) -> Optional[BaseBroker]:
+        """Route a symbol to its corresponding broker.
+
+        Crypto symbols (containing ``"/"``) → crypto broker.
+        Stock/ETF symbols → stock broker.
+
+        Returns:
+            BaseBroker instance, or ``None`` if no matching broker is configured.
+        """
+        if "/" in symbol and "crypto" in self._brokers:
+            return self._brokers["crypto"]
+        return self._brokers.get("stocks")
+
     def _batch_get_symbol_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
         """Downloads historical data for multiple symbols in batches of up to 100.
 
         Uses get_stock_bars / get_crypto_bars with batches of 100 symbols.
         Crypto symbols (containing '/') are processed separately via
-        CryptoHistoricalDataClient. Each batch consumes 1 token from the TokenBucket.
+        CryptoHistoricalDataClient or broker.get_bars() when available.
+        Each batch consumes 1 token from the TokenBucket.
 
         Args:
             symbols: List of symbols to download data for.
@@ -290,8 +308,27 @@ class Scanner:
         # Process stock symbols (most common case)
         _process_group(stock_symbols, StockBarsRequest, self.data_client.get_stock_bars, "stock")
 
-        # Process crypto symbols if client is available
-        if self.crypto_data_client is not None:
+        # Process crypto symbols — prefer broker.get_bars() (FASE 17)
+        crypto_broker = self._brokers.get("crypto")
+        if crypto_broker is not None and crypto_symbols:
+            for symbol in crypto_symbols:
+                try:
+                    self._token_bucket.consume(1)
+                    df = crypto_broker.get_bars(
+                        symbol, timeframe="1d",
+                        start=_batch_start, end=_batch_end,
+                    )
+                    if df is not None and not df.empty:
+                        # Ensure timestamp is a regular column
+                        if df.index.name == "timestamp":
+                            df = df.reset_index()
+                        self._data_cache[symbol] = df
+                        result[symbol] = df
+                except Exception as e:
+                    logger.warning(
+                        "Scanner: crypto {} failed via broker: {} — skipping", symbol, e,
+                    )
+        elif self.crypto_data_client is not None:
             _process_group(
                 crypto_symbols,
                 CryptoBarsRequest,
@@ -300,7 +337,7 @@ class Scanner:
             )
         elif crypto_symbols:
             logger.warning(
-                "Scanner: {} crypto symbols skipped — no crypto_data_client configured",
+                "Scanner: {} crypto symbols skipped — no crypto broker/client configured",
                 len(crypto_symbols),
             )
 

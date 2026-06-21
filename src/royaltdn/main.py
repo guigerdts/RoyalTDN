@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 import threading
+from typing import Dict
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -24,6 +25,8 @@ from loguru import logger
 from alpaca.trading.client import TradingClient
 
 from royaltdn.brokers.alpaca import AlpacaBroker
+from royaltdn.brokers.base import BaseBroker
+from royaltdn.brokers.binance import BinanceBroker
 from royaltdn.frontend.console.loguru_config import setup_logging
 from royaltdn.orchestrator import Orchestrator
 
@@ -235,6 +238,18 @@ def cmd_run():
 
     from royaltdn.frontend.menu.app import run_menu
 
+    # ── Brokers: Alpaca (stocks) + Binance (crypto) ──
+    alpaca_broker = AlpacaBroker(API_KEY, API_SECRET, paper=True)
+    brokers: Dict[str, BaseBroker] = {"stocks": alpaca_broker}
+
+    binance_api_key = os.getenv("BINANCE_API_KEY", "")
+    binance_secret = os.getenv("BINANCE_SECRET_KEY", "")
+    binance_testnet = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
+    if binance_api_key:
+        binance_broker = BinanceBroker(binance_api_key, binance_secret, testnet=binance_testnet)
+        brokers["crypto"] = binance_broker
+        logger.info("BinanceBroker configurado para crypto (testnet={})", binance_testnet)
+
     # ── Scanner: inicializar antes del Orchestrator ──
     scanner = None
     try:
@@ -263,6 +278,7 @@ def cmd_run():
             max_spread_pct=float(os.getenv(
                 "SCANNER_MAX_SPREAD_PCT", "999" if _crypto_mode else "1.0",
             )),
+            brokers=brokers,
         )
         strategies = {}
         strategies_enabled = os.getenv(
@@ -277,7 +293,11 @@ def cmd_run():
         if "factor_rotation" in strategies_enabled:
             strategies["factor_rotation"] = FactorRotationStrategy()
 
-        scanner = Scanner(universe, liquidity_filter, strategies, data_client, crypto_data_client=crypto_client)
+        scanner = Scanner(
+            universe, liquidity_filter, strategies, data_client,
+            crypto_data_client=crypto_client,
+            brokers=brokers,
+        )
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),
@@ -285,10 +305,6 @@ def cmd_run():
         )
     except Exception as e:
         logger.warning("Scanner no disponible desde main ({})", e)
-
-    # ── Brokers: AlpacaBroker for stocks/ETFs ──
-    alpaca_broker = AlpacaBroker(API_KEY, API_SECRET, paper=True)
-    brokers = {"stocks": alpaca_broker}
 
     orch = Orchestrator(
         api_key=API_KEY,

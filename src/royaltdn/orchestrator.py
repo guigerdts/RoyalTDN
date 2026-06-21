@@ -245,27 +245,38 @@ class Orchestrator:
             if not connected:
                 logger.warning("TimescaleDB no disponible — trades solo en logs")
 
-        # Sincronizar estado del broker
+        # Sincronizar estado de todos los brokers
         try:
             account = self._trading.get_account()
             self._initial_equity = float(account.equity)
 
-            # Sincronizar todas las posiciones abiertas en PPM
-            try:
-                positions = self._trading.get_all_positions()
-                for pos in positions:
-                    sym = pos.symbol
-                    qty = float(pos.qty)
-                    side = "long" if qty > 0 else "short"
-                    price = float(pos.current_price) if hasattr(pos, 'current_price') and pos.current_price else 0.0
-                    self._portfolio.open_position(sym, int(abs(qty)), price, strategy="legacy", side=side)
-                logger.info(
-                    "Estado inicial — Capital: ${:.2f} | Posiciones: {}",
-                    self._initial_equity,
-                    self._portfolio.position_count(),
-                )
-            except Exception as e:
-                logger.warning("Error sincronizando posiciones: {}", e)
+            # Sincronizar posiciones desde TODOS los brokers
+            total_positions = 0
+            for broker_name, broker in self._brokers.items():
+                try:
+                    positions = broker.get_open_positions()
+                    for pos in positions:
+                        sym = pos.get("symbol", "")
+                        if not sym:
+                            continue
+                        qty = float(pos.get("qty", 0))
+                        side = "long" if qty > 0 else "short"
+                        price = float(pos.get("entry", 0) or pos.get("current_price", 0) or 0)
+                        if price == 0.0:
+                            price = float(pos.get("current", 0) or 0)
+                        self._portfolio.open_position(
+                            sym, int(abs(qty)), price,
+                            strategy="legacy", side=side, broker=broker_name,
+                        )
+                        total_positions += 1
+                except Exception as e:
+                    logger.warning("Error sincronizando posiciones desde '{}': {}", broker_name, e)
+
+            logger.info(
+                "Estado inicial — Capital: ${:.2f} | Posiciones: {}",
+                self._initial_equity,
+                self._portfolio.position_count(),
+            )
         except Exception as e:
             logger.error("Error sincronizando estado del broker: {}", e)
             return False
@@ -317,27 +328,29 @@ class Orchestrator:
 
     # ── Ejecución de señales ─────────────────────────────────────────
 
-    @staticmethod
-    def _is_market_open(symbol: str) -> bool:
-        """Check if the US stock market is currently open for trading.
-        
-        Stocks/ETFs: Mon-Fri, 9:30-16:00 ET.
-        Crypto (symbol contains '/'): always open.
-        
+    def _get_broker_for_symbol(self, symbol: str) -> BaseBroker:
+        """Route a symbol to the correct broker.
+
+        Crypto symbols (containing ``"/"``) → crypto broker.
+        Stock/ETF symbols → stocks broker.
+
         Returns:
-            bool: True if market is open for this symbol type.
+            BaseBroker instance.
         """
-        if "/" in symbol:
-            return True  # crypto 24/7
-        
-        from datetime import timedelta
-        now_et = datetime.utcnow() - timedelta(hours=4)  # EDT (UTC-4)
-        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
-            return False
-        return 9 <= now_et.hour < 16  # 9:30-16:00 simplified
+        if "/" in symbol and "crypto" in self._brokers:
+            return self._brokers["crypto"]
+        return self._brokers.get("stocks", self._broker)
+
+    def _is_market_open(self, symbol: str) -> bool:
+        """Check if the market is currently open for a given symbol.
+
+        Delegates to the symbol's broker for the authoritative check.
+        """
+        broker = self._get_broker_for_symbol(symbol)
+        return broker.is_market_open(symbol)
 
     def close_position(self, symbol: str) -> bool:
-        """Close an open position via the active broker.
+        """Close an open position via the correct broker.
 
         Args:
             symbol: Symbol to close.
@@ -345,14 +358,26 @@ class Orchestrator:
         Returns:
             True if the position was closed successfully.
         """
-        return self._broker.close_position(symbol)
+        broker = self._get_broker_for_symbol(symbol)
+        return broker.close_position(symbol)
 
-    async def _get_atr_value(self) -> float:
-        """Calcula ATR usando Alpaca REST (sincrónico en executor)."""
+    async def _get_atr_value(self, symbol: Optional[str] = None) -> float:
+        """Calcula ATR usando el broker correspondiente al symbol.
+
+        Uses the symbol's broker (``broker.get_bars()``) instead of
+        creating a fresh Alpaca data client each time.
+
+        Args:
+            symbol: Symbol to calculate ATR for. Defaults to ``self.symbol``.
+
+        Returns:
+            float: ATR value.
+        """
+        symbol = symbol or self.symbol
+        broker = self._get_broker_for_symbol(symbol)
         loop = asyncio.get_running_loop()
-        data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
         return await loop.run_in_executor(
-            None, lambda: get_atr(data_client, self.symbol),
+            None, lambda: get_atr(broker=broker, symbol=symbol),
         )
 
     # ── Console IPC signal polling (Fase 8) ───────────────────────────
@@ -393,18 +418,23 @@ class Orchestrator:
     # ── Status publishing (Fase 6) ────────────────────────────────────
 
     def _get_current_equity(self) -> float:
-        """Fetch current equity from the active broker, cache per cycle.
+        """Fetch combined equity across ALL configured brokers.
 
         Returns:
-            float: current equity value.
+            float: combined equity value.
 
         On error: returns last known value, sets _equity_stale.
         """
         try:
-            equity = self._broker.get_account_balance()
-            self._last_known_equity = equity
+            total = 0.0
+            for name, broker in self._brokers.items():
+                try:
+                    total += broker.get_account_balance()
+                except Exception as e:
+                    logger.warning("Error fetching equity from broker '{}': {}", name, e)
+            self._last_known_equity = total
             self._equity_stale = False
-            return equity
+            return total
         except Exception as e:
             logger.warning("Error fetching equity: {}", e)
             self._equity_stale = True
@@ -428,15 +458,16 @@ class Orchestrator:
         if not positions:
             return []
         result = []
-        for symbol, pos in positions.items():
+        for key, pos in positions.items():
             result.append({
-                "symbol": symbol,
+                "symbol": pos.symbol,
                 "side": pos.side,
                 "qty": pos.qty,
                 "entry_price": pos.entry_price,
                 "current_price": self._last_known_price if self._last_known_price else pos.entry_price,
                 "entry_at": pos.opened_at.isoformat(),
                 "strategy": pos.strategy,
+                "broker": pos.broker,
             })
         return result
 
@@ -751,9 +782,11 @@ class Orchestrator:
 
             return results
 
-        # Orden directa (normal) — delegated to active broker
-        result = self._broker.submit_order(
-            symbol=symbol or self.symbol,
+        # Orden directa (normal) — delegated to correct broker per symbol
+        sym = symbol or self.symbol
+        broker = self._get_broker_for_symbol(sym)
+        result = broker.submit_order(
+            symbol=sym,
             side=side.name.lower(),
             qty=qty,
         )
@@ -816,7 +849,7 @@ class Orchestrator:
         6. Per-symbol exposure > 25%
         7. RiskManager limits
         
-        If all gates pass: ATR sizing → Alpaca order → PPM tracking → trade record → Telegram.
+        If all gates pass: ATR sizing → broker order → PPM tracking → trade record → Telegram.
         """
         if not self.auto_execute:
             logger.info("Scanner auto-execute disabled — signals logged only")
@@ -824,28 +857,41 @@ class Orchestrator:
                 logger.info(f"Scanner signal (not executed): {sig.get('symbol')} {sig.get('action')}")
             return
         
-        # Gate 0: Kill switch check before batch
-        account = self._trading.get_account()
-        account_equity = float(account.equity)
+        # Gate 0: Kill switch check before batch — combine equity across brokers
+        total_equity = self._get_current_equity()
         
         kill, reason = check_risk_limits(
-            account, self._initial_equity, self._consecutive_losses,
+            self._trading.get_account(), self._initial_equity, self._consecutive_losses,
         )
         if kill:
             logger.warning(f"Scanner: kill switch triggered ({reason}) — closing ALL positions")
             closed = self._portfolio.close_all_positions()
             for pos in closed:
-                if self._portfolio.has_position(pos.symbol):
+                broker = self._get_broker_for_symbol(pos.symbol)
+                try:
                     await self._submit_order(OrderSide.SELL, int(pos.qty), symbol=pos.symbol)
+                except Exception as e:
+                    logger.warning("Error closing {} via {}: {}", pos.symbol, pos.broker, e)
+            # Also close positions directly on each broker as safety net
+            for bname, broker in self._brokers.items():
+                try:
+                    open_positions = broker.get_open_positions()
+                    for p in open_positions:
+                        sym = p.get("symbol", "")
+                        if sym:
+                            broker.close_position(sym)
+                except Exception as e:
+                    logger.warning("Error closing positions on broker '{}': {}", bname, e)
             self._killed = True
             return
         
         for signal in signals:
             symbol = signal.get("symbol", "")
             action = signal.get("action", "BUY")
+            broker = self._get_broker_for_symbol(symbol)
             
             # Gate 1: Duplicate position
-            if self._portfolio.has_position(symbol):
+            if self._portfolio.has_position(symbol, broker=broker._broker_name if hasattr(broker, '_broker_name') else None):
                 logger.info(f"Signal rejected: {symbol} - position already open")
                 continue
             
@@ -859,13 +905,14 @@ class Orchestrator:
                 logger.info(f"Signal rejected: {symbol} - legacy mode already holds SPY")
                 continue
             
-            # Gate 4: Market hours (stocks only)
+            # Gate 4: Market hours — use broker.is_market_open
             if not self._is_market_open(symbol):
                 logger.info(f"Signal rejected: {symbol} - market closed")
                 continue
             
-            # Gate 5: Per-symbol exposure
-            sym_exposure = self._portfolio.get_symbol_exposure(symbol, account_equity)
+            # Gate 5: Per-symbol exposure — use combined equity
+            broker_name = getattr(broker, '_broker_name', 'alpaca')
+            sym_exposure = self._portfolio.get_symbol_exposure(symbol, total_equity, broker=broker_name)
             if sym_exposure > 0.25:
                 logger.info(f"Signal rejected: {symbol} - exposure {sym_exposure:.1%} exceeds 25% limit")
                 continue
@@ -873,34 +920,34 @@ class Orchestrator:
             # Gate 6: RiskManager limits
             if not self._killed:
                 kill2, reason2 = check_risk_limits(
-                    account, self._initial_equity, self._consecutive_losses,
+                    self._trading.get_account(), self._initial_equity, self._consecutive_losses,
                 )
                 if kill2:
                     logger.warning(f"Signal rejected: {symbol} - {reason2}")
                     continue
             
-            # Calculate ATR-based position size
-            data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
-            atr = get_atr(data_client, symbol)
-            qty = calculate_position_size(account, atr)
+            # Calculate ATR-based position size via broker
+            atr = get_atr(broker=broker, symbol=symbol)
+            qty = calculate_position_size(self._trading.get_account(), atr)
             
             if qty <= 0:
                 logger.warning(f"Signal rejected: {symbol} - invalid position size ({qty})")
                 continue
             
-            # Submit order
+            # Submit order via correct broker
             side = OrderSide.BUY if action == "BUY" else OrderSide.SELL
             entry = await self._submit_order(side, qty, symbol=symbol)
             
             if entry:
                 filled_price = self._get_filled_price(entry) or float(signal.get("price", 0))
                 
-                # Track position in PPM
+                # Track position in PPM with broker name
                 self._portfolio.open_position(
                     symbol=symbol,
                     qty=float(qty),
                     entry_price=filled_price,
                     strategy="scanner",
+                    broker=broker_name,
                 )
                 
                 # Record trade
@@ -915,6 +962,7 @@ class Orchestrator:
                     "exit_at": None,
                     "strategy": "scanner",
                     "source": "scanner",
+                    "broker": broker_name,
                 }
                 try:
                     self._append_trade(trade_record)
@@ -928,7 +976,7 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning(f"Telegram notification error: {e}")
                 
-                logger.info(f"Scanner signal EXECUTED: BUY {qty} {symbol} @ ${filled_price:.2f}")
+                logger.info(f"Scanner signal EXECUTED: BUY {qty} {symbol} @ ${filled_price:.2f} (broker={broker_name})")
 
     async def _execute_signal(self, signal: dict) -> None:
         """Procesa una señal: risk check → posición → orden → DB → alerta."""
@@ -941,7 +989,11 @@ class Orchestrator:
 
         logger.info("🚦 Procesando señal {} @ {:.2f}", action, price)
 
-        # ── Risk check ──
+        symbol_for_order = signal.get("symbol", self.symbol)
+        broker_for_signal = self._get_broker_for_symbol(symbol_for_order)
+        broker_name = getattr(broker_for_signal, '_broker_name', 'alpaca')
+
+        # ── Risk check (kill switch touches ALL brokers) ──
         if not self._killed:
             kill, reason = check_risk_limits(
                 self._trading.get_account(),
@@ -952,10 +1004,21 @@ class Orchestrator:
                 await notify_kill_switch(reason)
                 logger.error("🛑 {}", reason)
 
-                # Cerrar todas las posiciones
+                # Cerrar todas las posiciones desde PPM
                 closed = self._portfolio.close_all_positions()
                 for pos in closed:
                     await self._submit_order(OrderSide.SELL, int(pos.qty), symbol=pos.symbol)
+
+                # Safety net: close positions on every broker
+                for bname, broker in self._brokers.items():
+                    try:
+                        open_positions = broker.get_open_positions()
+                        for p in open_positions:
+                            sym = p.get("symbol", "")
+                            if sym:
+                                broker.close_position(sym)
+                    except Exception:
+                        pass
 
                 self._killed = True
                 return
@@ -968,7 +1031,7 @@ class Orchestrator:
         self._daily_signal_count += 1
         self._last_signal = {
             "action": action,
-            "symbol": signal.get("symbol", self.symbol),
+            "symbol": symbol_for_order,
             "price": price,
             "strategy": signal.get("strategy", "sma_crossover"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -980,10 +1043,9 @@ class Orchestrator:
         self._last_known_price = price
 
         # ── BUY ──
-        symbol_for_order = signal.get("symbol", self.symbol)
-        if action == "BUY" and not self._portfolio.has_position(symbol_for_order):
-            # Calcular ATR y tamaño de posición
-            atr = await self._get_atr_value()
+        if action == "BUY" and not self._portfolio.has_position(symbol_for_order, broker=broker_name):
+            # Calcular ATR y tamaño de posición usando el broker correcto
+            atr = await self._get_atr_value(symbol=symbol_for_order)
             account = self._trading.get_account()
             qty = calculate_position_size(account, atr)
 
@@ -999,16 +1061,17 @@ class Orchestrator:
                     qty=float(qty),
                     entry_price=arrival_price,
                     strategy="sma_crossover",
+                    broker=broker_name,
                 )
 
             if price > 0:
                 await notify_entry(symbol_for_order, "buy", qty, price)
 
         # ── SELL (cierre) ──
-        elif action == "SELL" and self._portfolio.has_position(symbol_for_order):
-            pos = self._portfolio.get_position(symbol_for_order)
+        elif action == "SELL" and self._portfolio.has_position(symbol_for_order, broker=broker_name):
+            pos = self._portfolio.get_position(symbol_for_order, broker=broker_name)
             if not pos:
-                logger.warning(f"No position found for {symbol_for_order}")
+                logger.warning(f"No position found for {symbol_for_order} on {broker_name}")
                 return
 
             # Capturar arrival price antes de ejecutar
@@ -1067,13 +1130,14 @@ class Orchestrator:
                 "strategy": "sma_crossover",
                 "slippage_bps": slippage_bps,
                 "execution_method": exec_method,
+                "broker": broker_name,
             }
             try:
                 self._append_trade(trade_record)
             except Exception as e:
                 logger.warning("Error appending trade: {}", e)
 
-            self._portfolio.close_position(symbol_for_order)
+            self._portfolio.close_position(symbol_for_order, broker=broker_name)
 
     # ── Monitor de salud de tareas ──────────────────────────────────
 

@@ -51,16 +51,16 @@ Chain strategy: feature-branch-chain
 
 **Base**: PR 2 branch
 
-- [ ] **3.1** Add `_get_broker_for_symbol(symbol)` to Orchestrator — "/" in symbol → crypto broker, else stocks
-- [ ] **3.2** Refactor `_submit_order()` to use broker.submit_order() instead of direct TradingClient
-- [ ] **3.3** Refactor `_execute_scanner_signals()` for per-symbol broker routing
-- [ ] **3.4** Add `broker: str = "alpaca"` field to Position dataclass
-- [ ] **3.5** PPM composite key f"{broker}:{symbol}", add get_positions_by_broker()
-- [ ] **3.6** RiskManager check_portfolio_risk combined equity across all brokers
-- [ ] **3.7** Kill switch iterates all brokers for close_position
-- [ ] **3.8** get_atr() accepts broker param, uses broker.get_bars()
-- [ ] **3.9** Scanner._batch_get_symbol_data routes crypto to brokers["crypto"].get_bars()
-- [ ] **3.10** LiquidityFilter.filter() uses broker.get_bars() for crypto symbols
+- [x] **3.1** Add `_get_broker_for_symbol(symbol)` to Orchestrator — "/" in symbol → crypto broker, else stocks
+- [x] **3.2** Refactor ALL broker calls in Orchestrator (_submit_order, _execute_scanner_signals, _execute_signal, _get_current_equity, close_position, _get_atr_value, _is_market_open, _setup, _build_positions_list)
+- [x] **3.3** Refactor `_execute_scanner_signals()` for per-symbol broker routing + multi-broker kill switch
+- [x] **3.4** Add `broker: str = "alpaca"` field to Position dataclass
+- [x] **3.5** PPM composite key f"{broker}:{symbol}", add get_positions_by_broker(), backward-compat helpers
+- [x] **3.6** RiskManager check_portfolio_risk combined equity across all brokers
+- [x] **3.7** Kill switch iterates all brokers for close_position (both PPM + direct broker safety net)
+- [x] **3.8** get_atr() accepts `broker: BaseBroker` param, uses broker.get_bars() for ATR calculation
+- [x] **3.9** Scanner._batch_get_symbol_data routes crypto to brokers["crypto"].get_bars()
+- [x] **3.10** LiquidityFilter.filter() uses broker.get_bars() for crypto symbols
 
 ## PR 4: UI Broker column + integration tests (~70-100 lines, ~3 files)
 

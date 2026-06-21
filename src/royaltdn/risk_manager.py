@@ -14,24 +14,28 @@ from datetime import datetime, timedelta
 
 from loguru import logger
 import pandas as pd
-from typing import Optional
+from typing import Dict, Optional
 
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+from royaltdn.brokers.base import BaseBroker
+
 
 def get_atr(
-    data_client: StockHistoricalDataClient,
-    symbol: str,
+    data_client: Optional[StockHistoricalDataClient] = None,
+    symbol: str = "",
     period: int = 14,
     crypto_data_client: Optional[CryptoHistoricalDataClient] = None,
+    broker: Optional[BaseBroker] = None,
 ) -> float:
     """
     Calcula ATR(14) desde datos de velas diarias.
 
-    For crypto symbols (containing "/"), uses CryptoHistoricalDataClient.
-    For stocks/ETFs, uses StockHistoricalDataClient with IEX feed.
+    When *broker* is provided, uses ``broker.get_bars()`` instead of the
+    legacy data-client approach.  Otherwise falls back to the original
+    StockHistoricalDataClient / CryptoHistoricalDataClient logic.
 
     Returns:
         float: Valor ATR actual. 0.0 si no hay datos suficientes.
@@ -39,6 +43,27 @@ def get_atr(
     end = datetime.now()
     start = end - timedelta(days=period * 3)
 
+    # Broker-based path (multi-broker)
+    if broker is not None:
+        df = broker.get_bars(symbol, timeframe="1d", start=start, end=end)
+        if df.empty or len(df) < period + 1:
+            logger.warning(f"Pocos datos ({len(df)}) para ATR({period}) en {symbol}")
+            return 0.0
+        df = df.reset_index()
+        df["prev_close"] = df["close"].shift(1)
+        df["tr"] = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - df["prev_close"]).abs(),
+                (df["low"] - df["prev_close"]).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = df["tr"].rolling(period).mean().iloc[-1]
+        logger.info(f"ATR({period}) {symbol}: {atr:.2f}")
+        return float(atr)
+
+    # Legacy data-client path
     if "/" in symbol and crypto_data_client is not None:
         bars = crypto_data_client.get_crypto_bars(
             CryptoBarsRequest(
@@ -204,6 +229,7 @@ def check_portfolio_risk(
     account_equity: float,
     max_positions: int = 5,
     max_exposure_pct: float = 0.25,
+    brokers: Optional[Dict[str, BaseBroker]] = None,
 ) -> tuple[bool, str]:
     """Portfolio-level risk check before executing signals.
 
@@ -212,11 +238,15 @@ def check_portfolio_risk(
     2. Per-symbol exposure limit
     3. Total portfolio exposure cap (80%)
 
+    If *brokers* is provided, aggregate equity across all brokers for the
+    combined-equity check.
+
     Args:
         portfolio: PortfolioPositionManager instance.
         account_equity: Current account equity (float).
         max_positions: Max concurrent open positions (default 5).
         max_exposure_pct: Max exposure per symbol as fraction (default 0.25 = 25%).
+        brokers: Optional dict of {name: BaseBroker} for combined equity.
 
     Returns:
         tuple[bool, str]: (passed, reason). passed=True means all checks OK.
@@ -224,15 +254,23 @@ def check_portfolio_risk(
     if portfolio.position_count() >= max_positions:
         return False, f"max_positions_reached ({portfolio.position_count()}/{max_positions})"
 
-    if account_equity > 0:
+    # Combine equity across all brokers if available
+    total_equity = account_equity
+    if brokers:
+        try:
+            total_equity = sum(b.get_account_balance() for b in brokers.values())
+        except Exception:
+            pass
+
+    if total_equity > 0:
         # Check per-symbol exposure
-        for symbol in portfolio.get_all_positions():
-            exposure = portfolio.get_symbol_exposure(symbol, account_equity)
+        for pos in portfolio.get_all_positions().values():
+            exposure = portfolio.get_symbol_exposure(pos.symbol, total_equity, broker=pos.broker)
             if exposure > max_exposure_pct:
-                return False, f"exposure_limit_exceeded ({symbol}: {exposure:.1%})"
+                return False, f"exposure_limit_exceeded ({pos.symbol}: {exposure:.1%})"
 
         # Check total portfolio exposure
-        total_exp = portfolio.get_total_exposure(account_equity)
+        total_exp = portfolio.get_total_exposure(total_equity)
         if total_exp > 0.80:  # 80% max portfolio exposure
             return False, f"total_exposure_exceeded ({total_exp:.1%})"
 

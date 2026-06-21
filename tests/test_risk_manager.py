@@ -20,11 +20,21 @@ from unittest.mock import MagicMock, patch
 class TestCheckPortfolioRisk:
     """Test suite for check_portfolio_risk()."""
 
+    @staticmethod
+    def _make_pos(symbol: str, broker: str = "alpaca"):
+        """Helper to create a mock Position-like object."""
+        from collections import namedtuple
+        Pos = namedtuple("Pos", ["symbol", "broker"])
+        return Pos(symbol=symbol, broker=broker)
+
     def test_passes_when_under_limits(self):
         from royaltdn.risk_manager import check_portfolio_risk
         mock_portfolio = MagicMock()
         mock_portfolio.position_count.return_value = 2
-        mock_portfolio.get_all_positions.return_value = {"AAPL": "pos1", "MSFT": "pos2"}
+        mock_portfolio.get_all_positions.return_value = {
+            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
+            "alpaca:MSFT": self._make_pos("MSFT", "alpaca"),
+        }
         mock_portfolio.get_symbol_exposure.return_value = 0.10
         mock_portfolio.get_total_exposure.return_value = 0.20
 
@@ -45,7 +55,9 @@ class TestCheckPortfolioRisk:
         from royaltdn.risk_manager import check_portfolio_risk
         mock_portfolio = MagicMock()
         mock_portfolio.position_count.return_value = 1
-        mock_portfolio.get_all_positions.return_value = {"AAPL": "pos"}
+        mock_portfolio.get_all_positions.return_value = {
+            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
+        }
         mock_portfolio.get_symbol_exposure.return_value = 0.30  # 30% > 25%
 
         passed, reason = check_portfolio_risk(mock_portfolio, 100000, max_positions=5, max_exposure_pct=0.25)
@@ -56,7 +68,9 @@ class TestCheckPortfolioRisk:
         from royaltdn.risk_manager import check_portfolio_risk
         mock_portfolio = MagicMock()
         mock_portfolio.position_count.return_value = 1
-        mock_portfolio.get_all_positions.return_value = {"AAPL": "pos"}
+        mock_portfolio.get_all_positions.return_value = {
+            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
+        }
         mock_portfolio.get_symbol_exposure.return_value = 0.20
         mock_portfolio.get_total_exposure.return_value = 0.85  # 85% > 80%
 
@@ -78,29 +92,29 @@ class TestGetATR:
 
     def test_get_atr_uses_crypto_client_for_crypto_symbols(self):
         from royaltdn.risk_manager import get_atr
+        import pandas as pd
+        import numpy as np
 
         mock_stock_client = MagicMock()
         mock_crypto_client = MagicMock()
-        mock_crypto_client.get_crypto_bars.return_value.df = MagicMock()
+
+        # Create enough data for ATR calculation
+        dates = pd.date_range("2024-01-01", periods=20, freq="D")
+        df = pd.DataFrame({
+            "high": np.random.uniform(100, 110, 20),
+            "low": np.random.uniform(90, 100, 20),
+            "close": np.random.uniform(95, 105, 20),
+        }, index=dates)
+
+        # Mock get_crypto_bars to return the DataFrame
+        mock_crypto_client.get_crypto_bars.return_value.df = df
 
         with patch("royaltdn.risk_manager.CryptoBarsRequest"):
-            with patch("royaltdn.risk_manager.pd.DataFrame") as mock_df:
-                import pandas as pd
-                import numpy as np
+            result = get_atr(mock_stock_client, "BTC/USD", period=14, crypto_data_client=mock_crypto_client)
 
-                # Create enough data for ATR calculation
-                dates = pd.date_range("2024-01-01", periods=20, freq="D")
-                df = pd.DataFrame({
-                    "high": np.random.uniform(100, 110, 20),
-                    "low": np.random.uniform(90, 100, 20),
-                    "close": np.random.uniform(95, 105, 20),
-                }, index=dates)
-                mock_crypto_client.get_crypto_bars.return_value.df = df
-
-                result = get_atr(mock_stock_client, "BTC/USD", period=14, crypto_data_client=mock_crypto_client)
-                assert isinstance(result, float)
-                assert result > 0
-                mock_crypto_client.get_crypto_bars.assert_called_once()
+        assert isinstance(result, float)
+        assert result > 0
+        mock_crypto_client.get_crypto_bars.assert_called_once()
 
     def test_get_atr_uses_stock_client_for_stock_symbols(self):
         from royaltdn.risk_manager import get_atr

@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 # ── Test helpers ──────────────────────────────────────────────────────────
 
-def _make_orchestrator():
+def _make_orchestrator(with_crypto: bool = False):
     """Create an Orchestrator with mocked dependencies for scanner execution tests."""
     from royaltdn.orchestrator import Orchestrator
 
@@ -51,6 +51,21 @@ def _make_orchestrator():
         orch._killed = False
         orch._consecutive_losses = 0
         orch._initial_equity = 100000.0
+
+        # Set up brokers (FASE 17 multi-broker)
+        stocks_broker = MagicMock()
+        stocks_broker._broker_name = "alpaca"
+        stocks_broker.is_market_open.return_value = True
+        stocks_broker.get_account_balance.return_value = 100000.0
+        orch._broker = stocks_broker
+        orch._brokers = {"stocks": stocks_broker}
+
+        if with_crypto:
+            crypto_broker = MagicMock()
+            crypto_broker._broker_name = "binance"
+            crypto_broker.is_market_open.return_value = True
+            crypto_broker.get_account_balance.return_value = 50000.0
+            orch._brokers["crypto"] = crypto_broker
 
         # Mock risk manager functions
         with patch("royaltdn.orchestrator.check_risk_limits") as mock_risk:
@@ -97,6 +112,9 @@ def test_rejected_by_kill_switch() -> None:
         orch, mock_ppm, mock_risk, mock_atr, mock_size = _make_orchestrator()
         mock_risk.return_value = (True, "daily drawdown exceeded 3%")
         mock_ppm.close_all_positions.return_value = []
+        # Mock broker close_position
+        orch._broker.close_position.return_value = True
+        orch._broker.get_open_positions.return_value = []
 
         signals = [{"symbol": "AAPL", "action": "BUY", "price": 150.0}]
 
@@ -165,7 +183,7 @@ def test_stock_rejected_market_closed() -> None:
 def test_crypto_executed_24_7() -> None:
     """Crypto symbol executed regardless of market hours."""
     async def run():
-        orch, mock_ppm, mock_risk, mock_atr, mock_size = _make_orchestrator()
+        orch, mock_ppm, mock_risk, mock_atr, mock_size = _make_orchestrator(with_crypto=True)
         mock_ppm.has_position.return_value = False
         mock_ppm.position_count.return_value = 0
         mock_ppm.get_symbol_exposure.return_value = 0.05
