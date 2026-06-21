@@ -16,6 +16,7 @@ from alpaca.data.historical import CryptoHistoricalDataClient
 from loguru import logger
 
 from royaltdn.brokers.base import BaseBroker
+from royaltdn.scanner.universe import is_crypto_symbol
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -141,7 +142,7 @@ class LiquidityFilter:
             try:
                 self.token_bucket.consume(1)
 
-                if "/" in symbol:
+                if is_crypto_symbol(symbol):
                     # Prefer broker-based data when available (FASE 17)
                     crypto_broker = self.brokers.get("crypto")
                     if crypto_broker is not None:
@@ -173,6 +174,10 @@ class LiquidityFilter:
                     df = bars.df
 
                 if df.empty:
+                    logger.warning(
+                        "\u26a0\ufe0f Sin datos para {}. Posiblemente el par no est\u00e1 disponible en el testnet.",
+                        symbol,
+                    )
                     continue
 
                 avg_volume = df["volume"].mean()

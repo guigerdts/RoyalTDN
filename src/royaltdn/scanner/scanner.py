@@ -36,7 +36,7 @@ def _atomic_write(path: Path, data: dict) -> bool:
         return False
 
 from royaltdn.strategy.base import BaseStrategy
-from royaltdn.scanner.universe import AssetUniverse
+from royaltdn.scanner.universe import AssetUniverse, is_crypto_symbol
 from royaltdn.scanner.filters import LiquidityFilter, TokenBucket
 
 
@@ -197,7 +197,7 @@ class Scanner:
         Returns:
             BaseBroker instance, or ``None`` if no matching broker is configured.
         """
-        if "/" in symbol and "crypto" in self._brokers:
+        if is_crypto_symbol(symbol) and "crypto" in self._brokers:
             return self._brokers["crypto"]
         return self._brokers.get("stocks")
 
@@ -236,9 +236,9 @@ class Scanner:
         from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
-        # Split symbols into crypto (contains '/') and stock groups
-        crypto_symbols = [s for s in to_fetch if "/" in s]
-        stock_symbols = [s for s in to_fetch if "/" not in s]
+        # Split symbols into crypto and stock groups
+        crypto_symbols = [s for s in to_fetch if is_crypto_symbol(s)]
+        stock_symbols = [s for s in to_fetch if not is_crypto_symbol(s)]
 
         # Helper: process a group of symbols in batches using the given
         # request class and data_client method

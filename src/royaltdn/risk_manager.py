@@ -21,6 +21,7 @@ from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from royaltdn.brokers.base import BaseBroker
+from royaltdn.scanner.universe import is_crypto_symbol
 
 
 def get_atr(
@@ -64,7 +65,7 @@ def get_atr(
         return float(atr)
 
     # Legacy data-client path
-    if "/" in symbol and crypto_data_client is not None:
+    if is_crypto_symbol(symbol) and crypto_data_client is not None:
         bars = crypto_data_client.get_crypto_bars(
             CryptoBarsRequest(
                 symbol_or_symbols=symbol,

@@ -262,9 +262,11 @@ def cmd_run():
 
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
         crypto_client = CryptoHistoricalDataClient(API_KEY, API_SECRET)
+        broker_type = "binance" if os.getenv("BINANCE_API_KEY") else "alpaca"
         universe = AssetUniverse(
             API_KEY, API_SECRET,
             universe_type=os.getenv("SCANNER_UNIVERSE", "all"),
+            broker_type=broker_type,
         )
         # Crypto universe needs laxer defaults — low-price pairs, no spread data
         _crypto_mode = os.getenv("SCANNER_UNIVERSE", "all") == "crypto"
