@@ -134,3 +134,22 @@ Add Alpaca Crypto API support for 24/7 crypto pair scanning. Fix `int(b.volume)`
 - WHEN `AssetUniverse` is initialized
 - THEN `broker_type` defaults to `"alpaca"`
 - AND `get_symbols()` returns Alpaca-format pairs
+
+### REQ-CRYPTO-MENU-UNIVERSE — Menu app syncs _current_universe from scanner at startup
+
+The menu app MUST NOT hardcode `_current_universe` to `"all"`. Instead, it MUST read `SCANNER_UNIVERSE` from `.env` at startup OR sync from `scanner.universe.universe_type`.
+
+#### Scenario: crypto universe from env
+- GIVEN `.env` has `SCANNER_UNIVERSE=crypto` (single, no duplicates)
+- WHEN the menu app initializes
+- THEN `_current_universe == "crypto"` AND header shows `"Universe: crypto"`
+
+#### Scenario: etfs universe from env
+- GIVEN `.env` has `SCANNER_UNIVERSE=etfs`
+- WHEN the menu app initializes
+- THEN `_current_universe == "etfs"`
+
+#### Scenario: scanner.universe determines header
+- GIVEN `scanner.universe.universe_type == "crypto"`
+- WHEN menu header renders
+- THEN `_current_universe == "crypto"`

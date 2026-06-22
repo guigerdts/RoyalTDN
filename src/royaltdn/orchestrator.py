@@ -198,6 +198,9 @@ class Orchestrator:
         # Dynamic scan interval (Fase 18.4)
         self._current_scan_interval: int = 60
 
+        # First-iteration guard: auto-scan no se ejecuta al arrancar (#4)
+        self._first_scan_done: bool = False
+
         # User strategies (Fase 7)
         self.strategy_store = None
         self.user_strategies: dict = {}
@@ -1424,25 +1427,30 @@ class Orchestrator:
                     (self._current_scan_interval * 60) / poll_interval
                 ) if self._current_scan_interval > 0 else 0
 
-                # ── Auto-scan (solo cuando el bot NO está pausado) ──
-                if self._scanner and scanner_iterations > 0:
-                    scanner_cycle += 1
-                    if scanner_cycle >= scanner_iterations:
-                        scanner_cycle = 0
-                        logger.info("Scanner: ejecutando escaneo automatico...")
-                        signals = await self._run_scanner()
-                        if signals:
-                            top_signals = self._scanner.get_top_signals(n=self.scanner_top_n)
-                            if top_signals:
-                                logger.info(
-                                    "Scanner: %d senales generadas — ejecutando top %d via scanner pipeline",
-                                    len(signals), len(top_signals),
-                                )
-                                await self._execute_scanner_signals(top_signals)
-                                await asyncio.sleep(poll_interval)
-                                continue
-                            else:
-                                logger.info("Scanner: sin senales — usando SPY por defecto")
+                # ── First-iteration guard: auto-scan NO se ejecuta al arrancar (#4) ──
+                if not self._first_scan_done:
+                    self._first_scan_done = True
+                    logger.info("DEBUG: primera iteracion, saltando escaneo automatico")
+                else:
+                    # ── Auto-scan (solo cuando el bot NO está pausado) ──
+                    if self._scanner and scanner_iterations > 0:
+                        scanner_cycle += 1
+                        if scanner_cycle >= scanner_iterations:
+                            scanner_cycle = 0
+                            logger.info("Scanner: ejecutando escaneo automatico...")
+                            signals = await self._run_scanner()
+                            if signals:
+                                top_signals = self._scanner.get_top_signals(n=self.scanner_top_n)
+                                if top_signals:
+                                    logger.info(
+                                        "Scanner: %d senales generadas — ejecutando top %d via scanner pipeline",
+                                        len(signals), len(top_signals),
+                                    )
+                                    await self._execute_scanner_signals(top_signals)
+                                    await asyncio.sleep(poll_interval)
+                                    continue
+                                else:
+                                    logger.info("Scanner: sin senales — usando SPY por defecto")
 
                 # ── User strategies watcher (Fase 7) ──
                 try:

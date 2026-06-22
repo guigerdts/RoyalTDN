@@ -16,7 +16,6 @@ Comandos:
 import asyncio
 import os
 import sys
-import threading
 from typing import Dict
 
 from dotenv import load_dotenv
@@ -566,14 +565,9 @@ def cmd_run():
             brokers=brokers,
         )
         scanner.verbose = verbose
-        if verbose:
-            def _initial_scan():
-                try:
-                    scanner.scan(verbose=True)
-                except Exception as e:
-                    logger.warning("Initial scan failed (non-blocking): {}", e)
-            threading.Thread(target=_initial_scan, daemon=True).start()
-            logger.info("Background initial scan started (verbose mode)")
+        # NOTA: NO ejecutamos scanner.scan() aquí.
+        # El scan automático solo lo controla el Orchestrator
+        # desde la SEGUNDA iteración del legacy loop (_first_scan_done guard).
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),
