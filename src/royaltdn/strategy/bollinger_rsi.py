@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 def compute_sma(series: pd.Series, window: int) -> pd.Series:
@@ -122,6 +122,68 @@ class BollingerRSIStrategy(BaseStrategy):
         lower = middle - _bb_std * std
         return {"middle": middle, "upper": upper, "lower": lower}
 
+    # ── _compute_indicators ─────────────────────────────────────────────
+
+    def _compute_indicators(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Calcula indicadores RSI y Bollinger Bands.
+
+        Args:
+            data: DataFrame con columna ``close``.
+            symbol: Opcional para resolución de perfil.
+
+        Returns:
+            Dict con rsi, bb_upper, bb_middle, bb_lower, bb_position, bb_width.
+        """
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            bb_period: int = profile["bb_period"]
+            bb_std: float = profile["bb_std"]
+            rsi_period: int = profile["rsi_period"]
+        else:
+            bb_period = self.bb_period
+            bb_std = self.bb_std
+            rsi_period = self.rsi_period
+
+        if "close" not in data.columns:
+            return {"rsi": None, "bb_upper": None, "bb_middle": None, "bb_lower": None,
+                    "bb_position": None, "bb_width": None}
+
+        close = data["close"]
+        if len(close) < max(bb_period, rsi_period) + 1:
+            return {"rsi": None, "bb_upper": None, "bb_middle": None, "bb_lower": None,
+                    "bb_position": None, "bb_width": None}
+
+        bb = self._compute_bollinger(close, bb_period=bb_period, bb_std=bb_std)
+        rsi = compute_rsi(close, rsi_period)
+
+        last_close = float(close.iloc[-1])
+        last_upper = float(bb["upper"].iloc[-1])
+        last_middle = float(bb["middle"].iloc[-1])
+        last_lower = float(bb["lower"].iloc[-1])
+        last_rsi = float(rsi.iloc[-1])
+
+        # BB position: 0.0 = lower, 0.5 = middle, 1.0 = upper
+        bb_range = last_upper - last_lower
+        bb_position = (last_close - last_lower) / bb_range if bb_range > 0 else 0.5
+        bb_width = ((last_upper - last_lower) / last_middle * 100) if last_middle != 0 else 0.0
+
+        return {
+            "rsi": last_rsi,
+            "bb_upper": last_upper,
+            "bb_middle": last_middle,
+            "bb_lower": last_lower,
+            "bb_position": round(bb_position, 4),
+            "bb_width": round(bb_width, 2),
+            "close": last_close,
+        }
+
     # ── BaseStrategy ────────────────────────────────────────────────────
 
     def generate_signal(
@@ -166,24 +228,29 @@ class BollingerRSIStrategy(BaseStrategy):
         if len(close) < max(bb_period, rsi_period) + 1:
             return None  # datos insuficientes
 
-        # Calcular indicadores
-        bb = self._compute_bollinger(close, bb_period=bb_period, bb_std=bb_std)
-        rsi = compute_rsi(close, rsi_period)
+        # Delegar a _compute_indicators
+        ind = self._compute_indicators(data, symbol)
+        last_close = ind.get("close")
+        last_lower = ind.get("bb_lower")
+        last_middle = ind.get("bb_middle")
+        last_upper = ind.get("bb_upper")
+        last_rsi = ind.get("rsi")
 
-        last_close = float(close.iloc[-1])
-        last_lower = float(bb["lower"].iloc[-1])
-        last_middle = float(bb["middle"].iloc[-1])
-        last_rsi = float(rsi.iloc[-1])
+        if any(v is None for v in [last_close, last_lower, last_middle, last_upper, last_rsi]):
+            return None
+
+        rsi_oversold_local = rsi_oversold
+        rsi_overbought_local = rsi_overbought
 
         metadata = {
             "bb_lower": round(last_lower, 2),
             "bb_middle": round(last_middle, 2),
-            "bb_upper": round(float(bb["upper"].iloc[-1]), 2),
+            "bb_upper": round(last_upper, 2),
             "rsi": round(last_rsi, 2),
         }
 
         # SEÑAL BUY: precio en banda inferior + RSI sobrevendido
-        if last_close <= last_lower and last_rsi < rsi_oversold:
+        if last_close <= last_lower and last_rsi < rsi_oversold_local:
             return {
                 "action": "BUY",
                 "price": last_close,
@@ -194,7 +261,7 @@ class BollingerRSIStrategy(BaseStrategy):
         sell_signal = False
         if self.exit_bb_middle and last_close >= last_middle:
             sell_signal = True
-        if self.exit_rsi_overbought and last_rsi > rsi_overbought:
+        if self.exit_rsi_overbought and last_rsi > rsi_overbought_local:
             sell_signal = True
 
         if sell_signal:
@@ -205,6 +272,107 @@ class BollingerRSIStrategy(BaseStrategy):
             }
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explica las condiciones actuales de RSI y Bollinger Bands.
+
+        Returns:
+            Dict con indicadores, condiciones y señal.
+        """
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            rsi_oversold = profile["rsi_oversold"]
+            rsi_overbought = profile["rsi_overbought"]
+        else:
+            rsi_oversold = self.rsi_oversold
+            rsi_overbought = self.rsi_overbought
+
+        rsi_val = ind.get("rsi")
+        bb_upper = ind.get("bb_upper")
+        bb_lower = ind.get("bb_lower")
+        bb_middle = ind.get("bb_middle")
+        close_val = ind.get("close")
+        bb_width = ind.get("bb_width")
+
+        conditions = []
+
+        if rsi_val is not None:
+            # RSI Oversold condition
+            conditions.append({
+                "name": "RSI Oversold",
+                "met": rsi_val < rsi_oversold,
+                "value": round(rsi_val, 2),
+                "threshold": float(rsi_oversold),
+                "gap_pct": round(_calc_gap(rsi_val, float(rsi_oversold), "below"), 2),
+                "direction": "below",
+            })
+            # RSI Overbought condition
+            conditions.append({
+                "name": "RSI Overbought",
+                "met": rsi_val > rsi_overbought,
+                "value": round(rsi_val, 2),
+                "threshold": float(rsi_overbought),
+                "gap_pct": round(_calc_gap(rsi_val, float(rsi_overbought), "above"), 2),
+                "direction": "above",
+            })
+
+        if close_val is not None and bb_lower is not None:
+            conditions.append({
+                "name": "Close at Lower BB",
+                "met": close_val <= bb_lower,
+                "value": round(close_val, 2),
+                "threshold": round(bb_lower, 2),
+                "gap_pct": round(_calc_gap(close_val, bb_lower, "below"), 2),
+                "direction": "below",
+            })
+
+        if close_val is not None and bb_middle is not None:
+            conditions.append({
+                "name": "Close above Middle BB",
+                "met": close_val >= bb_middle,
+                "value": round(close_val, 2),
+                "threshold": round(bb_middle, 2),
+                "gap_pct": round(_calc_gap(close_val, bb_middle, "above"), 2),
+                "direction": "above",
+            })
+
+        if bb_width is not None:
+            conditions.append({
+                "name": "BB Width",
+                "met": True,
+                "value": bb_width,
+                "threshold": 0.0,
+                "gap_pct": 0.0,
+                "direction": "above",
+            })
+
+        inds = {}
+        if rsi_val is not None:
+            inds["rsi"] = round(rsi_val, 2)
+        if bb_upper is not None:
+            inds["bb_upper"] = round(bb_upper, 2)
+        if bb_middle is not None:
+            inds["bb_middle"] = round(bb_middle, 2)
+        if bb_lower is not None:
+            inds["bb_lower"] = round(bb_lower, 2)
+        if bb_width is not None:
+            inds["bb_width"] = bb_width
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(
         self,

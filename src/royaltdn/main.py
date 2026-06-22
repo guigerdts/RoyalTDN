@@ -232,6 +232,7 @@ def cmd_run():
     seed_trades = "--seed-trades" in sys.argv[2:]
     if seed_trades:
         _load_seed_trades()
+    verbose = "--verbose" in sys.argv[2:]
 
     if not API_KEY or not API_SECRET:
         logger.error("ALPACA_API_KEY y ALPACA_SECRET_KEY deben estar en .env")
@@ -368,6 +369,7 @@ def cmd_run():
             crypto_data_client=crypto_client,
             brokers=brokers,
         )
+        scanner.verbose = verbose
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),

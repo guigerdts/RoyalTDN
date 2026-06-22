@@ -26,7 +26,7 @@ from loguru import logger
 import pandas as pd
 import redis.asyncio as aioredis
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 # ── Cálculo de SMA (puro, sin dependencias externas) ──────────────────
 
@@ -118,6 +118,54 @@ class SMAStrategy(BaseStrategy):
     def name(self) -> str:
         return "sma_crossover"
 
+    # ── _compute_indicators ─────────────────────────────────────────────
+
+    def _compute_indicators(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Calcula SMA short/long y detecta cruce.
+
+        Args:
+            data: DataFrame con columna ``close``.
+            symbol: Opcional para resolución de perfil.
+
+        Returns:
+            Dict con sma_short, sma_long, sma_diff, signal_generated.
+        """
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            sma_fast: int = profile["sma_fast"]
+            sma_slow: int = profile["sma_slow"]
+        else:
+            sma_fast = self.sma_fast
+            sma_slow = self.sma_slow
+
+        if "close" not in data.columns:
+            return {"sma_short": None, "sma_long": None, "sma_diff": None, "signal_generated": False}
+
+        closes = data["close"].dropna().tolist()
+        if len(closes) < sma_slow:
+            return {"sma_short": None, "sma_long": None, "sma_diff": None, "signal_generated": False}
+
+        curr_fast = compute_sma(closes, sma_fast)
+        curr_slow = compute_sma(closes, sma_slow)
+
+        if curr_fast is None or curr_slow is None:
+            return {"sma_short": None, "sma_long": None, "sma_diff": None, "signal_generated": False}
+
+        sma_diff = curr_fast - curr_slow
+        return {
+            "sma_short": curr_fast,
+            "sma_long": curr_slow,
+            "sma_diff": sma_diff,
+            "signal_generated": sma_diff > 0,
+        }
+
     # ── Implementación BaseStrategy ─────────────────────────────────────
 
     def generate_signal(
@@ -129,9 +177,6 @@ class SMAStrategy(BaseStrategy):
 
         Usa el cierre (``close``) para calcular SMA rápida y lenta,
         y detecta el cruce entre el valor actual y el anterior.
-        Cuando se pasa un ``symbol`` conocido, resuelve el perfil
-        de parámetros (crypto vs stocks) a variables locales,
-        sin mutar ``self.*``.
 
         Args:
             data: DataFrame con columna ``close`` (obligatorio).
@@ -160,9 +205,10 @@ class SMAStrategy(BaseStrategy):
         if len(closes) < sma_slow:
             return None
 
-        # Valores actuales
-        curr_fast = compute_sma(closes, sma_fast)
-        curr_slow = compute_sma(closes, sma_slow)
+        # Delegar a _compute_indicators para valores actuales
+        ind = self._compute_indicators(data, symbol)
+        curr_fast = ind.get("sma_short")
+        curr_slow = ind.get("sma_long")
 
         if curr_fast is None or curr_slow is None:
             return None
@@ -184,6 +230,50 @@ class SMAStrategy(BaseStrategy):
                 "fast_period": sma_fast,
                 "slow_period": sma_slow,
             },
+        }
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explica la condición actual del cruce SMA.
+
+        Returns:
+            Dict con indicadores, condiciones y señal.
+        """
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        sma_short = ind.get("sma_short")
+        sma_long = ind.get("sma_long")
+
+        if sma_short is not None and sma_long is not None:
+            inds = {
+                "sma_short": round(sma_short, 2),
+                "sma_long": round(sma_long, 2),
+                "sma_diff": round(ind.get("sma_diff", 0), 2),
+            }
+
+            met = sma_short > sma_long
+            conditions = [
+                {
+                    "name": "SMA Short > SMA Long",
+                    "met": met,
+                    "value": round(sma_short, 2),
+                    "threshold": round(sma_long, 2),
+                    "gap_pct": round(_calc_gap(sma_short, sma_long, "above"), 2),
+                    "direction": "above",
+                },
+            ]
+        else:
+            inds = {}
+            conditions = []
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
         }
 
     def get_parameters(
