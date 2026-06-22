@@ -288,6 +288,19 @@ def cmd_run():
         from royaltdn.strategy.bollinger_rsi import BollingerRSIStrategy
         from royaltdn.strategy.momentum_atr import MomentumATRStrategy
         from royaltdn.strategy.factor_rotation import FactorRotationStrategy
+        from royaltdn.strategy.scalping_momentum import ScalpingMomentumStrategy
+        from royaltdn.strategy.scalping_breakout import ScalpingBreakoutStrategy
+        from royaltdn.strategy.scalping_reversion import ScalpingReversionStrategy
+        from royaltdn.strategy.scalping_orderflow import ScalpingOrderFlowStrategy
+        from royaltdn.strategy.scalping_spread import ScalpingSpreadStrategy
+        from royaltdn.strategy.intraday_trend import IntradayTrendStrategy
+        from royaltdn.strategy.intraday_vwap import IntradayVWAPStrategy
+        from royaltdn.strategy.intraday_volume_breakout import IntradayVolumeBreakoutStrategy
+        from royaltdn.strategy.intraday_support_resistance import IntradaySupportResistanceStrategy
+        from royaltdn.strategy.intraday_macd_divergence import IntradayMACDDivergenceStrategy
+        from royaltdn.strategy.swing_trend_following import SwingTrendFollowingStrategy
+        from royaltdn.strategy.swing_reversion import SwingReversionStrategy
+        from royaltdn.strategy.swing_breakout import SwingBreakoutStrategy
 
         data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
         crypto_client = CryptoHistoricalDataClient(API_KEY, API_SECRET)
@@ -313,7 +326,7 @@ def cmd_run():
         )
         strategies = {}
         strategies_enabled = os.getenv(
-            "STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr"
+            "STRATEGIES_ENABLED", "sma_crossover,bollinger_rsi,momentum_atr,factor_rotation,scalping_momentum,scalping_breakout,scalping_reversion,scalping_orderflow,scalping_spread,intraday_trend,intraday_vwap,intraday_volume_breakout,intraday_support_resistance,intraday_macd_divergence,swing_trend_following,swing_reversion,swing_breakout"
         ).split(",")
         if "sma_crossover" in strategies_enabled:
             strategies["sma_crossover"] = SMAStrategy()
@@ -323,6 +336,32 @@ def cmd_run():
             strategies["momentum_atr"] = MomentumATRStrategy()
         if "factor_rotation" in strategies_enabled:
             strategies["factor_rotation"] = FactorRotationStrategy()
+        if "scalping_momentum" in strategies_enabled:
+            strategies["scalping_momentum"] = ScalpingMomentumStrategy()
+        if "scalping_breakout" in strategies_enabled:
+            strategies["scalping_breakout"] = ScalpingBreakoutStrategy()
+        if "scalping_reversion" in strategies_enabled:
+            strategies["scalping_reversion"] = ScalpingReversionStrategy()
+        if "scalping_orderflow" in strategies_enabled:
+            strategies["scalping_orderflow"] = ScalpingOrderFlowStrategy()
+        if "scalping_spread" in strategies_enabled:
+            strategies["scalping_spread"] = ScalpingSpreadStrategy()
+        if "intraday_trend" in strategies_enabled:
+            strategies["intraday_trend"] = IntradayTrendStrategy()
+        if "intraday_vwap" in strategies_enabled:
+            strategies["intraday_vwap"] = IntradayVWAPStrategy()
+        if "intraday_volume_breakout" in strategies_enabled:
+            strategies["intraday_volume_breakout"] = IntradayVolumeBreakoutStrategy()
+        if "intraday_support_resistance" in strategies_enabled:
+            strategies["intraday_support_resistance"] = IntradaySupportResistanceStrategy()
+        if "intraday_macd_divergence" in strategies_enabled:
+            strategies["intraday_macd_divergence"] = IntradayMACDDivergenceStrategy()
+        if "swing_trend_following" in strategies_enabled:
+            strategies["swing_trend_following"] = SwingTrendFollowingStrategy()
+        if "swing_reversion" in strategies_enabled:
+            strategies["swing_reversion"] = SwingReversionStrategy()
+        if "swing_breakout" in strategies_enabled:
+            strategies["swing_breakout"] = SwingBreakoutStrategy()
 
         scanner = Scanner(
             universe, liquidity_filter, strategies, data_client,
