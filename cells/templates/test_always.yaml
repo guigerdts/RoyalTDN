@@ -1,0 +1,15 @@
+name: test_always
+symbol: BTCUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+    - indicator: rsi
+      params: {period: 2}
+      operator: "< 100"
+exit:
+  - type: take_profit
+    params: {atr_multiplier: 0.1}
+risk:
+  sizing: 0.001
+  max_positions: 1

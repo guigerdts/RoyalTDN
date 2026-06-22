@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from core.bus import EventBus
 from core.clock import RealClock
 from core.engine import EventEngine
+from core.journal import Journal
 from core.registry import CellRegistry
 from inference.engine import InferenceEngine
 from cells.loader import load_cells
@@ -60,8 +61,11 @@ async def main():
     
     broker.set_bus(bus)
 
+    # Journal estructurado
+    journal = Journal(log_path="logs/trading.log", bus=bus)
+
     # Engine
-    engine = EventEngine(clock, bus, risk_manager, broker)
+    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal)
 
     # Cargar celulas desde YAML
     strategies_dir = Path(__file__).parent / config["strategies_dir"]

@@ -150,14 +150,23 @@ class Dashboard:
         """Build the events table panel."""
         from rich.panel import Panel
         from rich.table import Table
+        from rich.text import Text
+
+        TYPE_STYLES = {
+            "signal": "yellow",
+            "approved": "green",
+            "rejected": "red",
+            "executed": "cyan",
+            "position": "magenta",
+            "trade": "cyan",
+        }
 
         table = Table(title="Eventos recientes")
         table.add_column("Timestamp", style="cyan")
         table.add_column("Symbol", style="green")
-        table.add_column("Type", style="yellow")
-        table.add_column("Price", justify="right")
-        table.add_column("Action", style="magenta")
-        table.add_column("Status", style="blue")
+        table.add_column("Type")
+        table.add_column("Details")
+        table.add_column("Action")
 
         for event in self._events[-20:]:
             ts = str(event.get("timestamp", ""))
@@ -165,17 +174,40 @@ class Dashboard:
                 ts = ts[:19]
             symbol = event.get("symbol", "")
             etype = event.get("type", "")
-            price = event.get("price", 0.0)
             action = event.get("action", "")
-            status = event.get("status", "OK")
-            table.add_row(
-                ts,
-                symbol,
-                etype,
-                f"${price:.2f}" if price else "-",
-                action or "-",
-                status,
-            )
+
+            # Pretty-print details based on event type
+            if etype == "tick":
+                price = event.get("price", 0.0)
+                details = f"${price:.2f}" if price else "-"
+            elif etype == "signal":
+                details = f"${event.get('price', 0.0):.2f} ({event.get('strategy', '?')})"
+            elif etype == "approved":
+                details = event.get("reason", "risk_check_passed")
+            elif etype == "rejected":
+                details = event.get("reason", "risk_rejected")
+            elif etype == "executed":
+                qty = event.get("qty", 0)
+                details = f"{qty} @ ${event.get('price', 0.0):.2f}"
+            elif etype == "position":
+                status = event.get("status", "")
+                if status == "opened":
+                    cap = event.get("capital", 0)
+                    details = f"abierta — capital=${cap:,.2f}"
+                elif status == "closed":
+                    pnl = event.get("pnl", 0.0)
+                    cap = event.get("capital", 0)
+                    emoji = "+" if pnl >= 0 else ""
+                    details = f"cerrada — PnL={emoji}${pnl:.2f} capital=${cap:,.2f}"
+                else:
+                    details = str(event.get("status", ""))
+            else:
+                details = str(event.get("price", "")) or "-"
+
+            type_style = TYPE_STYLES.get(etype, "white")
+            type_cell = Text(etype, style=type_style)
+
+            table.add_row(ts, symbol, type_cell, details, action or "-")
 
         return Panel(table)
 

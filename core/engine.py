@@ -33,6 +33,7 @@ class EventEngine:
         bus: Any,
         risk_manager: Any,
         execution_broker: Any,
+        journal: Any = None,
     ) -> None:
         """Initialise the event engine.
 
@@ -42,11 +43,13 @@ class EventEngine:
             risk_manager: RiskManager for trade approval.
             execution_broker: PaperBroker or live broker for order
                 execution.
+            journal: Optional Journal instance for structured trade logging.
         """
         self.clock = clock
         self.bus = bus
         self.risk_manager = risk_manager
         self.execution_broker = execution_broker
+        self.journal = journal
         self.cells: list[Any] = []
         self._running = False
 
@@ -110,6 +113,8 @@ class EventEngine:
             if signal is None:
                 continue
 
+            cell_name = getattr(cell, "name", "?")
+
             # -- Signal event ------------------------------------------------
             signal_event: dict[str, Any] = {
                 "type": "signal",
@@ -124,6 +129,14 @@ class EventEngine:
             except Exception:
                 logger.exception("Error al emitir evento de senal")
 
+            if self.journal is not None:
+                await self.journal.signal(
+                    symbol=signal.get("symbol", ""),
+                    action=signal.get("action", ""),
+                    price=signal.get("price", 0.0),
+                    strategy=cell_name,
+                )
+
             # -- Risk check --------------------------------------------------
             try:
                 approved = self.risk_manager.approve(signal)
@@ -137,7 +150,19 @@ class EventEngine:
                     signal.get("action"),
                     signal.get("symbol"),
                 )
+                if self.journal is not None:
+                    await self.journal.rejected(
+                        symbol=signal.get("symbol", ""),
+                        action=signal.get("action", ""),
+                    )
                 continue
+
+            # Risk check passed
+            if self.journal is not None:
+                await self.journal.approved(
+                    symbol=approved.get("symbol", ""),
+                    action=approved.get("action", ""),
+                )
 
             # -- Execution ---------------------------------------------------
             try:
@@ -161,6 +186,14 @@ class EventEngine:
                 except Exception:
                     logger.exception("Error al emitir evento de trade")
 
+                if self.journal is not None:
+                    await self.journal.executed(
+                        symbol=approved.get("symbol", ""),
+                        action=approved.get("action", ""),
+                        qty=approved.get("qty", 0),
+                        price=approved.get("price", 0.0),
+                    )
+
                 # Update broker's internal portfolio
                 update_portfolio = getattr(
                     self.execution_broker, "update_portfolio", None
@@ -180,6 +213,22 @@ class EventEngine:
                     logger.exception(
                         "Error al actualizar portfolio del risk manager"
                     )
+
+                # Journal position change (uses post-trade capital)
+                if self.journal is not None:
+                    _action = approved.get("action", "")
+                    _symbol = approved.get("symbol", "")
+                    _capital = self.risk_manager.portfolio.capital
+                    if _action == "BUY":
+                        await self.journal.position_opened(_symbol, _capital)
+                    elif _action == "SELL":
+                        _entry = approved.get("entry_price", 0.0)
+                        _exit_px = approved.get("price", 0.0)
+                        _qty = approved.get("qty", 0)
+                        _pnl = (_exit_px - _entry) * _qty
+                        await self.journal.position_closed(
+                            _symbol, _pnl, _capital,
+                        )
 
                 logger.info(
                     "Trade ejecutado: {} {} {} @ ${:.2f} (orden: {})",
