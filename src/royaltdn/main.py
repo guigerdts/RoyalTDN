@@ -221,6 +221,202 @@ def _load_seed_trades() -> None:
         logger.warning("Error cargando seed trades: {}", e)
 
 
+# ── Comando: check-readiness ──────────────────────────────────────────────
+
+
+def cmd_check_readiness():
+    """6 independent checks for real-money readiness.
+
+    Uses StateLoader for JSON reads, Alpaca/Binance clients directly.
+    Exits with code 0 (READY), 1 (CASI LISTO), or 2 (NO RECOMENDADO).
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+    from royaltdn.frontend.console.components.state import StateLoader
+
+    console = Console(color_system="standard")
+    loader = StateLoader()
+    checks: list[dict] = []
+
+    # 1. Trades suficientes
+    try:
+        trades_data = loader.load_trades()
+        trades_list = trades_data.get("trades", [])
+        n_trades = len(trades_list)
+        passed = n_trades >= 50
+        checks.append({
+            "name": "Trades suficientes",
+            "passed": passed,
+            "detail": f"{n_trades}/50 trades",
+            "severity": "critical",
+        })
+    except Exception as e:
+        checks.append({
+            "name": "Trades suficientes",
+            "passed": False,
+            "detail": f"Error: {e}",
+            "severity": "critical",
+        })
+
+    # 2. Sharpe reciente
+    try:
+        equity_data = loader._load_file("equity.json", {})
+        sharpe = float(equity_data.get("sharpe", 0))
+        passed = sharpe > 0.5
+        checks.append({
+            "name": "Sharpe reciente",
+            "passed": passed,
+            "detail": f"Sharpe={sharpe:.2f} {'> 0.5' if passed else '<= 0.5'}",
+            "severity": "critical",
+        })
+    except Exception as e:
+        checks.append({
+            "name": "Sharpe reciente",
+            "passed": False,
+            "detail": f"Error: {e}",
+            "severity": "critical",
+        })
+
+    # 3. Slippage aceptable
+    try:
+        trades_data = loader.load_trades()
+        trades_list = trades_data.get("trades", [])
+        slippages = []
+        for t in trades_list:
+            s = t.get("slippage_bps", None)
+            if s is not None:
+                slippages.append(float(s))
+        avg_slippage = sum(slippages) / len(slippages) if slippages else 0
+        passed = avg_slippage < 50 if slippages else True
+        checks.append({
+            "name": "Slippage aceptable",
+            "passed": passed,
+            "detail": f"{avg_slippage:.1f} bps promedio {'< 50' if passed else '>= 50'}",
+            "severity": "critical",
+        })
+    except Exception as e:
+        checks.append({
+            "name": "Slippage aceptable",
+            "passed": False,
+            "detail": f"Error: {e}",
+            "severity": "critical",
+        })
+
+    # 4. Kill switch probado
+    try:
+        from pathlib import Path
+        log_text = Path("logs/bot.log").read_text(encoding="utf-8")
+        found = "KILL SWITCH" in log_text or "drawdown >" in log_text
+        checks.append({
+            "name": "Kill switch probado",
+            "passed": found,
+            "detail": "Encontrado en bot.log" if found else "No encontrado en bot.log",
+            "severity": "critical",
+        })
+    except Exception as e:
+        checks.append({
+            "name": "Kill switch probado",
+            "passed": False,
+            "detail": f"Error: {e}",
+            "severity": "critical",
+        })
+
+    # 5. Telegram funciona
+    try:
+        from pathlib import Path
+        log_text = Path("logs/bot.log").read_text(encoding="utf-8")
+        found = "Telegram enviado" in log_text
+        checks.append({
+            "name": "Telegram funciona",
+            "passed": found,
+            "detail": "Encontrado en bot.log" if found else "No encontrado en bot.log",
+            "severity": "warning",
+        })
+    except Exception as e:
+        checks.append({
+            "name": "Telegram funciona",
+            "passed": False,
+            "detail": f"Error: {e}",
+            "severity": "warning",
+        })
+
+    # 6. Broker conectividad
+    alpaca_ok = False
+    binance_ok = False
+    try:
+        from alpaca.trading.client import TradingClient
+        tc = TradingClient(API_KEY, API_SECRET, paper=True)
+        tc.get_account()
+        alpaca_ok = True
+    except Exception as e:
+        alpaca_detail = f"Alpaca: {e}"
+    try:
+        binance_key = os.getenv("BINANCE_API_KEY", "")
+        binance_secret = os.getenv("BINANCE_SECRET_KEY", "")
+        if binance_key:
+            from royaltdn.brokers.binance import BinanceBroker
+            bb = BinanceBroker(binance_key, binance_secret, testnet=True)
+            bb.get_account_balance()
+            binance_ok = True
+        else:
+            binance_ok = True  # No Binance configured = OK (not needed)
+    except Exception as e:
+        binance_detail = f"Binance: {e}"
+
+    detail_parts = []
+    if alpaca_ok:
+        detail_parts.append("Alpaca OK")
+    else:
+        detail_parts.append(alpaca_detail)
+    if binance_ok:
+        detail_parts.append("Binance OK")
+    else:
+        detail_parts.append(binance_detail)
+
+    checks.append({
+        "name": "Broker conectividad",
+        "passed": alpaca_ok,
+        "detail": " | ".join(detail_parts),
+        "severity": "critical",
+    })
+
+    # ── Render panel ─────────────────────────────────────────────────
+    n_critical_fail = sum(1 for c in checks if not c["passed"] and c["severity"] == "critical")
+    n_warning_fail = sum(1 for c in checks if not c["passed"] and c["severity"] == "warning")
+
+    table = Table.grid(padding=(0, 1))
+    table.add_column(style="bold white")
+    for c in checks:
+        icon = "✅" if c["passed"] else "❌"
+        name_style = "green" if c["passed"] else "red"
+        detail_text = f"\n  [dim]{c['detail']}[/]" if not c["passed"] else ""
+        table.add_row(
+            Text.assemble(
+                (f"{icon} ", ""),
+                (c["name"], name_style),
+                (detail_text, ""),
+            )
+        )
+
+    if n_critical_fail == 0 and n_warning_fail == 0:
+        verdict = Text("✅ READY — Todas las verificaciones OK", style="bold green")
+        exit_code = 0
+    elif n_critical_fail == 0:
+        verdict = Text(f"⚠️ CASI LISTO — {n_warning_fail} pendiente(s)", style="bold yellow")
+        exit_code = 1
+    else:
+        verdict = Text("❌ NO RECOMENDADO — Pruebas insuficientes", style="bold red")
+        exit_code = 2
+
+    console.print()
+    console.print(Panel(table, title="🔍 Verificación de Readiness", border_style="white"))
+    console.print()
+    console.print(verdict)
+    sys.exit(exit_code)
+
+
 # ── Comando: run ───────────────────────────────────────────────────────────
 
 
@@ -232,6 +428,7 @@ def cmd_run():
     seed_trades = "--seed-trades" in sys.argv[2:]
     if seed_trades:
         _load_seed_trades()
+    verbose = "--verbose" in sys.argv[2:]
 
     if not API_KEY or not API_SECRET:
         logger.error("ALPACA_API_KEY y ALPACA_SECRET_KEY deben estar en .env")
@@ -368,6 +565,7 @@ def cmd_run():
             crypto_data_client=crypto_client,
             brokers=brokers,
         )
+        scanner.verbose = verbose
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),
@@ -377,8 +575,9 @@ def cmd_run():
         logger.warning("Scanner no disponible desde main ({})", e)
 
     if scanner is not None:
-        from royaltdn.frontend.menu.app import set_universe_setter
+        from royaltdn.frontend.menu.app import set_universe_setter, set_scanner
         set_universe_setter(lambda ut: setattr(scanner.universe, 'universe_type', ut))
+        set_scanner(scanner)
 
     orch = Orchestrator(
         api_key=API_KEY,
@@ -421,7 +620,8 @@ def main():
         print("  pause       Pausar el bot")
         print("  resume      Reanudar el bot")
         print("  scanner     Disparar scanner manual")
-        print("  check       Verificar configuración")
+        print("  check            Verificar configuración")
+        print("  check-readiness  Verificar preparación para dinero real")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -433,6 +633,7 @@ def main():
         "resume": cmd_resume,
         "scanner": cmd_scanner,
         "check": cmd_check,
+        "check-readiness": cmd_check_readiness,
     }
 
     if cmd not in commands:

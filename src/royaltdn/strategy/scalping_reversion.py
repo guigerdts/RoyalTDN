@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 class ScalpingReversionStrategy(BaseStrategy):
@@ -44,11 +44,11 @@ class ScalpingReversionStrategy(BaseStrategy):
     def name(self) -> str:
         return "scalping_reversion"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -60,21 +60,49 @@ class ScalpingReversionStrategy(BaseStrategy):
             deviation = self.deviation
 
         if "close" not in data.columns or len(data) < period + 1:
-            return None
+            return {
+                "close": None, "sma": None, "std": None,
+                "lower_band": None, "upper_band": None,
+                "period": period, "deviation": deviation,
+            }
 
         close = data["close"]
-        sma = close.rolling(period).mean()
-        std = close.rolling(period).std()
+        sma_series = close.rolling(period).mean()
+        std_series = close.rolling(period).std()
 
         last_close = float(close.iloc[-1])
-        last_sma = float(sma.iloc[-1])
-        last_std = float(std.iloc[-1])
-
-        if last_std == 0:
-            return None
+        last_sma = float(sma_series.iloc[-1])
+        last_std = float(std_series.iloc[-1])
 
         lower_band = last_sma - deviation * last_std
         upper_band = last_sma + deviation * last_std
+
+        return {
+            "close": last_close,
+            "sma": last_sma,
+            "std": last_std,
+            "lower_band": lower_band,
+            "upper_band": upper_band,
+            "period": period,
+            "deviation": deviation,
+        }
+
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        ind = self._compute_indicators(data, symbol)
+        last_close = ind.get("close")
+        last_sma = ind.get("sma")
+        last_std = ind.get("std")
+        lower_band = ind.get("lower_band")
+        upper_band = ind.get("upper_band")
+        deviation = ind["deviation"]
+        period = ind["period"]
+
+        if last_close is None or last_std == 0:
+            return None
 
         metadata = {
             "sma": round(last_sma, 2),
@@ -91,6 +119,56 @@ class ScalpingReversionStrategy(BaseStrategy):
             return {"action": "SELL", "price": last_close, "metadata": metadata}
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        close_val = ind.get("close")
+        lower_band = ind.get("lower_band")
+        upper_band = ind.get("upper_band")
+
+        conditions = []
+        if None not in (close_val, lower_band):
+            conditions.append({
+                "name": "Close < Lower Band",
+                "met": close_val < lower_band,
+                "value": round(close_val, 2),
+                "threshold": round(lower_band, 2),
+                "gap_pct": round(_calc_gap(close_val, lower_band, "below"), 2),
+                "direction": "below",
+            })
+        if None not in (close_val, upper_band):
+            conditions.append({
+                "name": "Close > Upper Band",
+                "met": close_val > upper_band,
+                "value": round(close_val, 2),
+                "threshold": round(upper_band, 2),
+                "gap_pct": round(_calc_gap(close_val, upper_band, "above"), 2),
+                "direction": "above",
+            })
+
+        inds = {}
+        if close_val is not None:
+            inds["close"] = round(close_val, 2)
+        if ind.get("sma") is not None:
+            inds["sma"] = round(ind["sma"], 2)
+        if ind.get("std") is not None:
+            inds["std"] = round(ind["std"], 2)
+        if lower_band is not None:
+            inds["lower_band"] = round(lower_band, 2)
+        if upper_band is not None:
+            inds["upper_band"] = round(upper_band, 2)
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         if symbol is None:

@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 class IntradayVolumeBreakoutStrategy(BaseStrategy):
@@ -47,20 +47,11 @@ class IntradayVolumeBreakoutStrategy(BaseStrategy):
     def name(self) -> str:
         return "intraday_volume_breakout"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Generate volume breakout signal.
-
-        Args:
-            data: OHLCV DataFrame with close, high, low, volume columns.
-            symbol: Optional ticker, resolves crypto/stocks profile.
-
-        Returns:
-            Dict with action, price, metadata or None.
-        """
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -73,39 +64,113 @@ class IntradayVolumeBreakoutStrategy(BaseStrategy):
 
         required = ["close", "high", "low", "volume"]
         if any(c not in data.columns for c in required) or len(data) < breakout_period + 1:
-            return None
+            return {"volume_ratio": None, "avg_volume": None, "close": None,
+                    "range_high": None, "range_low": None,
+                    "breakout_period": breakout_period, "volume_surge_pct": volume_surge_pct}
 
         close = data["close"]
         high = data["high"]
         low = data["low"]
         volume = data["volume"]
 
-        last_volume = float(volume.iloc[-1])
         avg_volume = float(volume.rolling(breakout_period).mean().iloc[-1])
-
         if avg_volume <= 0:
-            return None
+            return {"volume_ratio": None, "avg_volume": None, "close": None,
+                    "range_high": None, "range_low": None,
+                    "breakout_period": breakout_period, "volume_surge_pct": volume_surge_pct}
 
+        last_volume = float(volume.iloc[-1])
         volume_ratio = last_volume / avg_volume
         last_close = float(close.iloc[-1])
         range_high = float(high.iloc[-breakout_period:].max())
         range_low = float(low.iloc[-breakout_period:].min())
 
-        metadata = {
-            "volume_ratio": round(volume_ratio, 2),
-            "avg_volume": round(avg_volume, 0),
-            "range_high": range_high,
-            "range_low": range_low,
-            "breakout_period": breakout_period,
+        return {
+            "volume_ratio": volume_ratio, "avg_volume": avg_volume,
+            "close": last_close, "range_high": range_high, "range_low": range_low,
+            "breakout_period": breakout_period, "volume_surge_pct": volume_surge_pct,
         }
 
-        if volume_ratio > volume_surge_pct:
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate volume breakout signal."""
+        ind = self._compute_indicators(data, symbol)
+        volume_ratio = ind.get("volume_ratio")
+        last_close = ind.get("close")
+        range_high = ind.get("range_high")
+        range_low = ind.get("range_low")
+        if volume_ratio is None or last_close is None:
+            return None
+
+        metadata = {
+            "volume_ratio": round(volume_ratio, 2),
+            "avg_volume": round(ind["avg_volume"], 0),
+            "range_high": range_high, "range_low": range_low,
+            "breakout_period": ind["breakout_period"],
+        }
+
+        surge = ind["volume_surge_pct"]
+        if volume_ratio > surge:
             if last_close > range_high:
                 return {"action": "BUY", "price": last_close, "metadata": metadata}
             if last_close < range_low:
                 return {"action": "SELL", "price": last_close, "metadata": metadata}
-
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        vr = ind.get("volume_ratio")
+        surge = ind.get("volume_surge_pct")
+        rh = ind.get("range_high")
+        rl = ind.get("range_low")
+        c = ind.get("close")
+
+        conditions = []
+        if vr is not None and surge is not None:
+            conditions.append({
+                "name": "Volume surge",
+                "met": vr > surge, "value": round(vr, 2),
+                "threshold": float(surge),
+                "gap_pct": round(_calc_gap(vr, float(surge), "above"), 2),
+                "direction": "above",
+            })
+        if c is not None and rh is not None:
+            conditions.append({
+                "name": "Price > range high",
+                "met": c > rh, "value": round(c, 2),
+                "threshold": round(rh, 2),
+                "gap_pct": round(_calc_gap(c, rh, "above"), 2),
+                "direction": "above",
+            })
+        if c is not None and rl is not None:
+            conditions.append({
+                "name": "Price < range low",
+                "met": c < rl, "value": round(c, 2),
+                "threshold": round(rl, 2),
+                "gap_pct": round(_calc_gap(c, rl, "below"), 2),
+                "direction": "below",
+            })
+
+        inds = {}
+        if vr is not None:
+            inds["volume_ratio"] = round(vr, 2)
+        if c is not None:
+            inds["close"] = round(c, 2)
+        if rh is not None:
+            inds["range_high"] = round(rh, 2)
+        if rl is not None:
+            inds["range_low"] = round(rl, 2)
+
+        return {"indicators": inds, "conditions": conditions, "signal": signal}
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """Return current strategy parameters.

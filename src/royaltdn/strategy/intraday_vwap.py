@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 class IntradayVWAPStrategy(BaseStrategy):
@@ -47,20 +47,11 @@ class IntradayVWAPStrategy(BaseStrategy):
     def name(self) -> str:
         return "intraday_vwap"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Generate VWAP reversion signal.
-
-        Args:
-            data: OHLCV DataFrame with close column.
-            symbol: Optional ticker, resolves crypto/stocks profile.
-
-        Returns:
-            Dict with action, price, metadata or None.
-        """
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -72,36 +63,96 @@ class IntradayVWAPStrategy(BaseStrategy):
             vwap_period = self.vwap_period
 
         if "close" not in data.columns or len(data) < vwap_period + 1:
-            return None
+            return {"vwap": None, "std": None, "lower_band": None, "upper_band": None,
+                    "close": None, "vwap_period": vwap_period, "vwap_multiplier": vwap_multiplier}
 
         close = data["close"]
         vwap = close.rolling(vwap_period).mean()
         std = close.rolling(vwap_period).std()
-
         last_close = float(close.iloc[-1])
         last_vwap = float(vwap.iloc[-1])
         last_std = float(std.iloc[-1])
 
         if last_std == 0 or last_vwap == 0:
+            return {"vwap": None, "std": None, "lower_band": None, "upper_band": None,
+                    "close": None, "vwap_period": vwap_period, "vwap_multiplier": vwap_multiplier}
+
+        return {
+            "vwap": last_vwap, "std": last_std, "close": last_close,
+            "lower_band": last_vwap - last_std * vwap_multiplier,
+            "upper_band": last_vwap + last_std * vwap_multiplier,
+            "vwap_period": vwap_period, "vwap_multiplier": vwap_multiplier,
+        }
+
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate VWAP reversion signal."""
+        ind = self._compute_indicators(data, symbol)
+        vwap = ind.get("vwap")
+        std = ind.get("std")
+        lower_band = ind.get("lower_band")
+        upper_band = ind.get("upper_band")
+        last_close = ind.get("close")
+        if vwap is None or std is None or last_close is None:
             return None
 
-        lower_band = last_vwap - last_std * vwap_multiplier
-        upper_band = last_vwap + last_std * vwap_multiplier
-
         metadata = {
-            "vwap": round(last_vwap, 2),
-            "std": round(last_std, 2),
-            "lower_band": round(lower_band, 2),
-            "upper_band": round(upper_band, 2),
-            "vwap_period": vwap_period,
+            "vwap": round(vwap, 2), "std": round(std, 2),
+            "lower_band": round(lower_band, 2), "upper_band": round(upper_band, 2),
+            "vwap_period": ind["vwap_period"],
         }
 
         if last_close < lower_band:
             return {"action": "BUY", "price": last_close, "metadata": metadata}
         if last_close > upper_band:
             return {"action": "SELL", "price": last_close, "metadata": metadata}
-
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        lb = ind.get("lower_band")
+        ub = ind.get("upper_band")
+        c = ind.get("close")
+        vw = ind.get("vwap")
+
+        conditions = []
+        if c is not None and lb is not None:
+            conditions.append({
+                "name": "Close below lower band",
+                "met": c < lb, "value": round(c, 2),
+                "threshold": round(lb, 2),
+                "gap_pct": round(_calc_gap(c, lb, "below"), 2),
+                "direction": "below",
+            })
+        if c is not None and ub is not None:
+            conditions.append({
+                "name": "Close above upper band",
+                "met": c > ub, "value": round(c, 2),
+                "threshold": round(ub, 2),
+                "gap_pct": round(_calc_gap(c, ub, "above"), 2),
+                "direction": "above",
+            })
+
+        inds = {}
+        if vw is not None:
+            inds["vwap"] = round(vw, 2)
+        if c is not None:
+            inds["close"] = round(c, 2)
+        if lb is not None:
+            inds["lower_band"] = round(lb, 2)
+        if ub is not None:
+            inds["upper_band"] = round(ub, 2)
+
+        return {"indicators": inds, "conditions": conditions, "signal": signal}
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """Return current strategy parameters.

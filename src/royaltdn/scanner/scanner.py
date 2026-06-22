@@ -72,14 +72,22 @@ class Scanner:
         self._scan_history: List[dict] = []  # Fase 6 — last 10 scans
         self._auth_failed: bool = False
         self._token_bucket: TokenBucket = liquidity_filter.token_bucket
+        self.verbose: bool = False
+        self._last_explanations: Dict[str, Dict[str, dict]] = {}
 
-    def scan(self) -> List[dict]:
+    def scan(self, verbose: Optional[bool] = None) -> List[dict]:
         """Runs a full scan and returns ranked signals.
+
+        Args:
+            verbose: If True, populate _last_explanations.
+                     If None (default), falls back to self.verbose attribute.
 
         Returns:
             List of dicts with: symbol, strategy, action, price, score, metadata
             Ordered: FactorRotation (score desc) -> BUY before SELL -> rest
         """
+        if verbose is None:
+            verbose = self.verbose
         self._data_cache.clear()
         self._auth_failed = False
 
@@ -149,6 +157,14 @@ class Scanner:
                             }
                             signals.append(signal_dict)
 
+                        # Verbose: collect explanations
+                        if verbose and hasattr(strategy, 'explain'):
+                            explain_kwargs = {"symbol": symbol} if "symbol" in sig.parameters else {}
+                            explanation = strategy.explain(data, **explain_kwargs)
+                            if strategy_name not in self._last_explanations:
+                                self._last_explanations[strategy_name] = {}
+                            self._last_explanations[strategy_name][symbol] = explanation
+
                     except Exception as e:
                         logger.debug("Scanner: strategy {} failed for {}: {}", strategy_name, symbol, e)
                         continue
@@ -180,6 +196,13 @@ class Scanner:
         self._scan_history.append(scan_entry)
         if len(self._scan_history) > 10:
             self._scan_history = self._scan_history[-10:]
+
+        # Verbose: write explanations to log file
+        if verbose and self._last_explanations:
+            try:
+                self._write_verbose_log()
+            except Exception:
+                pass
 
         # Publish scanner results to logs/
         try:
@@ -383,6 +406,34 @@ class Scanner:
             Lista de las mejores N señales.
         """
         return self._last_scan_results[:n]
+
+    def _write_verbose_log(self) -> None:
+        """Append explanations to logs/scanner_verbose.log as ISO-8601 lines."""
+        from datetime import datetime, timezone
+
+        log_path = LOGS_DIR / "scanner_verbose.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        lines = []
+        for strategy_name, symbol_dict in self._last_explanations.items():
+            for symbol, explanation in symbol_dict.items():
+                signal = explanation.get("signal")
+                signal_action = "NO SIGNAL"
+                if signal is not None:
+                    signal_action = signal.get("action", "UNKNOWN")
+                conditions = explanation.get("conditions", [])
+                met_count = sum(1 for c in conditions if c.get("met", False))
+                total_count = len(conditions)
+                lines.append(
+                    f"{timestamp} | {symbol} | {strategy_name} | {signal_action} | "
+                    f"{met_count}/{total_count} conditions met"
+                )
+
+        try:
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8", mode="a")
+        except (OSError, IOError) as e:
+            logger.warning("Error writing verbose log: {}", e)
 
     # ── Status publishing (Fase 6) ───────────────────────────────────
 

@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 from royaltdn.strategy.momentum_atr import compute_atr
 
 
@@ -44,11 +44,11 @@ class ScalpingBreakoutStrategy(BaseStrategy):
     def name(self) -> str:
         return "scalping_breakout"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -61,7 +61,11 @@ class ScalpingBreakoutStrategy(BaseStrategy):
 
         required = ["close", "high", "low"]
         if any(c not in data.columns for c in required) or len(data) < period + 1:
-            return None
+            return {
+                "close": None, "recent_high": None, "recent_low": None,
+                "atr": None, "price_range": None, "atr_pct": None,
+                "period": period, "multiplier": multiplier,
+            }
 
         close = data["close"]
         high = data["high"]
@@ -73,24 +77,116 @@ class ScalpingBreakoutStrategy(BaseStrategy):
         last_high = float(high.iloc[-1])
         last_low = float(low.iloc[-1])
         price_range = last_high - last_low
+        recent_high = float(high.iloc[-period:].max())
+        recent_low = float(low.iloc[-period:].min())
+        atr_pct = (last_atr / last_close * 100) if last_close != 0 else 0.0
+
+        return {
+            "close": last_close,
+            "recent_high": recent_high,
+            "recent_low": recent_low,
+            "atr": last_atr,
+            "price_range": price_range,
+            "atr_pct": round(atr_pct, 2),
+            "period": period,
+            "multiplier": multiplier,
+        }
+
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        ind = self._compute_indicators(data, symbol)
+        last_close = ind.get("close")
+        recent_high = ind.get("recent_high")
+        recent_low = ind.get("recent_low")
+        last_atr = ind.get("atr")
+        price_range = ind.get("price_range")
+        period = ind["period"]
+        multiplier = ind["multiplier"]
+
+        if last_close is None or recent_high is None or last_atr is None:
+            return None
 
         metadata = {
             "atr": round(last_atr, 2),
             "price_range": round(price_range, 2),
-            "breakout_high": float(high.iloc[-period:].max()),
-            "breakout_low": float(low.iloc[-period:].min()),
+            "breakout_high": recent_high,
+            "breakout_low": recent_low,
             "period": period,
         }
 
-        # BUY: price breaks above recent high with enough range
-        if last_close > float(high.iloc[-period:].max()) and price_range > last_atr * multiplier:
+        if last_close > recent_high and price_range > last_atr * multiplier:
             return {"action": "BUY", "price": last_close, "metadata": metadata}
 
-        # SELL: price breaks below recent low with enough range
-        if last_close < float(low.iloc[-period:].min()) and price_range > last_atr * multiplier:
+        if last_close < recent_low and price_range > last_atr * multiplier:
             return {"action": "SELL", "price": last_close, "metadata": metadata}
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        close_val = ind.get("close")
+        recent_high = ind.get("recent_high")
+        recent_low = ind.get("recent_low")
+        last_atr = ind.get("atr")
+        price_range = ind.get("price_range")
+        multiplier = ind.get("multiplier")
+
+        conditions = []
+        if None not in (close_val, recent_high):
+            conditions.append({
+                "name": "Close > Recent High",
+                "met": close_val > recent_high,
+                "value": round(close_val, 2),
+                "threshold": round(recent_high, 2),
+                "gap_pct": round(_calc_gap(close_val, recent_high, "above"), 2),
+                "direction": "above",
+            })
+        if None not in (close_val, recent_low):
+            conditions.append({
+                "name": "Close < Recent Low",
+                "met": close_val < recent_low,
+                "value": round(close_val, 2),
+                "threshold": round(recent_low, 2),
+                "gap_pct": round(_calc_gap(close_val, recent_low, "below"), 2),
+                "direction": "below",
+            })
+        if None not in (last_atr, price_range, multiplier):
+            threshold_atr = last_atr * multiplier
+            conditions.append({
+                "name": "Range > ATR x Multiplier",
+                "met": price_range > threshold_atr,
+                "value": round(price_range, 2),
+                "threshold": round(threshold_atr, 2),
+                "gap_pct": round(_calc_gap(price_range, threshold_atr, "above"), 2),
+                "direction": "above",
+            })
+
+        inds = {}
+        if close_val is not None:
+            inds["close"] = round(close_val, 2)
+        if recent_high is not None:
+            inds["recent_high"] = round(recent_high, 2)
+        if recent_low is not None:
+            inds["recent_low"] = round(recent_low, 2)
+        if last_atr is not None:
+            inds["atr"] = round(last_atr, 2)
+        if price_range is not None:
+            inds["price_range"] = round(price_range, 2)
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         if symbol is None:

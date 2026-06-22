@@ -8,8 +8,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 from loguru import logger
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
-from royaltdn.strategy.base import BaseStrategy
 
 
 class SwingTrendFollowingStrategy(BaseStrategy):
@@ -73,6 +73,62 @@ class SwingTrendFollowingStrategy(BaseStrategy):
         if any(c not in data.columns for c in ("close", "high", "low")) or len(data) < need:
             return None
 
+                # Delegar a _compute_indicators
+        ind = self._compute_indicators(data, symbol)
+        last_fast = ind.get("ema_fast")
+        last_slow = ind.get("ema_slow")
+        atr_pct = ind.get("atr_pct")
+        last_close = ind.get("close")
+
+        if any(v is None for v in [last_fast, last_slow, atr_pct, last_close]):
+            return None
+
+        metadata = {
+            "ema_fast": round(last_fast, 2),
+            "ema_slow": round(last_slow, 2),
+            "atr_pct": round(atr_pct, 2),
+            "trend_strength": ind.get("trend_strength", trend_strength),
+        }
+
+        if atr_pct > (ind.get("trend_strength", trend_strength) / 100.0):
+            if last_fast > last_slow:
+                return {"action": "BUY", "price": last_close, "metadata": metadata}
+            if last_fast < last_slow:
+                return {"action": "SELL", "price": last_close, "metadata": metadata}
+
+        return None
+
+    def _compute_indicators(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Calcula EMA fast/slow, ATR% y close.
+
+        Args:
+            data: DataFrame con columnas ``close``, ``high``, ``low``.
+            symbol: Opcional para resolución de perfil.
+
+        Returns:
+            Dict con ema_fast, ema_slow, atr_pct, close, etc.
+        """
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile = self._PROFILES["crypto" if is_crypto_symbol(symbol) else "stocks"]
+            fast_ema: int = profile["fast_ema"]
+            slow_ema: int = profile["slow_ema"]
+            trend_strength: float = profile["trend_strength"]
+        else:
+            fast_ema = self.fast_ema
+            slow_ema = self.slow_ema
+            trend_strength = self.trend_strength
+
+        need = max(slow_ema, 14) + 1
+        if any(c not in data.columns for c in ("close", "high", "low")) or len(data) < need:
+            return {"ema_fast": None, "ema_slow": None, "atr_pct": None, "close": None,
+                    "trend_strength": trend_strength}
+
         from royaltdn.strategy.momentum_atr import compute_atr
 
         close = data["close"]
@@ -88,20 +144,67 @@ class SwingTrendFollowingStrategy(BaseStrategy):
         last_slow = float(ema_slow_val.iloc[-1])
         atr_pct = (float(atr.iloc[-1]) / last_close * 100) if last_close > 0 else 0.0
 
-        metadata = {
-            "ema_fast": round(last_fast, 2),
-            "ema_slow": round(last_slow, 2),
-            "atr_pct": round(atr_pct, 2),
+        return {
+            "ema_fast": last_fast,
+            "ema_slow": last_slow,
+            "atr_pct": atr_pct,
+            "close": last_close,
             "trend_strength": trend_strength,
         }
 
-        if atr_pct > trend_strength / 100.0:
-            if last_fast > last_slow:
-                return {"action": "BUY", "price": last_close, "metadata": metadata}
-            if last_fast < last_slow:
-                return {"action": "SELL", "price": last_close, "metadata": metadata}
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explica las condiciones de tendencia (EMA crossover + ATR%).
 
-        return None
+        Returns:
+            Dict con indicadores, condiciones y señal.
+        """
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        conditions = []
+        inds = {}
+
+        ema_fast = ind.get("ema_fast")
+        ema_slow = ind.get("ema_slow")
+        atr_pct = ind.get("atr_pct")
+        trend_strength = ind.get("trend_strength")
+
+        if ema_fast is not None and ema_slow is not None:
+            inds["ema_fast"] = round(ema_fast, 2)
+            inds["ema_slow"] = round(ema_slow, 2)
+            ema_diff = ema_fast - ema_slow
+            inds["ema_diff"] = round(ema_diff, 2)
+
+            conditions.append({
+                "name": "EMA Fast > EMA Slow",
+                "met": ema_fast > ema_slow,
+                "value": round(ema_fast, 2),
+                "threshold": round(ema_slow, 2),
+                "gap_pct": round(_calc_gap(ema_fast, ema_slow, "above"), 2),
+                "direction": "above",
+            })
+
+        if atr_pct is not None:
+            inds["atr_pct"] = round(atr_pct, 2)
+            atr_threshold = trend_strength / 100.0 if trend_strength else 0.0
+            conditions.append({
+                "name": "ATR % confirms trend",
+                "met": atr_pct > atr_threshold,
+                "value": round(atr_pct, 2),
+                "threshold": round(atr_threshold, 4),
+                "gap_pct": round(_calc_gap(atr_pct, atr_threshold, "above"), 2),
+                "direction": "above",
+            })
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         if symbol is None:

@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 def compute_atr(
@@ -86,6 +86,82 @@ class MomentumATRStrategy(BaseStrategy):
     def name(self) -> str:
         return "momentum_atr"
 
+    # ── _compute_indicators ─────────────────────────────────────────────
+
+    def _compute_indicators(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Calcula momentum return, ATR y perfil de parámetros.
+
+        Acepta ``symbol`` para resolución de perfil (crypto vs stocks).
+
+        Args:
+            data: DataFrame con columnas ``close`` (y opcional ``high``, ``low``).
+            symbol: Opcional para resolución de perfil.
+
+        Returns:
+            Dict con momentum_return, last_atr, atr_pct, close y parámetros.
+        """
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            momentum_period: int = profile["momentum_period"]
+            atr_period: int = profile["atr_period"]
+            atr_max_pct: float = profile["atr_max_pct"]
+            exit_period: int = profile["exit_period"]
+        else:
+            momentum_period = self.momentum_period
+            atr_period = self.atr_period
+            atr_max_pct = self.atr_max_pct
+            exit_period = self.exit_period
+
+        if "close" not in data.columns:
+            return {"momentum_return": None, "last_atr": None, "atr_pct": None,
+                    "close": None, "momentum_period": momentum_period,
+                    "atr_period": atr_period, "atr_max_pct": atr_max_pct,
+                    "exit_period": exit_period}
+
+        close = data["close"]
+        need = max(momentum_period, atr_period) + 1
+        if len(close) < need:
+            return {"momentum_return": None, "last_atr": None, "atr_pct": None,
+                    "close": None, "momentum_period": momentum_period,
+                    "atr_period": atr_period, "atr_max_pct": atr_max_pct,
+                    "exit_period": exit_period}
+
+        momentum_return = float((close.iloc[-1] / close.iloc[-momentum_period]) - 1)
+
+        has_ohlc = all(c in data.columns for c in ("high", "low"))
+        if has_ohlc:
+            atr = compute_atr(data["high"], data["low"], close, atr_period)
+        else:
+            atr = close.diff().abs().rolling(atr_period).mean()
+
+        last_atr = float(atr.iloc[-1])
+        last_close = float(close.iloc[-1])
+        atr_pct = (last_atr / last_close) * 100 if last_close > 0 else 0.0
+
+        # Short-term return for exit signal
+        short_return = None
+        if len(close) > exit_period:
+            short_return = float((close.iloc[-1] / close.iloc[-exit_period]) - 1)
+
+        return {
+            "momentum_return": round(momentum_return * 100, 2),
+            "last_atr": round(last_atr, 2),
+            "atr_pct": round(atr_pct, 2),
+            "close": last_close,
+            "short_return": round(short_return * 100, 2) if short_return is not None else None,
+            "momentum_period": momentum_period,
+            "atr_period": atr_period,
+            "atr_max_pct": atr_max_pct,
+            "exit_period": exit_period,
+        }
+
     # ── BaseStrategy ────────────────────────────────────────────────────
 
     def generate_signal(
@@ -109,44 +185,26 @@ class MomentumATRStrategy(BaseStrategy):
 
             profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
             profile = self._PROFILES[profile_key]
-            momentum_period: int = profile["momentum_period"]
-            atr_period: int = profile["atr_period"]
             atr_max_pct: float = profile["atr_max_pct"]
             exit_period: int = profile["exit_period"]
         else:
-            momentum_period = self.momentum_period
-            atr_period = self.atr_period
             atr_max_pct = self.atr_max_pct
             exit_period = self.exit_period
 
-        if "close" not in data.columns:
-            logger.warning("generate_signal: faltan columnas (close)")
+        # Delegar a _compute_indicators (valida datos internamente)
+        ind = self._compute_indicators(data, symbol)
+        momentum_return = ind.get("momentum_return")
+        atr_pct = ind.get("atr_pct")
+        last_close = ind.get("close")
+        short_return = ind.get("short_return")
+
+        if momentum_return is None or atr_pct is None or last_close is None:
             return None
 
-        close = data["close"]
-        need = max(momentum_period, atr_period) + 1
-        if len(close) < need:
-            return None  # datos insuficientes
-
-        # Retorno de momentum_period días
-        momentum_return = (close.iloc[-1] / close.iloc[-momentum_period]) - 1
-
-        # ATR como % del precio
-        has_ohlc = all(c in data.columns for c in ("high", "low"))
-        if has_ohlc:
-            atr = compute_atr(data["high"], data["low"], close, atr_period)
-        else:
-            # Fallback: ATR aproximado solo con close
-            atr = close.diff().abs().rolling(atr_period).mean()
-
-        last_atr = float(atr.iloc[-1])
-        last_close = float(close.iloc[-1])
-        atr_pct = (last_atr / last_close) * 100 if last_close > 0 else 0.0
-
         metadata = {
-            "momentum_return": round(float(momentum_return) * 100, 2),
-            "atr_pct": round(atr_pct, 2),
-            "atr": round(last_atr, 2),
+            "momentum_return": momentum_return,
+            "atr_pct": atr_pct,
+            "atr": ind.get("last_atr", 0),
         }
 
         # SEÑAL BUY: momentum positivo + volatilidad controlada
@@ -158,18 +216,80 @@ class MomentumATRStrategy(BaseStrategy):
             }
 
         # SEÑAL SELL: momentum de corto plazo negativo
-        if self.exit_momentum_negative and len(close) > exit_period:
-            short_return = (
-                close.iloc[-1] / close.iloc[-exit_period]
-            ) - 1
-            if short_return < 0:
-                return {
-                    "action": "SELL",
-                    "price": last_close,
-                    "metadata": metadata,
-                }
+        if self.exit_momentum_negative and short_return is not None and short_return < 0:
+            return {
+                "action": "SELL",
+                "price": last_close,
+                "metadata": metadata,
+            }
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explica las condiciones de momentum y volatilidad.
+
+        Returns:
+            Dict con indicadores, condiciones y señal.
+        """
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        atr_max_pct = ind.get("atr_max_pct", self.atr_max_pct)
+        momentum_return = ind.get("momentum_return")
+        atr_pct = ind.get("atr_pct")
+        short_return = ind.get("short_return")
+
+        conditions = []
+
+        if momentum_return is not None:
+            conditions.append({
+                "name": "Momentum Positive",
+                "met": momentum_return > 0,
+                "value": momentum_return,
+                "threshold": 0.0,
+                "gap_pct": round(_calc_gap(momentum_return / 100, 0.0, "above"), 2)
+                    if momentum_return <= 0 else 0.0,
+                "direction": "above",
+            })
+
+        if atr_pct is not None:
+            conditions.append({
+                "name": "ATR % below max",
+                "met": atr_pct < atr_max_pct,
+                "value": atr_pct,
+                "threshold": atr_max_pct,
+                "gap_pct": round(_calc_gap(atr_pct, atr_max_pct, "below"), 2),
+                "direction": "below",
+            })
+
+        if short_return is not None:
+            conditions.append({
+                "name": "Short-term Negative",
+                "met": short_return < 0,
+                "value": short_return,
+                "threshold": 0.0,
+                "gap_pct": round(_calc_gap(short_return / 100, 0.0, "below"), 2)
+                    if short_return >= 0 else 0.0,
+                "direction": "below",
+            })
+
+        inds = {}
+        if momentum_return is not None:
+            inds["momentum_return"] = momentum_return
+        if atr_pct is not None:
+            inds["atr_pct"] = atr_pct
+        if short_return is not None:
+            inds["short_return"] = short_return
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(
         self,

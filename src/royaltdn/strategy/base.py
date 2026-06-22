@@ -17,6 +17,29 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 
+def _calc_gap(value: float, threshold: float, direction: str) -> float:
+    """Calcula el gap porcentual entre un valor y su umbral.
+
+    Args:
+        value: Valor real.
+        threshold: Umbral de referencia.
+        direction: ``"above"`` si la condición es value >= threshold,
+                   ``"below"`` si la condición es value <= threshold.
+
+    Returns:
+        0.0 si la condición ya se cumple (met).
+        Porcentaje absoluto de distancia si no se cumple.
+    """
+    if direction == "above":
+        if value >= threshold:
+            return 0.0
+        return abs((value - threshold) / threshold) * 100 if threshold != 0 else 0.0
+    else:  # below
+        if value <= threshold:
+            return 0.0
+        return abs((value - threshold) / threshold) * 100 if threshold != 0 else 0.0
+
+
 class BaseStrategy(ABC):
     """Clase base abstracta para estrategias de trading.
 
@@ -93,6 +116,49 @@ class BaseStrategy(ABC):
         return {"timeframe": self.timeframe, "category": self._category}
 
     # ── Métodos con implementación por defecto ─────────────────────────
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Explica por qué se generó (o no) una señal de trading.
+
+        Método concreto (NO abstract) para compatibilidad hacia atrás.
+        Las estrategias pueden sobrescribirlo para devolver explicaciones
+        detalladas con indicadores, condiciones y señal.
+
+        Args:
+            data: DataFrame OHLCV con al menos columna ``close``.
+            symbol: Opcional. Símbolo del activo, usado para resolución
+                    de perfiles (crypto vs stocks).
+
+        Returns:
+            Dict con la estructura:
+                {
+                    "indicators": {},        # dict con valores calculados
+                    "conditions": [],        # lista de condition dicts
+                    "signal": None,          # dict de señal o None
+                }
+
+            Cada condition dict tiene:
+                {
+                    "name": str,             # nombre legible de la condición
+                    "met": bool,             # True si la condición se cumple
+                    "value": float,          # valor real
+                    "threshold": float,      # umbral de referencia
+                    "gap_pct": float,        # gap % (0.0 si met=True)
+                    "direction": str,        # "above" | "below"
+                }
+
+            signal dict (cuando hay señal):
+                {
+                    "action": "BUY" | "SELL",
+                    "price": float,
+                    "reason": str,
+                }
+        """
+        return {"indicators": {}, "conditions": [], "signal": None}
 
     def validate(self) -> bool:
         """Valida que la configuración de la estrategia sea correcta.

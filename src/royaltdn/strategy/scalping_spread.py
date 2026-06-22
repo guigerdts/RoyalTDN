@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 class ScalpingSpreadStrategy(BaseStrategy):
@@ -44,11 +44,11 @@ class ScalpingSpreadStrategy(BaseStrategy):
     def name(self) -> str:
         return "scalping_spread"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -61,7 +61,11 @@ class ScalpingSpreadStrategy(BaseStrategy):
 
         required = ["close", "high", "low"]
         if any(c not in data.columns for c in required) or len(data) < spread_period + 1:
-            return None
+            return {
+                "range": None, "avg_range": None, "range_ratio": None,
+                "close": None, "open": None,
+                "spread_period": spread_period, "spread_threshold": spread_threshold,
+            }
 
         close = data["close"]
         high = data["high"]
@@ -72,13 +76,39 @@ class ScalpingSpreadStrategy(BaseStrategy):
 
         last_range = float(price_range.iloc[-1])
         last_avg = float(avg_range.iloc[-1])
-
-        if last_avg <= 0:
-            return None
-
-        range_ratio = last_range / last_avg
         last_close = float(close.iloc[-1])
         last_open = float(data["open"].iloc[-1]) if "open" in data.columns else last_close
+
+        range_ratio = last_range / last_avg if last_avg > 0 else 0.0
+
+        return {
+            "range": last_range,
+            "avg_range": last_avg,
+            "range_ratio": range_ratio,
+            "close": last_close,
+            "open": last_open,
+            "spread_period": spread_period,
+            "spread_threshold": spread_threshold,
+        }
+
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        ind = self._compute_indicators(data, symbol)
+        last_range = ind.get("range")
+        last_avg = ind.get("avg_range")
+        range_ratio = ind.get("range_ratio")
+        last_close = ind.get("close")
+        last_open = ind.get("open")
+        spread_period = ind["spread_period"]
+        spread_threshold = ind["spread_threshold"]
+
+        if last_range is None or last_close is None:
+            return None
+        if last_avg <= 0:
+            return None
 
         metadata = {
             "range": round(last_range, 2),
@@ -94,6 +124,61 @@ class ScalpingSpreadStrategy(BaseStrategy):
                 return {"action": "SELL", "price": last_close, "metadata": metadata}
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        range_ratio = ind.get("range_ratio")
+        spread_th = ind.get("spread_threshold")
+        close_val = ind.get("close")
+        open_val = ind.get("open")
+
+        conditions = []
+        if range_ratio is not None and spread_th is not None:
+            conditions.append({
+                "name": "Range Ratio > Threshold",
+                "met": range_ratio > spread_th,
+                "value": round(range_ratio, 2),
+                "threshold": float(spread_th),
+                "gap_pct": round(_calc_gap(range_ratio, float(spread_th), "above"), 2),
+                "direction": "above",
+            })
+        if None not in (close_val, open_val):
+            conditions.append({
+                "name": "Close > Open",
+                "met": close_val > open_val,
+                "value": round(close_val, 2),
+                "threshold": round(open_val, 2),
+                "gap_pct": round(_calc_gap(close_val, open_val, "above"), 2),
+                "direction": "above",
+            })
+            conditions.append({
+                "name": "Close < Open",
+                "met": close_val < open_val,
+                "value": round(close_val, 2),
+                "threshold": round(open_val, 2),
+                "gap_pct": round(_calc_gap(close_val, open_val, "below"), 2),
+                "direction": "below",
+            })
+
+        inds = {}
+        if range_ratio is not None:
+            inds["range_ratio"] = round(range_ratio, 2)
+        if close_val is not None:
+            inds["close"] = round(close_val, 2)
+        if open_val is not None:
+            inds["open"] = round(open_val, 2)
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         if symbol is None:

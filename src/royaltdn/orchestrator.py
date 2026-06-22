@@ -74,8 +74,22 @@ def _atomic_write(path: Path, data: dict) -> bool:
 
 # ── Constantes de entorno (Scanner) ───────────────────────────────────────
 
-SCANNER_INTERVAL_MINUTES = int(os.getenv("SCANNER_INTERVAL_MINUTES", "60"))
 SCANNER_TOP_N = int(os.getenv("SCANNER_TOP_N", "3"))
+
+
+def _get_scan_interval_override() -> Optional[int]:
+    """Read SCANNER_INTERVAL_MINUTES env var dynamically.
+
+    Returns:
+        int if env var is set to a valid positive integer.
+        None if not set or invalid (logs warning on invalid).
+    """
+    raw = os.getenv("SCANNER_INTERVAL_MINUTES", "")
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    if raw and raw != "":
+        logger.warning("SCANNER_INTERVAL_MINUTES invalid ({}), using auto", raw)
+    return None
 
 # ── Constantes ────────────────────────────────────────────────────────────
 
@@ -180,6 +194,9 @@ class Orchestrator:
         # Portfolio Position Manager (Fase 16)
         self._portfolio: PortfolioPositionManager = PortfolioPositionManager()
         self.scanner_top_n: int = SCANNER_TOP_N
+
+        # Dynamic scan interval (Fase 18.4)
+        self._current_scan_interval: int = 60
 
         # User strategies (Fase 7)
         self.strategy_store = None
@@ -522,6 +539,30 @@ class Orchestrator:
 
         return strategies_list
 
+    def _calc_scan_interval(self) -> int:
+        """Calculate scan interval from active strategy categories.
+
+        Returns:
+            Minimum interval (minutes) among active strategy categories.
+            Override via SCANNER_INTERVAL_MINUTES env var wins if set.
+        """
+        override = _get_scan_interval_override()
+        if override is not None:
+            return override
+
+        categories: set[str] = set()
+        for s in self._build_strategies_list():
+            if s.get("active", True):
+                categories.add(s.get("category", "swing"))
+
+        if "scalping" in categories:
+            return 2
+        if "intraday" in categories:
+            return 15
+        if "swing" in categories:
+            return 240
+        return 60
+
     # ── User strategies (Fase 7) ─────────────────────────────────────
 
     def _load_user_strategies(self):
@@ -692,6 +733,7 @@ class Orchestrator:
 
         # 6. status.json (LAST — authoritative)
         bot_status = "PAUSADO" if self.paused else ("KILLED" if self._killed else "ONLINE")
+        override = _get_scan_interval_override()
         _atomic_write(LOGS_DIR / "status.json", {
             "bot_status": bot_status,
             "paused": self.paused,
@@ -702,6 +744,8 @@ class Orchestrator:
             "uptime_seconds": uptime,
             "symbols": [self.symbol],
             "scanner_enabled": self._scanner is not None,
+            "scanner_interval_minutes": self._current_scan_interval,
+            "scanner_interval_source": "env" if override is not None else "auto",
             "version": "1.0.0",
         })
 
@@ -1332,10 +1376,11 @@ class Orchestrator:
             f"Risk manager activo — alertas en tiempo real reducido"
         )
 
-        # Contador para el scanner (se ejecuta cada SCANNER_INTERVAL_MINUTES)
-        # Cuando SCANNER_INTERVAL_MINUTES=0, auto-scan está deshabilitado
+        # Contador para el scanner (se ejecuta cada intervalo calculado)
+        # Intervalo se recalcula por ciclo desde _calc_scan_interval()
         scanner_cycle = 0
-        scanner_iterations = int((SCANNER_INTERVAL_MINUTES * 60) / poll_interval) if SCANNER_INTERVAL_MINUTES > 0 else 0
+        self._current_scan_interval = self._calc_scan_interval()
+        scanner_iterations = int((self._current_scan_interval * 60) / poll_interval) if self._current_scan_interval > 0 else 0
 
         while self._running and not self._killed:
             try:
@@ -1372,6 +1417,12 @@ class Orchestrator:
                     import time as _time
                     _time.sleep(60)
                     continue
+
+                # ── Recalculate scan interval each cycle ──
+                self._current_scan_interval = self._calc_scan_interval()
+                scanner_iterations = int(
+                    (self._current_scan_interval * 60) / poll_interval
+                ) if self._current_scan_interval > 0 else 0
 
                 # ── Auto-scan (solo cuando el bot NO está pausado) ──
                 if self._scanner and scanner_iterations > 0:
