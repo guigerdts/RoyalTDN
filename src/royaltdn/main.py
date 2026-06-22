@@ -566,6 +566,14 @@ def cmd_run():
             brokers=brokers,
         )
         scanner.verbose = verbose
+        if verbose:
+            def _initial_scan():
+                try:
+                    scanner.scan(verbose=True)
+                except Exception as e:
+                    logger.warning("Initial scan failed (non-blocking): {}", e)
+            threading.Thread(target=_initial_scan, daemon=True).start()
+            logger.info("Background initial scan started (verbose mode)")
         logger.info(
             "Scanner inicializado desde main — universo={} estrategias={}",
             os.getenv("SCANNER_UNIVERSE", "all"),

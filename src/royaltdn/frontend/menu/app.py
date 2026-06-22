@@ -23,8 +23,10 @@ def set_universe_setter(fn: Callable[[str], None]) -> None:
 
 def set_scanner(scanner_obj) -> None:
     """Wire the Scanner instance for verbose UI access."""
-    global _scanner
+    global _scanner, _current_universe
     _scanner = scanner_obj
+    if scanner_obj is not None and hasattr(scanner_obj, 'universe'):
+        _current_universe = scanner_obj.universe.universe_type
 
 
 # ── Entry point ────────────────────────────────────────────────────────
@@ -1507,6 +1509,12 @@ def _render_verbose_dashboard(console) -> Optional[str]:
         return f"_expand:{selected_sym}"
     elif cmd == "s":
         return "_scan"
+    elif cmd == "v":
+        if _scanner is not None:
+            _scanner.verbose = not _scanner.verbose
+            if not _scanner.verbose:
+                return "0"
+        return "_rerender"
     elif cmd == "0":
         return "0"
     return "_rerender"
@@ -1711,49 +1719,67 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                 console.print("[dim]No se generaron se\u00f1ales en este escaneo.[/]")
 
         # ── Verbose mode: L1/L2 interactive dashboard ─────────────────
-        verbose_active = (
-            _scanner is not None
-            and _scanner.verbose
-            and bool(_scanner._last_explanations)
-        )
+        if _scanner is not None and _scanner.verbose:
+            if _scanner._last_explanations:
+                global _scanner_cursor_index
+                _scanner_cursor_index = 0
 
-        if verbose_active:
-            from rich.panel import Panel as RPanel
-            from rich.text import Text as RText
-
-            global _scanner_cursor_index
-            _scanner_cursor_index = 0
-
-            while True:
-                action = _render_verbose_dashboard(console)
-                if action is None:
-                    break
-                if action == "0":
-                    break
-                if action == "_scan":
-                    from royaltdn.frontend.console.commands import trigger_scanner
-                    trigger_scanner(logs_dir)
-                    console.print("[yellow]Escaneo disparado. Esperando...[/]")
-                    time.sleep(5)
-                    # Re-render dashboard — orchestrator may have populated explanations
-                    continue
-                if action.startswith("_expand:"):
-                    _, sym = action.split(":", 1)
-                    _render_decision_tree(console, sym)
-                    # After L2 exit → loop back to L1
-                    continue
-                # _rerender → continue loop
-            return
+                while True:
+                    action = _render_verbose_dashboard(console)
+                    if action is None:
+                        break
+                    if action == "0":
+                        break
+                    if action == "_scan":
+                        from royaltdn.frontend.console.commands import trigger_scanner
+                        trigger_scanner(logs_dir)
+                        console.print("[yellow]Escaneo disparado. Esperando...[/]")
+                        time.sleep(5)
+                        # Re-render dashboard — orchestrator may have populated explanations
+                        continue
+                    if action.startswith("_expand:"):
+                        _, sym = action.split(":", 1)
+                        _render_decision_tree(console, sym)
+                        # After L2 exit → loop back to L1
+                        continue
+                    # _rerender → continue loop
+                return
+            console.print()
+            console.print("[yellow]No hay datos verbose a\u00fan \u2014 presiona 's' para escanear[/]")
 
         # ── Standard mode: prompt and force scan ────────────────────────
         console.print()
-        console.print("[bold cyan]0[/] Volver al men\u00fa principal")
+        console.print("[bold cyan]0[/] Volver al men\u00fa principal  [bold cyan]v[/] Modo verbose")
         try:
-            force = input("\u00bfForzar escaneo ahora? (s/n): ").strip().lower()
+            force = input("\u00bfForzar escaneo ahora? (s/n/v): ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             return
 
         if force == "0":
+            return
+
+        if force == "v":
+            if _scanner is not None:
+                _scanner.verbose = not _scanner.verbose
+                if _scanner.verbose and _scanner._last_explanations:
+                    _scanner_cursor_index = 0
+                    while True:
+                        action = _render_verbose_dashboard(console)
+                        if action is None or action == "0":
+                            break
+                        if action == "_scan":
+                            from royaltdn.frontend.console.commands import trigger_scanner
+                            trigger_scanner(logs_dir)
+                            console.print("[yellow]Escaneo disparado. Esperando...[/]")
+                            time.sleep(5)
+                            continue
+                        if action.startswith("_expand:"):
+                            _, sym = action.split(":", 1)
+                            _render_decision_tree(console, sym)
+                            continue
+                elif _scanner.verbose:
+                    console.print("[yellow]No hay datos verbose a\u00fan \u2014 presiona 's' para escanear[/]")
+                    _wait_enter()
             return
 
         if force == "s":
