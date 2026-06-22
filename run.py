@@ -81,7 +81,7 @@ async def main():
 
     # Iniciar dashboard
     from monitoring.dashboard import Dashboard
-    dashboard = Dashboard(bus)
+    dashboard = Dashboard(bus, portfolio)
     asyncio.create_task(dashboard.run())
 
     # Ejecutar engine

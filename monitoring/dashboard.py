@@ -23,22 +23,21 @@ class Dashboard:
     - Footer panel with portfolio stats.
     """
 
-    def __init__(self, bus: Any) -> None:
+    def __init__(self, bus: Any, portfolio: Any) -> None:
         """Initialise the dashboard.
 
         Args:
             bus: EventBus instance to subscribe to.
+            portfolio: Portfolio instance for live capital/positions/drawdown.
         """
         self.bus = bus
+        self._portfolio = portfolio
         self._running = False
         self._events: list[dict[str, Any]] = []
         self._last_render: float = 0.0
         self._queue: asyncio.Queue | None = None
         self._prices: dict[str, float] = {}
         self._stats: dict[str, Any] = {
-            "capital": 0.0,
-            "positions": 0,
-            "drawdown": 0.0,
             "last_trade": None,
         }
 
@@ -184,9 +183,9 @@ class Dashboard:
         """Build the stats footer panel."""
         from rich.panel import Panel
 
-        cap = self._stats.get("capital", 0.0)
-        pos = self._stats.get("positions", 0)
-        dd = self._stats.get("drawdown", 0.0)
+        cap = self._portfolio.capital
+        pos = len(self._portfolio.positions)
+        dd = self._portfolio.get_drawdown()
         trade = self._stats.get("last_trade")
 
         parts = [
