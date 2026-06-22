@@ -1833,6 +1833,28 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                     console.print()
                     console.print("[dim]No se generaron se\u00f1ales en este escaneo.[/]")
 
+            # ── Verbose: enter L1 dashboard automatically after scan ────
+            if _scanner is not None and _scanner.verbose:
+                if _scanner._last_explanations:
+                    _scanner_cursor_index = 0
+                    while True:
+                        action = _render_verbose_dashboard(console)
+                        if action is None or action == "0":
+                            break
+                        if action == "_scan":
+                            from royaltdn.frontend.console.commands import trigger_scanner
+                            trigger_scanner(logs_dir)
+                            console.print("[yellow]Escaneo disparado. Esperando...[/]")
+                            time.sleep(5)
+                            continue
+                        if action.startswith("_expand:"):
+                            _, sym = action.split(":", 1)
+                            _render_decision_tree(console, sym)
+                            continue
+                    return  # back to main menu after verbose exit
+                console.print()
+                console.print("[yellow]No hay datos verbose a\u00fan \u2014 presiona 's' para escanear de nuevo[/]")
+
         console.print("\n[dim]Presiona Enter para volver[/]")
         _wait_enter()
 
