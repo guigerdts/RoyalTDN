@@ -7,6 +7,7 @@ Combina AssetUniverse + LiquidityFilter + estrategias para generar
 señales rankeadas across múltiples símbolos.
 """
 
+import inspect
 import json
 import os
 from datetime import datetime, timezone
@@ -129,7 +130,10 @@ class Scanner:
                 # Run each strategy on this symbol's data
                 for strategy_name, strategy in self.strategies.items():
                     try:
-                        signal = strategy.generate_signal(data)
+                        # Dispatch symbol only if the strategy accepts it
+                        sig = inspect.signature(strategy.generate_signal)
+                        kwargs = {"symbol": symbol} if "symbol" in sig.parameters else {}
+                        signal = strategy.generate_signal(data, **kwargs)
                         if signal is not None:
                             metadata = signal.get("metadata", {})
                             score = metadata.get("score")

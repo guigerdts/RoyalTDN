@@ -118,13 +118,28 @@ def test_generate_signal_no_signal():
 
 
 def test_get_parameters():
-    """get_parameters devuelve dict completo."""
+    """get_parameters devuelve perfiles duales con prefijos cuando no hay symbol."""
     s = MomentumATRStrategy(momentum_period=20, atr_period=14)
     params = s.get_parameters()
-    assert params["momentum_period"] == 20
-    assert params["atr_period"] == 14
-    assert "timeframe" in params
+    # Sin symbol → retorna ambos perfiles con prefijos crypto_* / stocks_*
+    assert params["crypto_momentum_period"] == 15
+    assert params["stocks_momentum_period"] == 20
+    assert params["crypto_atr_period"] == 14
+    assert params["stocks_atr_period"] == 20
+    assert params["crypto_atr_max_pct"] == 4.0
+    assert params["stocks_atr_max_pct"] == 2.0
     print("  ✅ get_parameters()")
+
+def test_get_parameters_with_symbol():
+    """get_parameters(symbol) retorna perfil único."""
+    s = MomentumATRStrategy(momentum_period=20, atr_period=14)
+    crypto = s.get_parameters("BTCUSDT")
+    assert crypto["momentum_period"] == 15
+    assert crypto["atr_period"] == 14
+    stock = s.get_parameters("AAPL")
+    assert stock["momentum_period"] == 20
+    assert stock["atr_period"] == 20
+    print("  ✅ get_parameters(symbol)")
 
 
 def main():
@@ -141,6 +156,7 @@ def main():
     test_generate_signal_insufficient_data()
     test_generate_signal_no_signal()
     test_get_parameters()
+    test_get_parameters_with_symbol()
 
     print("\n✅ TODOS LOS TESTS PASARON")
     return 0

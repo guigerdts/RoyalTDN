@@ -42,7 +42,7 @@ royaltdn = "royaltdn.main:main"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-pythonpath = ["src", "/usr/local/lib/python3.13/dist-packages"]
+pythonpath = ["src"]
 
 [tool.ruff]
 target-version = "py310"

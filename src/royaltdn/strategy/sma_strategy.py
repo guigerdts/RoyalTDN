@@ -78,6 +78,12 @@ class SMAStrategy(BaseStrategy):
     CONSUMER_NAME = "sma-strategy"
     POLL_TIMEOUT_MS = 5000  # 5s — permite detectar stop limpio
 
+    # Perfiles de parámetros duales crypto / stocks
+    _PROFILES: Dict[str, Dict[str, Any]] = {
+        "crypto": {"sma_fast": 7, "sma_slow": 25, "timeframe": "1d"},
+        "stocks": {"sma_fast": 5, "sma_slow": 20, "timeframe": "1d"},
+    }
+
     def __init__(
         self,
         redis_url: str = None,
@@ -85,8 +91,9 @@ class SMAStrategy(BaseStrategy):
         sma_fast: int = 5,
         sma_slow: int = 20,
         timeframe: str = "1d",
+        category: str = "swing",
     ):
-        super().__init__(timeframe=timeframe)
+        super().__init__(timeframe=timeframe, category=category)
         self.redis_url = redis_url
         self.symbol = symbol
         self.sma_fast = sma_fast
@@ -113,36 +120,56 @@ class SMAStrategy(BaseStrategy):
 
     # ── Implementación BaseStrategy ─────────────────────────────────────
 
-    def generate_signal(self, data: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Genera señal a partir de un DataFrame OHLCV.
 
         Usa el cierre (``close``) para calcular SMA rápida y lenta,
         y detecta el cruce entre el valor actual y el anterior.
+        Cuando se pasa un ``symbol`` conocido, resuelve el perfil
+        de parámetros (crypto vs stocks) a variables locales,
+        sin mutar ``self.*``.
 
         Args:
             data: DataFrame con columna ``close`` (obligatorio).
+            symbol: Opcional. Si es crypto usa perfil crypto.
 
         Returns:
             Dict con action, price y metadata, o None si no hay señal.
         """
+        # Resolver perfil a variables locales — no mutar self.*
+        if symbol is not None:
+            from royaltdn.scanner.universe import is_crypto_symbol
+
+            profile_key = "crypto" if is_crypto_symbol(symbol) else "stocks"
+            profile = self._PROFILES[profile_key]
+            sma_fast: int = profile["sma_fast"]
+            sma_slow: int = profile["sma_slow"]
+        else:
+            sma_fast = self.sma_fast
+            sma_slow = self.sma_slow
+
         if "close" not in data.columns:
             logger.warning("generate_signal: faltan columnas (close)")
             return None
 
         closes = data["close"].dropna().tolist()
-        if len(closes) < self.sma_slow:
+        if len(closes) < sma_slow:
             return None
 
         # Valores actuales
-        curr_fast = compute_sma(closes, self.sma_fast)
-        curr_slow = compute_sma(closes, self.sma_slow)
+        curr_fast = compute_sma(closes, sma_fast)
+        curr_slow = compute_sma(closes, sma_slow)
 
         if curr_fast is None or curr_slow is None:
             return None
 
         # Valores previos (para detectar cruce)
-        prev_fast = compute_sma(closes[:-1], self.sma_fast)
-        prev_slow = compute_sma(closes[:-1], self.sma_slow)
+        prev_fast = compute_sma(closes[:-1], sma_fast)
+        prev_slow = compute_sma(closes[:-1], sma_slow)
 
         action = detect_cross(prev_fast, prev_slow, curr_fast, curr_slow)
         if action is None:
@@ -154,19 +181,39 @@ class SMAStrategy(BaseStrategy):
             "metadata": {
                 "sma_fast": round(curr_fast, 2),
                 "sma_slow": round(curr_slow, 2),
-                "fast_period": self.sma_fast,
-                "slow_period": self.sma_slow,
+                "fast_period": sma_fast,
+                "slow_period": sma_slow,
             },
         }
 
-    def get_parameters(self) -> Dict[str, Any]:
-        """Retorna los parámetros actuales de la estrategia."""
-        return {
-            "fast_period": self.sma_fast,
-            "slow_period": self.sma_slow,
-            "symbol": self.symbol,
-            "timeframe": self.timeframe,
-        }
+    def get_parameters(
+        self,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retorna los parámetros actuales de la estrategia.
+
+        Args:
+            symbol: Opcional. Si es ``None`` retorna ambos perfiles
+                    con prefijos ``crypto_*`` y ``stocks_*``.
+                    Si es crypto retorna el perfil crypto.
+                    En cualquier otro caso retorna el perfil stocks.
+        """
+        if symbol is None:
+            crypto = self._PROFILES["crypto"]
+            stocks = self._PROFILES["stocks"]
+            return {
+                "crypto_sma_fast": crypto["sma_fast"],
+                "crypto_sma_slow": crypto["sma_slow"],
+                "crypto_timeframe": crypto["timeframe"],
+                "stocks_sma_fast": stocks["sma_fast"],
+                "stocks_sma_slow": stocks["sma_slow"],
+                "stocks_timeframe": stocks["timeframe"],
+            }
+        from royaltdn.scanner.universe import is_crypto_symbol
+
+        if is_crypto_symbol(symbol):
+            return dict(self._PROFILES["crypto"])
+        return dict(self._PROFILES["stocks"])
 
     def validate(self) -> bool:
         """Valida que SMA rápida < SMA lenta y ambos > 0."""
