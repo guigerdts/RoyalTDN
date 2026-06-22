@@ -5,8 +5,19 @@ All imports are lazy (function-level) to avoid import errors at module load.
 """
 
 import time
+from typing import Callable, Optional
 
 _last_menu_visit: float = 0.0
+_current_universe: str = "all"
+_UNIVERSE_CYCLE = ("all", "etfs", "crypto", "sp500")
+_universe_setter: Optional[Callable[[str], None]] = None
+
+
+def set_universe_setter(fn: Callable[[str], None]) -> None:
+    """Wire a callable that updates the scanner's universe when the menu cycles."""
+    global _universe_setter
+    _universe_setter = fn
+
 
 # ── Entry point ────────────────────────────────────────────────────────
 
@@ -61,6 +72,12 @@ def run_menu(logs_dir: str = "logs") -> None:
             elif cmd == "8":
                 _last_menu_visit = time.time()
                 _show_activity(console, logs_dir)
+            elif cmd.lower() == "u":
+                _last_menu_visit = time.time()
+                new_uni = _cycle_universe()
+                _log_activity(f"Universe changed to {new_uni}", logs_dir)
+                console.print(f"[green]Universe changed to: {new_uni}[/]")
+                _wait_enter()
             elif cmd == "0":
                 break
             elif cmd == "_ctrl_c":
@@ -110,6 +127,7 @@ def _print_header(console, logs_dir: str = "logs") -> None:
     )
     if _is_bot_paused(logs_dir=logs_dir):
         console.print(Text("PAUSADO", style="bold yellow"))
+    console.print(f"[cyan]Universe: {_current_universe}[/]")
 
 
 def _print_menu(console, badges: dict | None = None) -> None:
@@ -130,6 +148,7 @@ def _print_menu(console, badges: dict | None = None) -> None:
         ("6", "Control — pausar/reanudar bot"),
         ("7", "Simulación — escenarios what-if"),
         ("8", "Actividad — registro de acciones"),
+        ("U", "Cambiar universo (all→etfs→crypto→sp500→all)"),
         ("0", "Salir"),
     ]
 
@@ -157,6 +176,16 @@ def _wait_enter() -> None:
         input()
     except (KeyboardInterrupt, EOFError):
         pass
+
+
+def _cycle_universe() -> str:
+    """Rotate _current_universe through _UNIVERSE_CYCLE and wire setter."""
+    global _current_universe
+    idx = (_UNIVERSE_CYCLE.index(_current_universe) + 1) % len(_UNIVERSE_CYCLE)
+    _current_universe = _UNIVERSE_CYCLE[idx]
+    if _universe_setter is not None:
+        _universe_setter(_current_universe)
+    return _current_universe
 
 
 # ── Cross-cutting helpers (Fase 11) ────────────────────────────────────
@@ -1478,6 +1507,17 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
         return
 
 
+# ── Category metadata for strategy sections ────────────────────────────
+
+CATEGORY_META: dict[str, tuple[str, str]] = {
+    "swing":    ("\U0001f535 Swing", "bold blue"),
+    "scalping": ("\U0001f7e2 Scalping", "bold green"),
+    "intradia": ("\U0001f7e1 Intrad\u00eda", "bold yellow"),
+}
+
+_CATEGORY_ORDER = ("swing", "scalping", "intradia")
+
+
 # ── Estrategias ───────────────────────────────────────────────────────
 
 
@@ -1523,27 +1563,46 @@ def _show_estrategias(state_loader, console, logs_dir: str = "logs") -> None:
                             "config": cfg,
                             "is_user": True,
                         })
-            entries.sort(key=lambda e: e["name"].lower())
 
-            # ── Render unified table ──────────────────────────────────
+            # ── Render by category sections ───────────────────────────
             console.print(Panel("[bold]Estrategias[/]", border_style="white"))
             if entries:
-                table = Table(
-                    title=None,
-                    border_style="white",
-                    header_style="bold white",
-                    show_edge=False,
-                )
-                table.add_column("#", style="bold cyan", width=3)
-                table.add_column("Nombre", style="bold white")
-                table.add_column("Tipo")
-                table.add_column("Activa")
-                table.add_column("Par\u00e1metros")
-                for idx, e in enumerate(entries, start=1):
-                    active_label = "S\u00ed" if e["active"] else "No"
-                    params = _get_strategy_params_summary(e["config"])
-                    table.add_row(str(idx), e["name"], e["type"], active_label, params)
-                console.print(table)
+                ordered: list[dict] = []
+                for cat in _CATEGORY_ORDER:
+                    cat_group = sorted(
+                        [e for e in entries if e["config"].get("category", "swing") == cat],
+                        key=lambda e: e["name"].lower(),
+                    )
+                    cat_label, cat_style = CATEGORY_META.get(cat, (cat, "bold white"))
+                    if cat_group:
+                        table = Table(
+                            title=f"[{cat_style}]{cat_label}[/]",
+                            border_style="white",
+                            header_style=cat_style,
+                            show_edge=False,
+                        )
+                        table.add_column("#", style="bold cyan", width=3)
+                        table.add_column("Nombre", style="bold white")
+                        table.add_column("Tipo")
+                        table.add_column("Activa")
+                        table.add_column("Categor\u00eda")
+                        table.add_column("Par\u00e1metros")
+                        for ce in cat_group:
+                            ordered.append(ce)
+                            idx = len(ordered)
+                            active_label = "S\u00ed" if ce["active"] else "No"
+                            params = _get_strategy_params_summary(ce["config"])
+                            cat_name = ce["config"].get("category", "swing")
+                            table.add_row(
+                                str(idx), ce["name"], ce["type"],
+                                active_label, cat_name, params,
+                            )
+                        console.print(table)
+                    else:
+                        console.print(f"[{cat_style}]{cat_label}[/]")
+                        console.print(f"[dim]No hay estrategias[/]")
+                    console.print()
+                entries = ordered  # Reassign for submenu index lookup
             else:
                 console.print("[dim]No hay estrategias cargadas.[/dim]")
 
