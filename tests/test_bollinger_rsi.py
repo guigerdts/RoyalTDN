@@ -110,13 +110,28 @@ def test_generate_signal_no_signal():
 
 
 def test_get_parameters():
-    """get_parameters devuelve dict completo."""
+    """get_parameters devuelve perfiles duales con prefijos cuando no hay symbol."""
     s = BollingerRSIStrategy(bb_period=20, bb_std=2.0)
     params = s.get_parameters()
-    assert params["bb_period"] == 20
-    assert params["bb_std"] == 2.0
-    assert "timeframe" in params
+    # Sin symbol → retorna ambos perfiles con prefijos crypto_* / stocks_*
+    assert params["crypto_bb_period"] == 15
+    assert params["stocks_bb_period"] == 20
+    assert params["crypto_bb_std"] == 2.5
+    assert params["stocks_bb_std"] == 2.0
+    assert params["crypto_timeframe"] == "5min"
+    assert params["stocks_timeframe"] == "15min"
     print("  ✅ get_parameters()")
+
+def test_get_parameters_with_symbol():
+    """get_parameters(symbol) retorna perfil único."""
+    s = BollingerRSIStrategy(bb_period=20, bb_std=2.0)
+    crypto = s.get_parameters("BTCUSDT")
+    assert crypto["bb_period"] == 15
+    assert crypto["bb_std"] == 2.5
+    stock = s.get_parameters("AAPL")
+    assert stock["bb_period"] == 20
+    assert stock["bb_std"] == 2.0
+    print("  ✅ get_parameters(symbol)")
 
 
 def main():
@@ -134,6 +149,7 @@ def main():
     test_generate_signal_insufficient_data()
     test_generate_signal_no_signal()
     test_get_parameters()
+    test_get_parameters_with_symbol()
 
     print("\n✅ TODOS LOS TESTS PASARON")
     return 0
