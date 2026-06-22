@@ -75,13 +75,19 @@ class Scanner:
         self.verbose: bool = False
         self._last_explanations: Dict[str, Dict[str, dict]] = {}
 
-    def scan(self, verbose: bool = False) -> List[dict]:
+    def scan(self, verbose: Optional[bool] = None) -> List[dict]:
         """Runs a full scan and returns ranked signals.
+
+        Args:
+            verbose: If True, populate _last_explanations.
+                     If None (default), falls back to self.verbose attribute.
 
         Returns:
             List of dicts with: symbol, strategy, action, price, score, metadata
             Ordered: FactorRotation (score desc) -> BUY before SELL -> rest
         """
+        if verbose is None:
+            verbose = self.verbose
         self._data_cache.clear()
         self._auth_failed = False
 

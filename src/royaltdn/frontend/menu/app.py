@@ -11,12 +11,20 @@ _last_menu_visit: float = 0.0
 _current_universe: str = "all"
 _UNIVERSE_CYCLE = ("all", "etfs", "crypto", "sp500")
 _universe_setter: Optional[Callable[[str], None]] = None
+_scanner: Optional[object] = None  # Fase 18.4 — scanner reference for verbose UI
+_scanner_cursor_index: int = 0
 
 
 def set_universe_setter(fn: Callable[[str], None]) -> None:
     """Wire a callable that updates the scanner's universe when the menu cycles."""
     global _universe_setter
     _universe_setter = fn
+
+
+def set_scanner(scanner_obj) -> None:
+    """Wire the Scanner instance for verbose UI access."""
+    global _scanner
+    _scanner = scanner_obj
 
 
 # ── Entry point ────────────────────────────────────────────────────────
@@ -169,6 +177,29 @@ def _print_menu(console, badges: dict | None = None) -> None:
     if badges and badges.get("paused", False):
         console.print(Text("⚠ Bot paused — some actions may be limited", style="bold yellow"))
 
+    # Scalping notification for non-crypto universe
+    if _current_universe != "crypto" and _has_scalping_strategies():
+        console.print(
+            Text("🔴 Scalping desactivado: no compatible con el mercado actual.", style="bold red")
+        )
+
+
+def _has_scalping_strategies() -> bool:
+    """Check if strategies.json has any scalping entries."""
+    import json
+    import os as _os
+
+    path = _os.path.join("logs", "strategies.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for s in data.get("strategies", []):
+            if s.get("category") == "scalping":
+                return True
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return False
+
 
 def _wait_enter() -> None:
     """Wait for Enter key press, handling Ctrl+C gracefully."""
@@ -179,13 +210,52 @@ def _wait_enter() -> None:
 
 
 def _cycle_universe() -> str:
-    """Rotate _current_universe through _UNIVERSE_CYCLE and wire setter."""
+    """Rotate _current_universe through _UNIVERSE_CYCLE and wire setter.
+
+    Disables scalping strategies when universe changes to non-crypto.
+    """
     global _current_universe
     idx = (_UNIVERSE_CYCLE.index(_current_universe) + 1) % len(_UNIVERSE_CYCLE)
     _current_universe = _UNIVERSE_CYCLE[idx]
     if _universe_setter is not None:
         _universe_setter(_current_universe)
+
+    # Scalping auto-disable: immediately write strategies.json
+    if _current_universe != "crypto":
+        _disable_scalping_in_strategies_json()
+    # NOTE: crypto universe does NOT auto-reactivate — user toggles manually
+
     return _current_universe
+
+
+def _disable_scalping_in_strategies_json() -> None:
+    """Read strategies.json, set active=False for scalping, write back."""
+    import json
+    import os as _os
+
+    path = _os.path.join("logs", "strategies.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+
+    modified = False
+    for s in data.get("strategies", []):
+        if s.get("category") == "scalping" and s.get("active", False):
+            s["active"] = False
+            modified = True
+
+    if modified:
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            _os.replace(tmp, path)
+            from loguru import logger
+            logger.warning("Scalping desactivado por cambio de universo a {}", _current_universe)
+        except OSError:
+            pass
 
 
 # ── Cross-cutting helpers (Fase 11) ────────────────────────────────────
@@ -1008,6 +1078,17 @@ def _build_kpis(
         if isinstance(last, dict) and last.get("timestamp"):
             scanner_info = str(last["timestamp"])[-8:]
 
+    # Scan interval from status.json
+    interval_min = status.get("scanner_interval_minutes")
+    interval_source = status.get("scanner_interval_source", "auto")
+    if interval_min is not None:
+        interval_label = f"cada {int(interval_min)}min"
+        if interval_source == "env":
+            interval_label += " (env)"
+        scan_interval_info = interval_label
+    else:
+        scan_interval_info = "\u2014"
+
     bot_status = status.get("bot_status", "\u2014")
     is_paused = status.get("paused", False) or bot_status == "PAUSADO"
     status_style = "bold yellow" if is_paused else "bold white"
@@ -1029,6 +1110,7 @@ def _build_kpis(
         ("WR", f"{float(trades.get('win_rate', 0)):.1f}%", "bold cyan"),
         ("Pos", str(len(pos_list)), "bold white"),
         ("Scan", scanner_info, "bold white"),
+        ("Intervalo", scan_interval_info, "bold white"),
     ]
 
     table = Table.grid(padding=(0, 2))
@@ -1303,6 +1385,196 @@ def _build_log_section(
     )
 
 
+# ── Verbose Dashboard (Fase 18.4) ─────────────────────────────────────
+
+
+def _build_symbol_entries() -> list:
+    """Invert _scanner._last_explanations to [(symbol, [strat_entries])]."""
+    if _scanner is None or not _scanner._last_explanations:
+        return []
+    sym_map: dict = {}
+    for strat_name, sym_dict in _scanner._last_explanations.items():
+        for symbol, explanation in sym_dict.items():
+            signal = explanation.get("signal", {})
+            signal_action = signal.get("action", "NO SIGNAL") if signal else "NO SIGNAL"
+            gap_pcts = []
+            for c in explanation.get("conditions", []):
+                if not c.get("met", True):
+                    gap_pcts.append(c.get("gap_pct", 0))
+            best_gap = min(gap_pcts) if gap_pcts else 0.0
+            sym_map.setdefault(symbol, []).append({
+                "strategy": strat_name,
+                "signal": signal_action,
+                "gap_pct": best_gap,
+                "explanation": explanation,
+            })
+    return sorted(sym_map.items())  # [(symbol, [entries])]
+
+
+def _render_verbose_dashboard(console) -> Optional[str]:
+    """L1 verbose dashboard — per-symbol compact table with navigation.
+
+    Returns:
+        Action symbol string to expand, '0' to exit, 's' to scan, or None.
+    """
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    import json
+    import os as _os
+
+    global _scanner_cursor_index
+
+    entries = _build_symbol_entries()
+    if not entries:
+        return None
+
+    interval_info = ""
+    if _scanner is not None and hasattr(_scanner, 'verbose'):
+        try:
+            status_path = _os.path.join("logs", "status.json")
+            with open(status_path, "r") as _f:
+                sdata = json.load(_f)
+            imin = sdata.get("scanner_interval_minutes")
+            if imin is not None:
+                interval_info = f" — Intervalo: {int(imin)} min"
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+    _clear_screen()
+    console.print(
+        Panel(
+            f"Scanner Verbose — {len(entries)} s\u00edmbolos{interval_info}",
+            border_style="white",
+        )
+    )
+
+    # Tables per symbol
+    cursor = _scanner_cursor_index % max(len(entries), 1)
+    for idx, (symbol, strat_list) in enumerate(entries):
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold white")
+        table.add_column(style="cyan")
+        table.add_column(justify="right")
+        for s in strat_list:
+            sig = s["signal"]
+            gap_str = f"gap: {s['gap_pct']:.1f}%" if s['gap_pct'] > 0 else "gap: 0.0%"
+            if sig == "BUY":
+                sig_display = f"\u25b2 BUY"
+                sig_style = "green"
+            elif sig == "SELL":
+                sig_display = f"\u25bc SELL"
+                sig_style = "red"
+            else:
+                sig_display = f"\u25cf HOLD"
+                sig_style = "yellow"
+            table.add_row(
+                Text(f"   {s['strategy']}:", style="cyan"),
+                Text(sig_display, style=sig_style),
+                Text(gap_str, style="dim white"),
+            )
+        border = "green" if idx == cursor else "white"
+        cursor_mark = " \u25b6" if idx == cursor else ""
+        console.print(
+            Panel(
+                table,
+                title=f"{symbol}{cursor_mark}",
+                border_style=border,
+            )
+        )
+
+    console.print()
+    console.print(
+        "[bold cyan]j/k[/] Navegar  "
+        "[bold cyan]e[/] Explicar  "
+        "[bold cyan]s[/] Escanear  "
+        "[bold cyan]0[/] Volver"
+    )
+
+    try:
+        cmd = input(">> ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        return "0"
+
+    if cmd == "j":
+        _scanner_cursor_index = (_scanner_cursor_index - 1) % len(entries)
+        return "_rerender"
+    elif cmd == "k":
+        _scanner_cursor_index = (_scanner_cursor_index + 1) % len(entries)
+        return "_rerender"
+    elif cmd == "e":
+        selected_sym = entries[cursor][0]
+        return f"_expand:{selected_sym}"
+    elif cmd == "s":
+        return "_scan"
+    elif cmd == "0":
+        return "0"
+    return "_rerender"
+
+
+def _render_decision_tree(console, symbol: str) -> None:
+    """L2 decision tree — detailed conditions per strategy for one symbol."""
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.console import Group as RichGroup
+
+    entries = _build_symbol_entries()
+    symbol_entries = [e for sym, e_list in entries if sym == symbol for e in e_list]
+
+    if not symbol_entries:
+        return
+
+    for se in symbol_entries:
+        exp = se["explanation"]
+        ind = exp.get("indicators", {})
+        conds = exp.get("conditions", [])
+        sig = exp.get("signal")
+
+        # Indicators section
+        ind_lines = "  ".join(
+            f"{k}: {v}" for k, v in list(ind.items())[:6]
+        ) if ind else "  (no indicators)"
+        ind_text = Text(f"Indicadores:\n  {ind_lines}", style="dim white")
+
+        # Conditions table
+        cond_table = Table.grid(padding=(0, 2))
+        cond_table.add_column(style="bold white")
+        for c in conds:
+            icon = "\u2705" if c["met"] else "\u274c"
+            gap_str = f"gap: {c['gap_pct']:.1f}%" if c['gap_pct'] > 0 else ""
+            cond_table.add_row(
+                f"  {icon} {c['name']}  ({c['value']} {'<' if c['direction']=='below' else '>'} {c['threshold']})  {gap_str}"
+            )
+
+        # Signal line
+        if sig:
+            sig_text = Text(
+                f"Se\u00f1al: {sig.get('action', '?')} @ {sig.get('price', '?')}",
+                style="bold green",
+            )
+        else:
+            sig_text = Text("Sin se\u00f1al — condiciones no cumplidas", style="dim")
+
+        group = [ind_text, cond_table, Text(""), sig_text]
+        console.print(
+            Panel(
+                RichGroup(*group),
+                title=f"{symbol} \u2014 {se['strategy']}",
+                border_style="white",
+            )
+        )
+
+    console.print()
+    console.print("[bold cyan]0[/] Volver al dashboard")
+
+    try:
+        sub = input(">> ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return
+    # '0' → return to L1 (handled by caller)
+
+
 # ── Scanner ────────────────────────────────────────────────────────────
 
 
@@ -1438,7 +1710,42 @@ def _show_scanner(state_loader, console, logs_dir: str) -> None:
                 console.print()
                 console.print("[dim]No se generaron se\u00f1ales en este escaneo.[/]")
 
-        # ── Prompt and force scan ─────────────────────────────────────
+        # ── Verbose mode: L1/L2 interactive dashboard ─────────────────
+        verbose_active = (
+            _scanner is not None
+            and _scanner.verbose
+            and bool(_scanner._last_explanations)
+        )
+
+        if verbose_active:
+            from rich.panel import Panel as RPanel
+            from rich.text import Text as RText
+
+            global _scanner_cursor_index
+            _scanner_cursor_index = 0
+
+            while True:
+                action = _render_verbose_dashboard(console)
+                if action is None:
+                    break
+                if action == "0":
+                    break
+                if action == "_scan":
+                    from royaltdn.frontend.console.commands import trigger_scanner
+                    trigger_scanner(logs_dir)
+                    console.print("[yellow]Escaneo disparado. Esperando...[/]")
+                    time.sleep(5)
+                    # Re-render dashboard — orchestrator may have populated explanations
+                    continue
+                if action.startswith("_expand:"):
+                    _, sym = action.split(":", 1)
+                    _render_decision_tree(console, sym)
+                    # After L2 exit → loop back to L1
+                    continue
+                # _rerender → continue loop
+            return
+
+        # ── Standard mode: prompt and force scan ────────────────────────
         console.print()
         console.print("[bold cyan]0[/] Volver al men\u00fa principal")
         try:
@@ -1674,6 +1981,18 @@ def _strategy_submenu(entry: dict, console, logs_dir: str) -> None:
             return
         if sub == "t":
             new_active = not active
+            # Scalping warning when activating on non-crypto universe
+            if new_active and _current_universe != "crypto" and config.get("category") == "scalping":
+                warning = (
+                    f"⚠️ Scalping no recomendado en {_current_universe}. "
+                    f"¿Activar de todas formas? (s/n): "
+                )
+                try:
+                    confirm = input(warning).strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    confirm = "n"
+                if confirm != "s":
+                    return
             ok = _toggle_strategy(name, new_active, is_user, logs_dir)
             if ok:
                 action = "activ\u00f3" if new_active else "desactiv\u00f3"
@@ -3316,6 +3635,7 @@ def _show_logs(log_buffer, console, logs_dir: str = "logs") -> None:
                 "[bold cyan]3[/] ERROR   "
                 "[bold cyan]4[/] Todos   "
                 "[bold cyan]5[/] Buscar   "
+                "[bold cyan]6[/] Verbose   "
                 "[bold cyan]0[/] Volver"
             )
             try:
@@ -3341,6 +3661,36 @@ def _show_logs(log_buffer, console, logs_dir: str = "logs") -> None:
                     continue
                 if text:
                     current_text = text
+            elif sub == "6":
+                # Verbose: read scanner_verbose.log
+                import os as _os
+                verbose_path = _os.path.join("logs", "scanner_verbose.log")
+                try:
+                    with open(verbose_path, "r", encoding="utf-8") as _f:
+                        verbose_lines = _f.readlines()
+                    rendered = []
+                    for line in verbose_lines[-50:]:
+                        rendered.append(Text(line.strip(), style="dim white"))
+                    _clear_screen()
+                    _print_header(console, logs_dir=logs_dir)
+                    console.print(
+                        Panel(
+                            RichGroup(*rendered),
+                            title="Scanner Verbose Log",
+                            border_style="white",
+                        )
+                    )
+                    console.print("\n[bold cyan]0[/] Volver | Enter para continuar")
+                    try:
+                        sub2 = input().strip()
+                    except (KeyboardInterrupt, EOFError):
+                        pass
+                    if sub2 == "0":
+                        return
+                except (FileNotFoundError, OSError):
+                    console.print("[yellow]No hay logs verbose todavía.[/]")
+                    _wait_enter()
+                continue
             else:
                 console.print("[bold red]Opción inválida.[/]")
                 _wait_enter()
