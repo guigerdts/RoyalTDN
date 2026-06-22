@@ -411,3 +411,110 @@ def test_resume_status_json_written_to_correct_path(tmp_path):
     assert status_path.exists(), f"status.json should be in custom_logs_dir"
     default_path = tmp_path / "logs" / "status.json"
     assert not default_path.exists(), "status.json should NOT be in default logs/ dir"
+
+
+# ── Phase 4: Universe quick-select (Fase 18.2 PR 2) ─────────────────────
+
+
+def test_cycle_universe_cycles_correctly():
+    """_cycle_universe cycles all → etfs → crypto → sp500 → all."""
+    from royaltdn.frontend.menu.app import _cycle_universe
+    import royaltdn.frontend.menu.app as _app
+
+    _app._current_universe = "all"
+    assert _cycle_universe() == "etfs"
+    assert _cycle_universe() == "crypto"
+    assert _cycle_universe() == "sp500"
+    assert _cycle_universe() == "all"
+
+
+def test_cycle_universe_full_loop():
+    """Four cycles return to starting universe."""
+    from royaltdn.frontend.menu.app import _cycle_universe
+    import royaltdn.frontend.menu.app as _app
+
+    _app._current_universe = "all"
+    for _ in range(4):
+        _cycle_universe()
+    assert _app._current_universe == "all"
+
+
+def test_cycle_universe_state_persists():
+    """Universe state persists in module var across multiple cycles."""
+    from royaltdn.frontend.menu.app import _cycle_universe
+    import royaltdn.frontend.menu.app as _app
+
+    _app._current_universe = "all"
+    _cycle_universe()
+    assert _app._current_universe == "etfs"
+    _cycle_universe()
+    assert _app._current_universe == "crypto"
+    _cycle_universe()
+    assert _app._current_universe == "sp500"
+
+
+def test_universe_setter_is_called():
+    """_cycle_universe calls wired setter with new value."""
+    from royaltdn.frontend.menu.app import _cycle_universe, set_universe_setter
+    import royaltdn.frontend.menu.app as _app
+
+    _app._current_universe = "all"
+    _app._universe_setter = None
+
+    calls = []
+    set_universe_setter(lambda v: calls.append(v))
+
+    _cycle_universe()
+    assert calls == ["etfs"]
+    _cycle_universe()
+    assert calls == ["etfs", "crypto"]
+
+
+def test_set_universe_setter_wires_global():
+    """set_universe_setter correctly wires the module global."""
+    from royaltdn.frontend.menu.app import set_universe_setter
+    import royaltdn.frontend.menu.app as _app
+
+    _app._universe_setter = None
+    fn = lambda x: None
+    set_universe_setter(fn)
+    assert _app._universe_setter is fn
+
+
+def test_print_header_shows_universe():
+    """_print_header includes current universe in output."""
+    from royaltdn.frontend.menu.app import _print_header
+    from rich.console import Console
+    import io
+    import royaltdn.frontend.menu.app as _app
+
+    _app._current_universe = "crypto"
+
+    console = Console(file=io.StringIO(), color_system="standard")
+    _print_header(console, logs_dir="/tmp/test_logs_universe")
+    output = console.file.getvalue()
+    assert "Universe: crypto" in output or "crypto" in output
+
+
+def test_menu_includes_u_option():
+    """_print_menu renders a 'U' option for universe change."""
+    from royaltdn.frontend.menu.app import _print_menu
+    from rich.console import Console
+    import io
+
+    console = Console(file=io.StringIO(), color_system="standard")
+    _print_menu(console, badges=None)
+    output = console.file.getvalue()
+    assert "U" in output
+    assert "Cambiar universo" in output.replace("\n", " ")
+
+
+def test_category_meta_defined():
+    """CATEGORY_META and _CATEGORY_ORDER are properly defined."""
+    from royaltdn.frontend.menu.app import CATEGORY_META, _CATEGORY_ORDER
+
+    assert "swing" in CATEGORY_META
+    assert "scalping" in CATEGORY_META
+    assert "intradia" in CATEGORY_META
+    assert CATEGORY_META["swing"][0] == "\U0001f535 Swing"
+    assert _CATEGORY_ORDER == ("swing", "scalping", "intradia")

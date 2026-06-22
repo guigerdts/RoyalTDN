@@ -337,6 +337,10 @@ def cmd_run():
     except Exception as e:
         logger.warning("Scanner no disponible desde main ({})", e)
 
+    if scanner is not None:
+        from royaltdn.frontend.menu.app import set_universe_setter
+        set_universe_setter(lambda ut: setattr(scanner.universe, 'universe_type', ut))
+
     orch = Orchestrator(
         api_key=API_KEY,
         secret_key=API_SECRET,
