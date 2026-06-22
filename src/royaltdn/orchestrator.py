@@ -488,6 +488,7 @@ class Orchestrator:
                     "signal_count": self._signal_count_by_strategy.get(name, 0),
                     "symbol": getattr(strategy, 'symbol', self.symbol),
                     "timeframe": getattr(strategy, 'timeframe', '1d'),
+                    "category": getattr(strategy, 'category', 'swing'),
                 })
         else:
             strategies_list.append({
@@ -499,6 +500,7 @@ class Orchestrator:
                 "signal_count": self._trades_count,
                 "symbol": self.symbol,
                 "timeframe": "1d",
+                "category": "swing",
             })
 
         # User strategies (Fase 7) — skip inactive
@@ -515,6 +517,7 @@ class Orchestrator:
                 "signal_count": self._signal_count_by_strategy.get(f"user_{name}", 0),
                 "symbol": strat.symbols[0] if strat.symbols else "ALL",
                 "timeframe": strat.timeframe,
+                "category": getattr(strat, 'category', 'swing'),
             })
 
         return strategies_list
