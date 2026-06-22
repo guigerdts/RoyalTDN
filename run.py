@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 from loguru import logger
+
+load_dotenv()
 
 # Asegurar que el directorio raiz esta en sys.path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -87,6 +90,19 @@ async def main():
     from monitoring.dashboard import Dashboard
     dashboard = Dashboard(bus, portfolio)
     asyncio.create_task(dashboard.run())
+
+    # Iniciar alertas Telegram (si configuradas)
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if telegram_token and telegram_chat_id:
+        from monitoring.telegram_alerts import TelegramAlerts
+        telegram_alerts = TelegramAlerts(bus, telegram_token, telegram_chat_id)
+        asyncio.create_task(telegram_alerts.start())
+    else:
+        logger.warning(
+            "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID no configurados "
+            "— alertas Telegram desactivadas"
+        )
 
     # Ejecutar engine
     try:
