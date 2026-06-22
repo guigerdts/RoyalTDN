@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 from royaltdn.strategy.momentum_atr import compute_atr
 
 
@@ -56,20 +56,11 @@ class IntradayTrendStrategy(BaseStrategy):
     def name(self) -> str:
         return "intraday_trend"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Generate trend signal based on EMA crossover with ATR filter.
-
-        Args:
-            data: OHLCV DataFrame with close, high, low columns.
-            symbol: Optional ticker, resolves crypto/stocks profile.
-
-        Returns:
-            Dict with action, price, metadata or None.
-        """
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -86,32 +77,100 @@ class IntradayTrendStrategy(BaseStrategy):
 
         need = max(ema_slow, trend_period) + 1
         if any(c not in data.columns for c in ("close", "high", "low")) or len(data) < need:
-            return None
+            return {"ema_fast_val": None, "ema_slow_val": None, "atr_pct": None,
+                    "close": None, "trend_period": trend_period,
+                    "adx_threshold": adx_threshold, "ema_fast": ema_fast, "ema_slow": ema_slow}
 
         close = data["close"]
-        ema_fast_val = close.ewm(span=ema_fast, adjust=False).mean()
-        ema_slow_val = close.ewm(span=ema_slow, adjust=False).mean()
+        ema_fast_val = float(close.ewm(span=ema_fast, adjust=False).mean().iloc[-1])
+        ema_slow_val = float(close.ewm(span=ema_slow, adjust=False).mean().iloc[-1])
         atr = compute_atr(data["high"], data["low"], close, trend_period)
-
         last_close = float(close.iloc[-1])
-        last_fast = float(ema_fast_val.iloc[-1])
-        last_slow = float(ema_slow_val.iloc[-1])
         atr_pct = (float(atr.iloc[-1]) / last_close * 100) if last_close > 0 else 0.0
 
-        metadata = {
-            "ema_fast": round(last_fast, 2),
-            "ema_slow": round(last_slow, 2),
-            "atr_pct": round(atr_pct, 2),
-            "trend_period": trend_period,
+        return {
+            "ema_fast_val": ema_fast_val, "ema_slow_val": ema_slow_val,
+            "atr_pct": atr_pct, "close": last_close,
+            "trend_period": trend_period, "adx_threshold": adx_threshold,
+            "ema_fast": ema_fast, "ema_slow": ema_slow,
         }
 
-        if atr_pct > adx_threshold:
-            if last_fast > last_slow:
-                return {"action": "BUY", "price": last_close, "metadata": metadata}
-            if last_fast < last_slow:
-                return {"action": "SELL", "price": last_close, "metadata": metadata}
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Generate trend signal based on EMA crossover with ATR filter."""
+        ind = self._compute_indicators(data, symbol)
+        ef = ind.get("ema_fast_val")
+        es = ind.get("ema_slow_val")
+        atr_pct = ind.get("atr_pct")
+        last_close = ind.get("close")
+        if any(v is None for v in (ef, es, atr_pct, last_close)):
+            return None
 
+        metadata = {
+            "ema_fast": round(ef, 2), "ema_slow": round(es, 2),
+            "atr_pct": round(atr_pct, 2), "trend_period": ind["trend_period"],
+        }
+
+        if atr_pct > ind["adx_threshold"]:
+            if ef > es:
+                return {"action": "BUY", "price": last_close, "metadata": metadata}
+            if ef < es:
+                return {"action": "SELL", "price": last_close, "metadata": metadata}
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        ef = ind.get("ema_fast_val")
+        es = ind.get("ema_slow_val")
+        atr_pct = ind.get("atr_pct")
+        adx = ind.get("adx_threshold")
+        c = ind.get("close")
+
+        conditions = []
+        if atr_pct is not None and adx is not None:
+            conditions.append({
+                "name": "ATR% above threshold",
+                "met": atr_pct > adx, "value": round(atr_pct, 2),
+                "threshold": float(adx),
+                "gap_pct": round(_calc_gap(atr_pct, float(adx), "above"), 2),
+                "direction": "above",
+            })
+        if ef is not None and es is not None:
+            conditions.append({
+                "name": "EMA fast above EMA slow",
+                "met": ef > es, "value": round(ef, 2),
+                "threshold": round(es, 2),
+                "gap_pct": round(_calc_gap(ef, es, "above"), 2),
+                "direction": "above",
+            })
+            conditions.append({
+                "name": "EMA fast below EMA slow",
+                "met": ef < es, "value": round(ef, 2),
+                "threshold": round(es, 2),
+                "gap_pct": round(_calc_gap(ef, es, "below"), 2),
+                "direction": "below",
+            })
+
+        inds = {}
+        if ef is not None:
+            inds["ema_fast"] = round(ef, 2)
+        if es is not None:
+            inds["ema_slow"] = round(es, 2)
+        if atr_pct is not None:
+            inds["atr_pct"] = round(atr_pct, 2)
+        if c is not None:
+            inds["close"] = round(c, 2)
+
+        return {"indicators": inds, "conditions": conditions, "signal": signal}
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         """Return current strategy parameters.
