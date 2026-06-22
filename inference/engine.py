@@ -41,8 +41,6 @@ class InferenceEngine:
         Raises:
             ValueError: If the config structure is invalid.
         """
-        logger.debug("Evaluating inference rules against market data")
         root = build_graph(entry_config)
         result = root.evaluate(data)
-        logger.debug("Inference evaluation result: {}", result)
         return result

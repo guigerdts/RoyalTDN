@@ -136,5 +136,5 @@ def build_graph(entry_config: dict[str, Any]) -> LogicNode:
     root = _build_node(entry_config)
     if not isinstance(root, LogicNode):
         raise ValueError("Root of entry config must be a logic node")
-    logger.debug("Condition graph built with root logic={}", root.logic)
+    logger.trace("Condition graph built with root logic={}", root.logic)
     return root

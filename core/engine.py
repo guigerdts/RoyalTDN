@@ -173,6 +173,14 @@ class EventEngine:
                             "Error al actualizar portafolio del broker"
                         )
 
+                # Sync RiskManager's Portfolio (Bug 4)
+                try:
+                    self.risk_manager.portfolio.update(trade_event)
+                except Exception:
+                    logger.exception(
+                        "Error al actualizar portfolio del risk manager"
+                    )
+
                 logger.info(
                     "Trade ejecutado: {} {} {} @ ${:.2f} (orden: {})",
                     approved.get("symbol", ""),

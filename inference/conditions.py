@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -19,6 +20,28 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _safe_numeric(
+    series: Any,
+    min_length: int = 1,
+) -> pd.Series:
+    """Retorna la serie convertida a numérico, o una serie vacía si falla.
+
+    Coerce inputs to numeric dtype and drop NaN/None values.  Returns an
+    empty ``float64`` Series when the input is unusable or shorter than
+    *min_length* — safe to chain with ``.mean()``, ``.std()``, etc.
+    """
+    if not isinstance(series, (pd.Series, np.ndarray)):
+        return pd.Series(dtype=float)
+    try:
+        numeric = pd.to_numeric(series, errors="coerce")
+        numeric = numeric.dropna()
+        if len(numeric) < min_length:
+            return pd.Series(dtype=float)
+        return numeric
+    except Exception:
+        return pd.Series(dtype=float)
 
 
 def _to_series(data: Any, key: str = "close") -> pd.Series:
@@ -65,11 +88,11 @@ def momentum(data: Any, period: int = 3) -> float:
     """
     series = _to_series(data, "close")
     if len(series) < period + 1:
-        logger.debug("Momentum: insufficient data (need {})", period + 1)
+        logger.trace("Momentum: insufficient data (need {})", period + 1)
         return 0.0
     prev = series.iloc[-period - 1]
     if prev == 0.0:
-        logger.debug("Momentum: division by zero")
+        logger.trace("Momentum: division by zero")
         return 0.0
     return float((series.iloc[-1] - prev) / prev)
 
@@ -89,11 +112,11 @@ def volume_surge(data: Any, period: int = 20, factor: float = 2.0) -> bool:
     """
     series = _to_series(data, "volume")
     if len(series) < period + 1:
-        logger.debug("Volume surge: insufficient data (need {})", period + 1)
+        logger.trace("Volume surge: insufficient data (need {})", period + 1)
         return False
-    avg_vol = float(series.iloc[-period - 1 : -1].mean())
-    if avg_vol == 0.0:
-        logger.debug("Volume surge: average volume is zero")
+    avg_vol = float(_safe_numeric(series.iloc[-period - 1 : -1]).mean())
+    if pd.isna(avg_vol) or avg_vol == 0.0:
+        logger.trace("Volume surge: average volume is zero")
         return False
     return float(series.iloc[-1]) / avg_vol > factor
 
@@ -112,16 +135,24 @@ def rsi(data: Any, period: int = 7) -> float:
     """
     series = _to_series(data, "close")
     if len(series) < period + 1:
-        logger.debug("RSI: insufficient data (need {})", period + 1)
+        logger.trace("RSI: insufficient data (need {})", period + 1)
         return 50.0
 
     deltas = series.diff().iloc[1:]
     gains = deltas.where(deltas > 0, 0.0)
     losses = (-deltas).where(deltas < 0, 0.0)
 
-    avg_gain = gains.rolling(window=period, min_periods=period).mean().iloc[-1]
-    avg_loss = losses.rolling(window=period, min_periods=period).mean().iloc[-1]
+    gains_safe = _safe_numeric(gains, min_length=period)
+    losses_safe = _safe_numeric(losses, min_length=period)
 
+    if len(gains_safe) < 1 or len(losses_safe) < 1:
+        return 50.0
+
+    avg_gain = gains_safe.rolling(window=period, min_periods=period).mean().iloc[-1]
+    avg_loss = losses_safe.rolling(window=period, min_periods=period).mean().iloc[-1]
+
+    if pd.isna(avg_gain) or pd.isna(avg_loss):
+        return 50.0
     if avg_loss == 0.0:
         return 100.0 if avg_gain > 0 else 50.0
 
@@ -139,12 +170,12 @@ def ema(data: Any, period: int = 15) -> float:
     Returns:
         Current EMA value, or the last price (as fallback).
     """
-    series = _to_series(data, "close")
+    series = _safe_numeric(_to_series(data, "close"), min_length=1)
     if len(series) < 1:
-        logger.debug("EMA: no data")
+        logger.trace("EMA: no data")
         return 0.0
     if len(series) < period:
-        logger.debug("EMA: insufficient data, returning last price")
+        logger.trace("EMA: insufficient data, returning last price")
         return float(series.iloc[-1])
 
     ema_series = series.ewm(span=period, adjust=False).mean()
@@ -163,12 +194,21 @@ def adx(data: Any, period: int = 10) -> float:
     Returns:
         ADX value (0-100), or 0.0 if insufficient data.
     """
-    high = _to_series(data, "high") if isinstance(data, dict) else _to_series(data)
-    low = _to_series(data, "low") if isinstance(data, dict) else _to_series(data)
-    close = _to_series(data, "close") if isinstance(data, dict) else _to_series(data)
+    high = _safe_numeric(
+        _to_series(data, "high") if isinstance(data, dict) else _to_series(data),
+        min_length=1,
+    )
+    low = _safe_numeric(
+        _to_series(data, "low") if isinstance(data, dict) else _to_series(data),
+        min_length=1,
+    )
+    close = _safe_numeric(
+        _to_series(data, "close") if isinstance(data, dict) else _to_series(data),
+        min_length=1,
+    )
 
     if len(close) < period + 1:
-        logger.debug("ADX: insufficient data (need {})", period + 1)
+        logger.trace("ADX: insufficient data (need {})", period + 1)
         return 0.0
 
     # True Range
@@ -181,7 +221,12 @@ def adx(data: Any, period: int = 10) -> float:
         ],
         axis=1,
     ).max(axis=1)
-    atr = tr.rolling(window=period, min_periods=period).mean()
+    tr_safe = _safe_numeric(tr, min_length=period)
+    if len(tr_safe) < 1:
+        return 0.0
+    atr = tr_safe.rolling(window=period, min_periods=period).mean()
+    if pd.isna(atr.iloc[-1]):
+        return 0.0
 
     # Directional Movement
     up_move = high.diff()
@@ -193,14 +238,22 @@ def adx(data: Any, period: int = 10) -> float:
     plus_dm[(up_move > down_move) & (up_move > 0)] = up_move
     minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
 
-    plus_di = 100.0 * (plus_dm.rolling(window=period, min_periods=period).mean() / atr)
+    plus_dm_safe = _safe_numeric(plus_dm, min_length=period)
+    minus_dm_safe = _safe_numeric(minus_dm, min_length=period)
+    if len(plus_dm_safe) < 1 or len(minus_dm_safe) < 1:
+        return 0.0
+
+    plus_di = 100.0 * (plus_dm_safe.rolling(window=period, min_periods=period).mean() / atr)
     minus_di = 100.0 * (
-        minus_dm.rolling(window=period, min_periods=period).mean() / atr
+        minus_dm_safe.rolling(window=period, min_periods=period).mean() / atr
     )
 
     # ADX
     dx = 100.0 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA))
-    adx_series = dx.rolling(window=period, min_periods=period).mean()
+    dx_safe = _safe_numeric(dx, min_length=period)
+    if len(dx_safe) < 1:
+        return 0.0
+    adx_series = dx_safe.rolling(window=period, min_periods=period).mean()
 
     if pd.isna(adx_series.iloc[-1]):
         return 0.0
@@ -221,15 +274,19 @@ def zscore(data: Any, period: int = 20) -> float:
     """
     series = _to_series(data, "close")
     if len(series) < period + 1:
-        logger.debug("Z-score: insufficient data (need {})", period + 1)
+        logger.trace("Z-score: insufficient data (need {})", period + 1)
         return 0.0
 
-    window = series.iloc[-period - 1 : -1]
+    window = _safe_numeric(series.iloc[-period - 1 : -1], min_length=2)
+    if len(window) < 2:
+        logger.trace("Z-score: insufficient data (need {})", period + 1)
+        return 0.0
+
     mean = window.mean()
     std = window.std()
 
-    if std == 0.0:
-        logger.debug("Z-score: standard deviation is zero")
+    if pd.isna(mean) or pd.isna(std) or std == 0.0:
+        logger.trace("Z-score: standard deviation is zero")
         return 0.0
 
     return float((series.iloc[-1] - mean) / std)

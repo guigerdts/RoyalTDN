@@ -56,7 +56,7 @@ class TestIntegration(unittest.TestCase):
         broker = PaperBroker(initial_capital=100_000.0)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
-        # Mock cell that always returns a BUY signal
+        # Mock cell that always returns a BUY signal (using sizing fraction)
         cell = MagicMock()
         cell.name = "test_cell"
         cell.handle = AsyncMock(
@@ -64,7 +64,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.01,  # 1% of capital
             }
         )
         engine.register(cell)
@@ -89,7 +89,7 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(trade["status"], "filled")
 
     def test_full_pipeline_trade_updates_portfolio(self):
-        """After trade execution, broker portfolio should reflect it."""
+        """After trade execution, broker and risk portfolios should reflect it."""
         from core.bus import EventBus
         from core.clock import RealClock
         from core.engine import EventEngine
@@ -111,7 +111,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.01,
             }
         )
         engine.register(cell)
@@ -125,10 +125,20 @@ class TestIntegration(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
+        # RiskManager calculates qty = (capital * sizing) / price
+        # = (100000 * 0.01) / 50000 = 0.02, min_qty = (100000 * 0.001) / 50000 = 0.002
+        # qty = max(0.002, 0.02) = 0.02
+        expected_qty = 0.02
+        expected_capital = 100_000.0 - expected_qty * 50000.0  # = 99000
+
         # Broker's portfolio updated
-        self.assertEqual(broker.capital, 100_000.0 - 0.01 * 50000.0)
+        self.assertAlmostEqual(broker.capital, expected_capital, places=2)
         self.assertIn("BTCUSDT", broker.positions)
-        self.assertAlmostEqual(broker.positions["BTCUSDT"], 0.01)
+        self.assertAlmostEqual(broker.positions["BTCUSDT"], expected_qty, places=6)
+
+        # RiskManager's portfolio also updated
+        self.assertIn("BTCUSDT", portfolio.positions)
+        self.assertAlmostEqual(portfolio.positions["BTCUSDT"], expected_qty, places=6)
 
     # -- Multiple cells -----------------------------------------------------
 
@@ -156,7 +166,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.01,
             }
         )
         engine.register(btc_cell)
@@ -207,7 +217,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.005,  # 0.5% — small enough to leave capital for ETH
             }
         )
         engine.register(btc_cell)
@@ -219,7 +229,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "ETHUSDT",
                 "price": 3000.0,
-                "qty": 1.0,
+                "sizing": 0.005,
             }
         )
         engine.register(eth_cell)
@@ -243,7 +253,7 @@ class TestIntegration(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
-        # Only the 2 trades from the first tick
+        # 2 trades from the first tick (both BUY signals processed)
         self.assertEqual(len(broker.trades), 2)
         symbols = [t["symbol"] for t in broker.trades]
         self.assertIn("BTCUSDT", symbols)
@@ -277,7 +287,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.01,
             }
         )
         engine.register(cell)
@@ -290,14 +300,14 @@ class TestIntegration(unittest.TestCase):
             await asyncio.sleep(0.05)
 
             # Manually mark position full so risk rejects next signal
-            portfolio.positions["BTCUSDT"] = 0.01
+            portfolio.positions["ETHUSDT"] = 1.0
 
-            # Second signal — BUY ETH, should be rejected by risk
+            # Second signal — BUY ETH, should be rejected by risk (max positions)
             cell.handle.return_value = {
                 "action": "BUY",
                 "symbol": "ETHUSDT",
                 "price": 3000.0,
-                "qty": 1.0,
+                "sizing": 0.01,
             }
             await bus.emit(self._make_tick("ETHUSDT", 3000.0))
             await asyncio.sleep(0.05)
@@ -307,7 +317,7 @@ class TestIntegration(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
-        # Only BTC trade executed (ETH rejected)
+        # Only BTC trade executed (ETH rejected due to max_positions)
         self.assertEqual(len(broker.trades), 1)
         self.assertEqual(broker.trades[0]["symbol"], "BTCUSDT")
 
@@ -322,8 +332,10 @@ class TestIntegration(unittest.TestCase):
 
         bus = EventBus()
         clock = RealClock()
+        # Portfolio has capital = 96000 but initial_capital = 100000
+        # drawdown = (100000 - 96000) / 100000 = 4% > 3% max
         portfolio = Portfolio(initial_capital=100_000.0)
-        portfolio.capital = 96_000.0  # 4% drawdown
+        portfolio.capital = 96_000.0
         risk_manager = RiskManager(
             portfolio, max_positions=5, max_drawdown=0.03  # 3% max
         )
@@ -337,7 +349,7 @@ class TestIntegration(unittest.TestCase):
                 "action": "BUY",
                 "symbol": "BTCUSDT",
                 "price": 50000.0,
-                "qty": 0.01,
+                "sizing": 0.01,
             }
         )
         engine.register(cell)
