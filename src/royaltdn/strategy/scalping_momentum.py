@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 from loguru import logger
 
-from royaltdn.strategy.base import BaseStrategy
+from royaltdn.strategy.base import BaseStrategy, _calc_gap
 
 
 class ScalpingMomentumStrategy(BaseStrategy):
@@ -45,11 +45,11 @@ class ScalpingMomentumStrategy(BaseStrategy):
     def name(self) -> str:
         return "scalping_momentum"
 
-    def generate_signal(
+    def _compute_indicators(
         self,
         data: pd.DataFrame,
         symbol: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         if symbol is not None:
             from royaltdn.scanner.universe import is_crypto_symbol
 
@@ -61,11 +61,37 @@ class ScalpingMomentumStrategy(BaseStrategy):
             min_momentum_pct = self.min_momentum_pct
 
         if "close" not in data.columns or len(data) < momentum_period + 1:
-            return None
+            return {
+                "momentum_return": None,
+                "close": None,
+                "momentum_period": momentum_period,
+                "min_momentum_pct": min_momentum_pct,
+            }
 
         close = data["close"]
         pct_change = (float(close.iloc[-1]) / float(close.iloc[-momentum_period]) - 1) * 100
         last_close = float(close.iloc[-1])
+
+        return {
+            "momentum_return": pct_change,
+            "close": last_close,
+            "momentum_period": momentum_period,
+            "min_momentum_pct": min_momentum_pct,
+        }
+
+    def generate_signal(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        ind = self._compute_indicators(data, symbol)
+        pct_change = ind.get("momentum_return")
+        last_close = ind.get("close")
+        momentum_period = ind["momentum_period"]
+        min_momentum_pct = ind["min_momentum_pct"]
+
+        if pct_change is None or last_close is None:
+            return None
 
         metadata = {
             "pct_change": round(pct_change, 2),
@@ -79,6 +105,49 @@ class ScalpingMomentumStrategy(BaseStrategy):
             return {"action": "SELL", "price": last_close, "metadata": metadata}
 
         return None
+
+    def explain(
+        self,
+        data: pd.DataFrame,
+        symbol: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ind = self._compute_indicators(data, symbol)
+        signal = self.generate_signal(data, symbol)
+
+        mv = ind.get("momentum_return")
+        min_pct = ind.get("min_momentum_pct")
+        close_val = ind.get("close")
+
+        conditions = []
+        if mv is not None and min_pct is not None:
+            conditions.append({
+                "name": "Momentum > +threshold",
+                "met": mv > min_pct,
+                "value": round(mv, 2),
+                "threshold": float(min_pct),
+                "gap_pct": round(_calc_gap(mv, float(min_pct), "above"), 2),
+                "direction": "above",
+            })
+            conditions.append({
+                "name": "Momentum < -threshold",
+                "met": mv < -min_pct,
+                "value": round(mv, 2),
+                "threshold": float(-min_pct),
+                "gap_pct": round(_calc_gap(mv, float(-min_pct), "below"), 2),
+                "direction": "below",
+            })
+
+        inds = {}
+        if mv is not None:
+            inds["momentum_return"] = round(mv, 2)
+        if close_val is not None:
+            inds["close"] = round(close_val, 2)
+
+        return {
+            "indicators": inds,
+            "conditions": conditions,
+            "signal": signal,
+        }
 
     def get_parameters(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         if symbol is None:
