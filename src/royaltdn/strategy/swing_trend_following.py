@@ -10,7 +10,6 @@ import pandas as pd
 from loguru import logger
 
 from royaltdn.strategy.base import BaseStrategy
-from royaltdn.strategy.momentum_atr import compute_atr
 
 
 class SwingTrendFollowingStrategy(BaseStrategy):
@@ -73,6 +72,8 @@ class SwingTrendFollowingStrategy(BaseStrategy):
         need = max(slow_ema, 14) + 1
         if any(c not in data.columns for c in ("close", "high", "low")) or len(data) < need:
             return None
+
+        from royaltdn.strategy.momentum_atr import compute_atr
 
         close = data["close"]
         high = data["high"]
