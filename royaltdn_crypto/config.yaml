@@ -1,0 +1,14 @@
+broker: paper
+testnet: true
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - LINKUSDT
+  - SOLUSDT
+  - ADAUSDT
+strategies_dir: cells/templates/
+initial_capital: 100000.0
+max_positions: 5
+max_drawdown: 0.03
+telegram_token: ""
+telegram_chat_id: ""

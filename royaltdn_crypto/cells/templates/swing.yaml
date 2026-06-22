@@ -1,0 +1,15 @@
+name: swing_reversion
+symbol: LINKUSDT
+timeframe: 1d
+entry:
+  logic: AND
+  conditions:
+    - indicator: zscore
+      params: {period: 20}
+      operator: "< -2.5"
+exit:
+  - type: zscore
+    params: {threshold: 0.5}
+risk:
+  sizing: 0.05
+  max_positions: 2

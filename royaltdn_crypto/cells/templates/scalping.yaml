@@ -1,0 +1,23 @@
+name: scalping_momentum
+symbol: BTCUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+    - indicator: momentum
+      params: {period: 3}
+      operator: "> 0"
+    - indicator: volume_surge
+      params: {period: 20, factor: 2.0}
+      operator: "> 0"
+    - indicator: rsi
+      params: {period: 7}
+      operator: "< 40"
+exit:
+  - type: stop_loss
+    params: {atr_multiplier: 1.5}
+  - type: take_profit
+    params: {atr_multiplier: 3.0}
+risk:
+  sizing: 0.01
+  max_positions: 3

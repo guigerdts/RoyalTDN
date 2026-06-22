@@ -1,0 +1,18 @@
+name: intraday_trend
+symbol: ETHUSDT
+timeframe: 15m
+entry:
+  logic: AND
+  conditions:
+    - indicator: ema
+      params: {period: 15}
+      operator: "price > ema"
+    - indicator: adx
+      params: {period: 10}
+      operator: "> 20"
+exit:
+  - type: trailing_stop
+    params: {atr_multiplier: 2.0}
+risk:
+  sizing: 0.02
+  max_positions: 5
