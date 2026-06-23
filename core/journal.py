@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -96,29 +97,62 @@ class Journal:
     # Convenience methods
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Trade-ID generation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _new_id() -> str:
+        """Generate a unique trade identifier."""
+        return uuid.uuid4().hex[:12]
+
+    # ------------------------------------------------------------------
+    # Convenience methods
+    # ------------------------------------------------------------------
+
     async def signal(
         self,
         symbol: str,
         action: str,
         price: float,
         strategy: str,
-    ) -> dict[str, Any]:
-        """Record a trading signal emitted by a cell."""
-        return await self.log("signal", {
+        trade_id: str | None = None,
+    ) -> str:
+        """Record a trading signal emitted by a cell.
+
+        Args:
+            symbol: Trading pair symbol.
+            action: ``"BUY"`` or ``"SELL"``.
+            price: Signal price.
+            strategy: Cell / strategy name.
+            trade_id: Optional existing ID.  If omitted a new one is
+                generated.
+
+        Returns:
+            The ``trade_id`` for this trade — pass it to subsequent
+            journal calls (``approved``, ``executed``, etc.) so events
+            are linked.
+        """
+        tid = trade_id or self._new_id()
+        await self.log("signal", {
+            "trade_id": tid,
             "symbol": symbol,
             "action": action,
             "price": price,
             "strategy": strategy,
         })
+        return tid
 
     async def approved(
         self,
         symbol: str,
         action: str,
         reason: str = "risk_check_passed",
+        trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a signal passing the risk management gate."""
         return await self.log("approved", {
+            "trade_id": trade_id,
             "symbol": symbol,
             "action": action,
             "reason": reason,
@@ -129,9 +163,11 @@ class Journal:
         symbol: str,
         action: str,
         reason: str = "risk_rejected",
+        trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a signal rejected by the risk manager."""
         return await self.log("rejected", {
+            "trade_id": trade_id,
             "symbol": symbol,
             "action": action,
             "reason": reason,
@@ -143,9 +179,11 @@ class Journal:
         action: str,
         qty: float,
         price: float,
+        trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a successfully filled order."""
         return await self.log("executed", {
+            "trade_id": trade_id,
             "symbol": symbol,
             "action": action,
             "qty": qty,
@@ -156,9 +194,11 @@ class Journal:
         self,
         symbol: str,
         capital: float,
+        trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a new position being opened."""
         return await self.log("position", {
+            "trade_id": trade_id,
             "symbol": symbol,
             "status": "opened",
             "capital": capital,
@@ -169,9 +209,11 @@ class Journal:
         symbol: str,
         pnl: float,
         capital: float,
+        trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a position being closed."""
         return await self.log("position", {
+            "trade_id": trade_id,
             "symbol": symbol,
             "status": "closed",
             "pnl": round(pnl, 2),

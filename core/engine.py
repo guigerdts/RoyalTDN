@@ -129,8 +129,9 @@ class EventEngine:
             except Exception:
                 logger.exception("Error al emitir evento de senal")
 
+            _trade_id = ""
             if self.journal is not None:
-                await self.journal.signal(
+                _trade_id = await self.journal.signal(
                     symbol=signal.get("symbol", ""),
                     action=signal.get("action", ""),
                     price=signal.get("price", 0.0),
@@ -154,6 +155,7 @@ class EventEngine:
                     await self.journal.rejected(
                         symbol=signal.get("symbol", ""),
                         action=signal.get("action", ""),
+                        trade_id=_trade_id,
                     )
                 continue
 
@@ -162,6 +164,7 @@ class EventEngine:
                 await self.journal.approved(
                     symbol=approved.get("symbol", ""),
                     action=approved.get("action", ""),
+                    trade_id=_trade_id,
                 )
 
             # -- Execution ---------------------------------------------------
@@ -192,6 +195,7 @@ class EventEngine:
                         action=approved.get("action", ""),
                         qty=approved.get("qty", 0),
                         price=approved.get("price", 0.0),
+                        trade_id=_trade_id,
                     )
 
                 # Update broker's internal portfolio
@@ -220,7 +224,10 @@ class EventEngine:
                     _symbol = approved.get("symbol", "")
                     _capital = self.risk_manager.portfolio.capital
                     if _action == "BUY":
-                        await self.journal.position_opened(_symbol, _capital)
+                        await self.journal.position_opened(
+                            _symbol, _capital,
+                            trade_id=_trade_id,
+                        )
                     elif _action == "SELL":
                         _entry = approved.get("entry_price", 0.0)
                         _exit_px = approved.get("price", 0.0)
@@ -228,6 +235,7 @@ class EventEngine:
                         _pnl = (_exit_px - _entry) * _qty
                         await self.journal.position_closed(
                             _symbol, _pnl, _capital,
+                            trade_id=_trade_id,
                         )
 
                 logger.info(

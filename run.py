@@ -96,7 +96,10 @@ async def main():
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if telegram_token and telegram_chat_id:
         from monitoring.telegram_alerts import TelegramAlerts
-        telegram_alerts = TelegramAlerts(bus, telegram_token, telegram_chat_id)
+        telegram_alerts = TelegramAlerts(
+            bus, telegram_token, telegram_chat_id,
+            portfolio=portfolio,
+        )
         asyncio.create_task(telegram_alerts.start())
     else:
         logger.warning(
