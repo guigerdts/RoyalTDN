@@ -23,16 +23,16 @@
     conditions:
     - indicator: ichimoku
       params:
-        tenkan: 19
-        kijun: 10
-        senkou_b: 64
+        tenkan: 15
+        kijun: 29
+        senkou_b: 39
   exit:
   - type: trailing_stop
     params:
-      atr_multiplier: 2.7
+      atr_multiplier: 0.5
   risk:
-    sizing: 0.030000000000000002
-    max_positions: 5
+    sizing: 0.025
+    max_positions: 2
 - name: swing_breakout
   symbol: ETHUSDT
   timeframe: 1d

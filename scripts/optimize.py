@@ -152,6 +152,10 @@ def parse_args() -> argparse.Namespace:
         "--walk-forward", action="store_true",
         help="Run walk-forward validation instead of optimization",
     )
+    parser.add_argument(
+        "--walk-forward-integrated", action="store_true",
+        help="Optimize using walk-forward objective (avg OOS Sharpe across 3 windows)",
+    )
     return parser.parse_args()
 
 
@@ -729,6 +733,154 @@ def optimize_strategy(
 
 
 # ---------------------------------------------------------------------------
+# Walk-forward integrated optimization
+# ---------------------------------------------------------------------------
+
+def optimize_strategy_wf_integrated(
+    strategy_name: str,
+    strategy_config: dict,
+    ohlcv: "pd.DataFrame",
+    n_trials: int = 100,
+    metric: str = "sharpe",
+    console: Any = None,
+    n_windows: int = 3,
+) -> dict[str, Any]:
+    """Run Optuna study with walk-forward integrated objective.
+
+    Each trial evaluates the average out-of-sample Sharpe across multiple
+    non-overlapping test windows, rewarding params that generalize.
+
+    Args:
+        strategy_name: Human-readable name for logging.
+        strategy_config: Full strategy config dict.
+        ohlcv: OHLCV DataFrame for simulation.
+        n_trials: Number of Optuna trials.
+        metric: Objective metric name.
+        console: Rich Console instance (optional).
+        n_windows: Number of walk-forward windows.
+
+    Returns:
+        Dict with keys ``best_params``, ``best_value``, ``best_trial``,
+        ``best_metrics``.
+    """
+    from optuna import create_study
+    from optuna.pruners import MedianPruner
+    from optuna.samplers import TPESampler
+
+    study = create_study(
+        direction="maximize",
+        sampler=TPESampler(seed=42),
+        pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=10, interval_steps=5),
+    )
+
+    # Prepare progress tracking
+    progress_bar = None
+    progress_task = None
+    if _HAS_RICH and console:
+        progress_bar = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        )
+        progress_bar.start()
+        progress_task = progress_bar.add_task(
+            f"[cyan]WF-INT {strategy_name}[/]", total=n_trials,
+        )
+
+    def objective(trial: Any) -> float:
+        params = suggest_params(trial, strategy_config)
+        modified_config = apply_params(strategy_config, params)
+
+        total = len(ohlcv)
+        step = int(total * 0.2)  # 20% step between windows
+
+        test_sharpes = []
+        for w in range(n_windows):
+            train_start = w * step
+            train_end = train_start + int(total * 0.6)
+            val_start = train_end
+            val_end = val_start + int(total * 0.4)
+
+            if val_end > total:
+                val_end = total
+            if val_end - val_start < 100:
+                continue  # skip windows with tiny test sets
+
+            # Simulate on test portion only
+            test_data = ohlcv.iloc[val_start:val_end].reset_index(drop=True)
+            trades = asyncio.run(simulate(modified_config, test_data))
+            sh = compute_objective(trades, metric)
+            if sh > -990:  # Only count windows that generated trades
+                test_sharpes.append(sh)
+
+        if not test_sharpes:
+            return -999.0
+
+        avg_sharpe = sum(test_sharpes) / len(test_sharpes)
+
+        # Store metrics in trial user attrs
+        trial.set_user_attr("avg_oos_sharpe", avg_sharpe)
+        trial.set_user_attr("n_windows_valid", len(test_sharpes))
+        trial.set_user_attr("window_sharpes", test_sharpes)
+
+        if progress_task is not None and progress_bar is not None:
+            progress_bar.update(progress_task, advance=1)
+
+        return avg_sharpe
+
+    # Handle KeyboardInterrupt gracefully
+    original_sigint = signal.getsignal(signal.SIGINT)
+    interrupted = False
+
+    def _sigint_handler(signum: int, frame: Any) -> None:
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            logger.warning("Interrupt received — stopping study after current trial...")
+            study.stop()
+        signal.signal(signal.SIGINT, original_sigint)
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
+    try:
+        study.optimize(objective, n_trials=n_trials)
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
+        if progress_bar is not None:
+            progress_bar.stop()
+
+    # Collect best-trial metrics
+    best_metrics: dict[str, Any] = {}
+    worst_metrics: dict[str, Any] = {}
+    if study.best_trial is not None:
+        for k, v in study.best_trial.user_attrs.items():
+            best_metrics[k] = v
+
+    # Track worst trial as well
+    worst_trial = None
+    worst_value = float("inf")
+    for t in study.trials:
+        if t.value is not None and t.value < worst_value:
+            worst_value = t.value
+            worst_trial = t
+    if worst_trial is not None:
+        for k, v in worst_trial.user_attrs.items():
+            worst_metrics[k] = v
+
+    return {
+        "best_params": study.best_params,
+        "best_value": study.best_value,
+        "best_trial": study.best_trial.number if study.best_trial is not None else -1,
+        "best_metrics": best_metrics,
+        "worst_metrics": worst_metrics,
+        "trials_completed": len(study.trials),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Walk-forward validation
 # ---------------------------------------------------------------------------
 
@@ -1225,6 +1377,10 @@ def main() -> None:
         print("  [WARNING] --validate is not yet implemented (deferred to PR 2). "
               "Results will be from optimization only.")
 
+    if args.walk_forward_integrated:
+        print("  [WALK-FORWARD INTEGRATED] Using walk-forward objective "
+              "(avg OOS Sharpe across 3 windows)")
+
     _print_header(console, "Loading strategies...")
     strategies = load_all_strategies()
     filtered = filter_strategies(strategies, args.strategy, args.symbols)
@@ -1236,7 +1392,7 @@ def main() -> None:
         sys.exit(1)
 
     if _HAS_RICH and console:
-        mode_desc = "walk-forward validation" if args.walk_forward else "optimization"
+        mode_desc = "walk-forward validation" if args.walk_forward else "walk-forward integrated" if args.walk_forward_integrated else "optimization"
         console.print(f"Loaded [cyan]{len(strategies)}[/] strategies, "
                       f"selected [green]{len(filtered)}[/] for {mode_desc}")
 
@@ -1441,14 +1597,24 @@ def main() -> None:
         opt_start = time.time()
 
         try:
-            result = optimize_strategy(
-                strategy_name=name,
-                strategy_config=strategy,
-                ohlcv=ohlcv,
-                n_trials=n_trials,
-                metric=args.metric,
-                console=console,
-            )
+            if args.walk_forward_integrated:
+                result = optimize_strategy_wf_integrated(
+                    strategy_name=name,
+                    strategy_config=strategy,
+                    ohlcv=ohlcv,
+                    n_trials=n_trials,
+                    metric=args.metric,
+                    console=console,
+                )
+            else:
+                result = optimize_strategy(
+                    strategy_name=name,
+                    strategy_config=strategy,
+                    ohlcv=ohlcv,
+                    n_trials=n_trials,
+                    metric=args.metric,
+                    console=console,
+                )
         except KeyboardInterrupt:
             print("\nOptimization interrupted by user.")
             break

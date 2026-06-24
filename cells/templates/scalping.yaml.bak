@@ -59,15 +59,15 @@
     conditions:
     - indicator: rsi
       params:
-        period: 7
-      operator: < 25.0
+        period: 3
+      operator: < 40.0
   exit:
   - type: take_profit
     params:
-      atr_multiplier: 0.6
+      atr_multiplier: 5.1000000000000005
   risk:
-    sizing: 0.095
-    max_positions: 2
+    sizing: 0.025
+    max_positions: 1
 - name: scalping_orderflow
   symbol: ADAUSDT
   timeframe: 1m
