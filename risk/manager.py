@@ -6,10 +6,6 @@ conditions before allowing execution.
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
-from typing import Any
-
 from loguru import logger
 
 
@@ -45,6 +41,8 @@ class RiskManager:
                 is re-read from the file periodically so that live changes
                 take effect without restarting the bot.
         """
+        from pathlib import Path
+
         self.portfolio = portfolio
         self.max_positions = max_positions
         self.max_drawdown = max_drawdown
@@ -59,6 +57,8 @@ class RiskManager:
     def _reload_config_if_needed(self) -> None:
         """Re-read ``max_positions`` from ``config.yaml`` if enough time has
         passed since the last read."""
+        import time
+
         if self._config_path is None:
             return
         now = time.monotonic()
@@ -95,6 +95,7 @@ class RiskManager:
             The approved signal dict with ``qty`` added, or None if rejected.
         """
         if signal is None:
+            logger.warning("RISK REJECT: signal is None — no se puede aprobar")
             return None
 
         # Re-read max_positions from config.yaml periodically
@@ -115,25 +116,28 @@ class RiskManager:
                 current_positions, self.max_positions, symbol, cell_name,
             )
             if current_positions >= self.max_positions:
-                logger.info(
-                    "RISK: Max positions ({}) alcanzado — {} rechazada (cell={})",
-                    self.max_positions, symbol, cell_name,
+                logger.warning(
+                    "RISK REJECT: max_positions reached ({}/{}) — {} cell={}",
+                    current_positions, self.max_positions, symbol, cell_name,
                 )
                 return None
 
             # Drawdown check
             drawdown = self.portfolio.get_drawdown()
             if drawdown >= self.max_drawdown:
-                logger.info(
-                    "RISK: Drawdown maximo ({:.2%}) — {} rechazada",
-                    drawdown, symbol,
+                logger.warning(
+                    "RISK REJECT: drawdown limit exceeded ({:.2%} >= {:.2%}) — {} cell={}",
+                    drawdown, self.max_drawdown, symbol, cell_name,
                 )
                 return None
 
             # Calculate qty from capital * sizing / price (Bug 3)
             capital = self.portfolio.capital
             if capital <= 0 or price <= 0:
-                logger.info("RISK: Capital o precio invalido — {} rechazada", symbol)
+                logger.warning(
+                    "RISK REJECT: invalid capital/price (capital={}, price={}) — {} cell={}",
+                    capital, price, symbol, cell_name,
+                )
                 return None
 
             raw_qty = (capital * sizing) / price
@@ -157,8 +161,22 @@ class RiskManager:
             # SELL always passes (any open position can be closed)
             qty = self.portfolio.positions.get(symbol, 0.0)
             if qty <= 0:
-                logger.info("RISK: {} no tiene posicion para vender — rechazada", symbol)
+                logger.warning(
+                    "RISK REJECT: no position to sell (qty={}) — {} cell={}",
+                    qty, symbol, cell_name,
+                )
                 return None
             signal["qty"] = qty
+            logger.info(
+                "RISK: {} SELL aprobada — qty={} cell={}",
+                symbol, qty, cell_name,
+            )
+
+        else:
+            logger.warning(
+                "RISK REJECT: unknown action '{}' — {} cell={}",
+                action, symbol, cell_name,
+            )
+            return None
 
         return signal
