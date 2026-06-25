@@ -668,6 +668,82 @@ def atr(data: Any, period: int = 20, max_pct: float = 4.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bollinger Bands (numeric)
+# ---------------------------------------------------------------------------
+
+
+def bollinger_lower(data: Any, period: int = 20, std: float = 2.0) -> float:
+    """Return the current lower Bollinger Band value.
+
+    Args:
+        data: Dict with ``close`` series.
+        period: Lookback window (default 20).
+        std: Number of standard deviations (default 2.0).
+
+    Returns:
+        Lower band value, or 0.0 if insufficient data.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=period)
+    if len(close) < period:
+        return 0.0
+
+    sma = float(close.iloc[-period:].mean())
+    std_val = float(close.iloc[-period:].std(ddof=0))
+    lower = sma - std * std_val
+    return max(lower, 0.0)
+
+
+def bollinger_upper(data: Any, period: int = 20, std: float = 2.0) -> float:
+    """Return the current upper Bollinger Band value.
+
+    Args:
+        data: Dict with ``close`` series.
+        period: Lookback window (default 20).
+        std: Number of standard deviations (default 2.0).
+
+    Returns:
+        Upper band value, or 0.0 if insufficient data.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=period)
+    if len(close) < period:
+        return 0.0
+
+    sma = float(close.iloc[-period:].mean())
+    std_val = float(close.iloc[-period:].std(ddof=0))
+    upper = sma + std * std_val
+    return upper
+
+
+# ---------------------------------------------------------------------------
+# VWAP (numeric)
+# ---------------------------------------------------------------------------
+
+
+def vwap(data: Any) -> float:
+    """Calculate the Volume-Weighted Average Price over all available bars.
+
+    Args:
+        data: Dict with ``close`` and ``volume`` series.
+
+    Returns:
+        VWAP value, or 0.0 if insufficient data.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=5)
+    volume = _safe_numeric(_to_series(data, "volume"), min_length=5)
+
+    if len(close) < 5 or len(volume) < 5:
+        return 0.0
+
+    total_pv = float((close * volume).sum())
+    total_v = float(volume.sum())
+
+    if total_v == 0.0:
+        return 0.0
+
+    return total_pv / total_v
+
+
+# ---------------------------------------------------------------------------
 # Indicator registry
 # ---------------------------------------------------------------------------
 
@@ -680,11 +756,14 @@ _INDICATORS: dict[str, Any] = {
     "zscore": zscore,
     "range_breakout": range_breakout,
     "vwap_deviation": vwap_deviation,
+    "vwap": vwap,
     "ichimoku": ichimoku,
     "support_resistance": support_resistance,
     "spread": spread,
     "macd_divergence": macd_divergence,
     "atr": atr,
+    "bollinger_lower": bollinger_lower,
+    "bollinger_upper": bollinger_upper,
 }
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@
     - indicator: rsi
       params:
         period: 7
-      operator: '< 60'
+      operator: < 60
   exit:
   - type: stop_loss
     params:

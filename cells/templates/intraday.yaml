@@ -10,7 +10,7 @@
     conditions:
     - indicator: vwap
       params: {}
-      operator: 'price > vwap'
+      operator: price > vwap
     - indicator: volume_surge
       params:
         period: 20
@@ -70,15 +70,15 @@
     conditions:
     - indicator: support_resistance
       params:
-        lookback: 88
-        touch_count: 5
+        lookback: 93
+        touch_count: 4
   exit:
   - type: take_profit
     params:
-      pct: 9.7
+      pct: 6.9
   risk:
     sizing: 0.005
-    max_positions: 5
+    max_positions: 4
 - name: intraday_macd_divergence
   symbols:
   - BTCUSDT

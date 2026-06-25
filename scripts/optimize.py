@@ -153,6 +153,10 @@ def parse_args() -> argparse.Namespace:
         help="Run walk-forward validation instead of optimization",
     )
     parser.add_argument(
+        "--windows", type=int, default=5,
+        help="Number of walk-forward windows (default: 5)",
+    )
+    parser.add_argument(
         "--walk-forward-integrated", action="store_true",
         help="Optimize using walk-forward objective (avg OOS Sharpe across 3 windows)",
     )
@@ -954,8 +958,9 @@ def walk_forward_validate(
     n_trials: int = 100,
     metric: str = "sharpe",
     console: Any = None,
+    n_windows: int = 5,
 ) -> dict[str, Any]:
-    """Run walk-forward validation across 5 sequential windows.
+    """Run walk-forward validation across N sequential windows.
 
     Args:
         strategy_name: Human-readable name for logging.
@@ -964,16 +969,19 @@ def walk_forward_validate(
         n_trials: Number of Optuna trials PER WINDOW.
         metric: Objective metric name.
         console: Rich Console instance (optional).
+        n_windows: Number of walk-forward windows (default 5).
 
     Returns:
         Dict with per-window results and aggregated metrics + verdict.
     """
     total = len(ohlcv)
-    step = total // 5  # 20% step
+    step = total // n_windows  # 100/n_windows % per window
+    min_train = 100
+    min_val = 20
 
     windows: list[dict[str, Any]] = []
 
-    for w in range(5):
+    for w in range(n_windows):
         train_start = w * step
         train_end = min(train_start + int(step * 3.5), total)  # ~70%
         val_start = train_end
@@ -1511,6 +1519,7 @@ def main() -> None:
                     n_trials=n_trials,
                     metric=args.metric,
                     console=console,
+                    n_windows=args.windows,
                 )
             except KeyboardInterrupt:
                 print("\nWalk-forward interrupted by user.")

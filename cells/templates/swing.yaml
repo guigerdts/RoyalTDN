@@ -8,21 +8,21 @@
   entry:
     logic: AND
     conditions:
-    - indicator: bollinger
+    - indicator: bollinger_lower
       params:
         period: 20
         std: 2.0
-      operator: 'price < lower'
+      operator: price < bollinger_lower
     - indicator: rsi
       params:
-        period: 14
-      operator: '< 35'
+        period: 48
+      operator: < 32.0
   exit:
   - type: take_profit
     params:
-      atr_multiplier: 2.0
+      atr_multiplier: 3.8000000000000003
   risk:
-    sizing: 0.06
+    sizing: 0.02
     max_positions: 1
 - name: swing_trend_following
   symbol: BTCUSDT
@@ -80,22 +80,22 @@
   entry:
     logic: AND
     conditions:
-    - indicator: bollinger
+    - indicator: bollinger_lower
       params:
-        period: 20
+        period: 21
         std: 2.0
-      operator: 'price < lower'
+      operator: price < bollinger_lower
     - indicator: rsi
       params:
-        period: 14
-      operator: '< 35'
+        period: 35
+      operator: < 37.0
   exit:
   - type: take_profit
     params:
-      atr_multiplier: 2.0
+      atr_multiplier: 0.5
   risk:
-    sizing: 0.06
-    max_positions: 1
+    sizing: 0.025
+    max_positions: 2
 - name: swing_momentum
   symbols:
   - BTCUSDT
@@ -108,16 +108,16 @@
     conditions:
     - indicator: ema
       params:
-        period: 10
-      operator: 'price > ema'
+        period: 40
+      operator: price > ema
     - indicator: adx
       params:
-        period: 14
-      operator: '> 20'
+        period: 50
+      operator: '> 37.0'
   exit:
   - type: trailing_stop
     params:
-      atr_multiplier: 2.0
+      atr_multiplier: 0.9
   risk:
-    sizing: 0.02
-    max_positions: 1
+    sizing: 0.04
+    max_positions: 4
