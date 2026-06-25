@@ -1,4 +1,8 @@
 - name: intraday_trend
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
   symbol: ETHUSDT
   timeframe: 15m
   entry:
@@ -43,21 +47,21 @@
     conditions:
     - indicator: range_breakout
       params:
-        period: 20
-        factor: 4.8
+        period: 29
+        factor: 0.8
     - indicator: volume_surge
       params:
-        period: 37
-        factor: 3.2
+        period: 27
+        factor: 3.3000000000000003
   exit:
   - type: stop_loss
     params:
-      atr_multiplier: 1.3
+      atr_multiplier: 5.6000000000000005
   - type: take_profit
     params:
-      atr_multiplier: 1.3
+      atr_multiplier: 1.6
   risk:
-    sizing: 0.01
+    sizing: 0.07
     max_positions: 5
 - name: intraday_support_resistance
   symbol: LINKUSDT
@@ -77,6 +81,10 @@
     sizing: 0.005
     max_positions: 5
 - name: intraday_macd_divergence
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - ADAUSDT
   symbol: ADAUSDT
   timeframe: 30m
   entry:

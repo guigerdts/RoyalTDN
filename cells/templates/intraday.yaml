@@ -1,4 +1,8 @@
 - name: intraday_trend
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
   symbol: ETHUSDT
   timeframe: 15m
   entry:
@@ -77,6 +81,10 @@
     sizing: 0.005
     max_positions: 5
 - name: intraday_macd_divergence
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - ADAUSDT
   symbol: ADAUSDT
   timeframe: 30m
   entry:

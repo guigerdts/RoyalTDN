@@ -1,4 +1,8 @@
 - name: swing_reversion
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - LINKUSDT
   symbol: LINKUSDT
   timeframe: 1d
   entry:
@@ -34,6 +38,10 @@
     sizing: 0.030000000000000002
     max_positions: 5
 - name: swing_breakout
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
   symbol: ETHUSDT
   timeframe: 1d
   entry:
@@ -41,23 +49,27 @@
     conditions:
     - indicator: range_breakout
       params:
-        period: 3
+        period: 4
         factor: 1.0
     - indicator: volume_surge
       params:
-        period: 27
-        factor: 2.1
+        period: 35
+        factor: 3.6
   exit:
   - type: stop_loss
     params:
-      atr_multiplier: 1.0
+      atr_multiplier: 0.5
   - type: take_profit
     params:
-      atr_multiplier: 4.6000000000000005
+      atr_multiplier: 0.5
   risk:
-    sizing: 0.015
-    max_positions: 1
+    sizing: 0.025
+    max_positions: 4
 - name: swing_mean_reversion
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
   symbol: SOLUSDT
   timeframe: 1d
   entry:
@@ -75,6 +87,10 @@
     sizing: 0.06
     max_positions: 1
 - name: swing_momentum
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - ADAUSDT
   symbol: ADAUSDT
   timeframe: 1d
   entry:

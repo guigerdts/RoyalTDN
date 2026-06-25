@@ -739,25 +739,31 @@ def optimize_strategy(
 def optimize_strategy_wf_integrated(
     strategy_name: str,
     strategy_config: dict,
-    ohlcv: "pd.DataFrame",
+    ohlcv: "pd.DataFrame | None" = None,
     n_trials: int = 100,
     metric: str = "sharpe",
     console: Any = None,
     n_windows: int = 3,
+    force_download: bool = False,
 ) -> dict[str, Any]:
     """Run Optuna study with walk-forward integrated objective.
 
     Each trial evaluates the average out-of-sample Sharpe across multiple
-    non-overlapping test windows, rewarding params that generalize.
+    non-overlapping test windows and symbols, rewarding params that generalize.
+
+    Supports multi-symbol via ``symbols`` list in config. When present, data
+    for each symbol is pre-loaded and the objective averages across all
+    symbol-window combinations.
 
     Args:
         strategy_name: Human-readable name for logging.
-        strategy_config: Full strategy config dict.
-        ohlcv: OHLCV DataFrame for simulation.
+        strategy_config: Full strategy config dict (may have ``symbols`` list).
+        ohlcv: OHLCV DataFrame for simulation (single-symbol fallback).
         n_trials: Number of Optuna trials.
         metric: Objective metric name.
         console: Rich Console instance (optional).
         n_windows: Number of walk-forward windows.
+        force_download: Re-download cached data.
 
     Returns:
         Dict with keys ``best_params``, ``best_value``, ``best_trial``,
@@ -767,11 +773,67 @@ def optimize_strategy_wf_integrated(
     from optuna.pruners import MedianPruner
     from optuna.samplers import TPESampler
 
-    study = create_study(
-        direction="maximize",
-        sampler=TPESampler(seed=42),
-        pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=10, interval_steps=5),
-    )
+    # Resolve symbols: prefer symbols: list, fall back to symbol: str
+    symbols: list[str] = strategy_config.get("symbols", [])
+    single_sym = strategy_config.get("symbol", "")
+    if not symbols and single_sym:
+        symbols = [single_sym]
+    if not symbols:
+        logger.error("No symbol(s) defined for strategy '{}'", strategy_name)
+        return {
+            "best_params": {},
+            "best_value": -999.0,
+            "best_trial": -1,
+            "best_metrics": {},
+            "worst_metrics": {},
+            "trials_completed": 0,
+        }
+
+    # Pre-load data for all symbols
+    symbol_data: dict[str, "pd.DataFrame"] = {}
+    tf = strategy_config.get("timeframe", "1d")
+    for sym in symbols:
+        df = get_ohlcv(sym, tf, force_download=force_download)
+        if len(df) > 20_000:
+            df = df.iloc[-20_000:].reset_index(drop=True)
+        if len(df) >= 500:
+            symbol_data[sym] = df
+        else:
+            logger.warning("Insufficient data for {} ({} bars) — skipping", sym, len(df))
+
+    if not symbol_data:
+        logger.error("No valid data for any symbol in strategy '{}'", strategy_name)
+        return {
+            "best_params": {},
+            "best_value": -999.0,
+            "best_trial": -1,
+            "best_metrics": {},
+            "worst_metrics": {},
+            "trials_completed": 0,
+        }
+
+    # Determine window params from the first (largest) dataset
+    ref_len = max(len(df) for df in symbol_data.values())
+    step = int(ref_len * 0.2)
+    window_defs = []
+    for w in range(n_windows):
+        val_start = w * step + int(ref_len * 0.6)
+        val_end = val_start + int(ref_len * 0.4)
+        if val_end > ref_len:
+            val_end = ref_len
+        if val_end - val_start >= 100:
+            window_defs.append((val_start, val_end))
+
+    if not window_defs:
+        logger.error("No valid windows for strategy '{}'", strategy_name)
+        return {
+            "best_params": {},
+            "best_value": -999.0,
+            "best_trial": -1,
+            "best_metrics": {},
+            "worst_metrics": {},
+            "trials_completed": 0,
+        }
 
     # Prepare progress tracking
     progress_bar = None
@@ -790,41 +852,42 @@ def optimize_strategy_wf_integrated(
             f"[cyan]WF-INT {strategy_name}[/]", total=n_trials,
         )
 
+    study = create_study(
+        direction="maximize",
+        sampler=TPESampler(seed=42),
+        pruner=MedianPruner(n_startup_trials=5, n_warmup_steps=10, interval_steps=5),
+    )
+
+    # Pre-compute which (symbol, window) combos are valid
+    eval_plan: list[tuple[str, int, int]] = []
+    for sym, df in symbol_data.items():
+        sym_len = len(df)
+        for vs, ve in window_defs:
+            if ve <= sym_len:
+                eval_plan.append((sym, vs, ve))
+
     def objective(trial: Any) -> float:
         params = suggest_params(trial, strategy_config)
         modified_config = apply_params(strategy_config, params)
 
-        total = len(ohlcv)
-        step = int(total * 0.2)  # 20% step between windows
-
-        test_sharpes = []
-        for w in range(n_windows):
-            train_start = w * step
-            train_end = train_start + int(total * 0.6)
-            val_start = train_end
-            val_end = val_start + int(total * 0.4)
-
-            if val_end > total:
-                val_end = total
-            if val_end - val_start < 100:
-                continue  # skip windows with tiny test sets
-
-            # Simulate on test portion only
-            test_data = ohlcv.iloc[val_start:val_end].reset_index(drop=True)
+        all_sharpes: list[float] = []
+        for sym, vs, ve in eval_plan:
+            df = symbol_data[sym]
+            modified_config["symbol"] = sym
+            test_data = df.iloc[vs:ve].reset_index(drop=True)
             trades = asyncio.run(simulate(modified_config, test_data))
             sh = compute_objective(trades, metric)
-            if sh > -990:  # Only count windows that generated trades
-                test_sharpes.append(sh)
+            if sh > -990:
+                all_sharpes.append(sh)
 
-        if not test_sharpes:
+        if not all_sharpes:
             return -999.0
 
-        avg_sharpe = sum(test_sharpes) / len(test_sharpes)
+        avg_sharpe = sum(all_sharpes) / len(all_sharpes)
 
-        # Store metrics in trial user attrs
         trial.set_user_attr("avg_oos_sharpe", avg_sharpe)
-        trial.set_user_attr("n_windows_valid", len(test_sharpes))
-        trial.set_user_attr("window_sharpes", test_sharpes)
+        trial.set_user_attr("n_valid_evals", len(all_sharpes))
+        trial.set_user_attr("eval_plan_size", len(eval_plan))
 
         if progress_task is not None and progress_bar is not None:
             progress_bar.update(progress_task, advance=1)
@@ -1601,10 +1664,10 @@ def main() -> None:
                 result = optimize_strategy_wf_integrated(
                     strategy_name=name,
                     strategy_config=strategy,
-                    ohlcv=ohlcv,
                     n_trials=n_trials,
                     metric=args.metric,
                     console=console,
+                    force_download=args.force_download,
                 )
             else:
                 result = optimize_strategy(

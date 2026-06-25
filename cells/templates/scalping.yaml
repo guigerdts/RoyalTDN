@@ -1,4 +1,10 @@
 - name: scalping_momentum
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - ADAUSDT
+  - LINKUSDT
   symbol: BTCUSDT
   timeframe: 1m
   entry:
@@ -69,6 +75,10 @@
     sizing: 0.095
     max_positions: 2
 - name: scalping_orderflow
+  symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - ADAUSDT
   symbol: ADAUSDT
   timeframe: 1m
   entry:
