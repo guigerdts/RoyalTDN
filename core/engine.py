@@ -118,12 +118,13 @@ class EventEngine:
                 continue
 
             cell_name = getattr(cell, "name", "?")
+            signal_action = signal.get("action", "")
 
             # -- Signal event ------------------------------------------------
             signal_event: dict[str, Any] = {
                 "type": "signal",
                 "symbol": signal.get("symbol", ""),
-                "action": signal.get("action", ""),
+                "action": signal_action,
                 "price": signal.get("price", 0.0),
                 "qty": signal.get("qty", 0),
                 "timestamp": str(self.clock.now()),
@@ -137,7 +138,7 @@ class EventEngine:
             if self.journal is not None:
                 _trade_id = await self.journal.signal(
                     symbol=signal.get("symbol", ""),
-                    action=signal.get("action", ""),
+                    action=signal_action,
                     price=signal.get("price", 0.0),
                     strategy=cell_name,
                 )
@@ -152,22 +153,37 @@ class EventEngine:
             if approved is None:
                 logger.info(
                     "Senal rechazada por risk manager: {} {}",
-                    signal.get("action"),
+                    signal_action,
                     signal.get("symbol"),
                 )
                 if self.journal is not None:
                     await self.journal.rejected(
                         symbol=signal.get("symbol", ""),
-                        action=signal.get("action", ""),
+                        action=signal_action,
                         trade_id=_trade_id,
                     )
+                # Cell stays IDLE — it can retry on the next event.
+                # This is crucial: previously the cell set state=
+                # IN_POSITION BEFORE risk approval, so a rejection
+                # would trap the cell permanently.
                 continue
 
-            # Risk check passed
+            # Risk check passed — mark the cell as IN_POSITION for BUY signals.
+            # (SELL signals change the cell state in _exit_signal before
+            # returning, so we only update for BUY.)
+            enter_pos = getattr(cell, "enter_position", None)
+            if signal_action == "BUY" and callable(enter_pos):
+                try:
+                    enter_pos(approved.get("price", 0.0))
+                except Exception:
+                    logger.exception(
+                        "Error al marcar celula {} como IN_POSITION", cell_name,
+                    )
+
             if self.journal is not None:
                 await self.journal.approved(
                     symbol=approved.get("symbol", ""),
-                    action=approved.get("action", ""),
+                    action=signal_action,
                     trade_id=_trade_id,
                 )
 

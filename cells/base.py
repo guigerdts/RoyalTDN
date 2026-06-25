@@ -132,11 +132,36 @@ class Cell:
 
     # ── Entry logic ───────────────────────────────────────────────────
 
+    def enter_position(self, price: float) -> None:
+        """Mark this cell as IN_POSITION after risk approval.
+
+        Called by the EventEngine AFTER the RiskManager approves the
+        signal, so that cells rejected by risk stay in IDLE state and
+        can retry.
+
+        Args:
+            price: Entry price.
+        """
+        self.state = "IN_POSITION"
+        self.entry_price = price
+        logger.info(
+            "{} {} ENTRADA @ ${:.2f}",
+            self.symbol, self.name, price,
+        )
+
     async def _check_entry(self, current_price: float) -> dict[str, Any] | None:
         """Evaluate entry conditions.
 
-        Returns a BUY signal if the inference engine confirms the entry
-        config against accumulated market data.
+        NOTE: state is NOT changed here.  The EventEngine calls
+        ``enter_position()`` AFTER the RiskManager approves the signal,
+        so that cells rejected by risk stay IDLE and can retry.
+
+        Args:
+            current_price: Current market price.
+
+        Returns:
+            A BUY signal dict if entry conditions are met and inference
+            engine confirms, or None otherwise.
         """
         if not self.entry_config or not self.inference_engine:
             return None
@@ -156,19 +181,14 @@ class Cell:
         if not should_enter:
             return None
 
-        self.state = "IN_POSITION"
-        self.entry_price = current_price
-        logger.info(
-            "{} {} ENTRADA @ ${:.2f}",
-            self.symbol,
-            self.name,
-            current_price,
-        )
+        # Risk approval is pending — do NOT change state here.
+        # Engine will call enter_position() after approval.
         return {
             "action": "BUY",
             "symbol": self.symbol,
             "price": current_price,
             "sizing": self.sizing,       # fraction of capital
+            "cell_name": self.name,      # so RiskManager can track per-cell
         }
 
     # ── Exit logic ────────────────────────────────────────────────────
@@ -177,7 +197,11 @@ class Cell:
         """Evaluate exit conditions (ATR-based stop-loss, take-profit,
         trailing stop, or z-score).
 
-        Returns a SELL signal if any exit condition is met.
+        Args:
+            current_price: Current market price.
+
+        Returns:
+            A SELL signal if any exit condition is met, or None.
         """
         if self.entry_price == 0.0:
             return None
@@ -240,7 +264,15 @@ class Cell:
         return None
 
     def _exit_signal(self, current_price: float) -> dict[str, Any]:
-        """Generate a SELL signal and reset cell state."""
+        """Generate a SELL signal and reset cell state.
+
+        Args:
+            current_price: Current market price.
+
+        Returns:
+            SELL signal dict with action, symbol, price, sizing,
+            entry_price, and cell_name.
+        """
         self.state = "IDLE"
         entry_price = self.entry_price
         self.entry_price = 0.0
@@ -252,6 +284,7 @@ class Cell:
             "price": current_price,
             "sizing": self.sizing,
             "entry_price": entry_price,
+            "cell_name": self.name,
         }
 
     # ── Data helpers ──────────────────────────────────────────────────

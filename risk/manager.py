@@ -17,9 +17,15 @@ class RiskManager:
     """Trade approval gate.
 
     Enforces:
-    - Maximum number of concurrent positions.
+    - Maximum number of concurrent positions (tracked per cell+symbol).
     - Maximum drawdown threshold.
     - Calculates position size from capital + sizing fraction.
+
+    Tracks active entries by ``(symbol, cell_name)`` so that different
+    strategy cells CAN hold the same symbol simultaneously.  The old
+    ``symbol in portfolio.positions`` check was removed — it limited
+    positions to the number of unique symbols in ``config.yaml``,
+    ignoring ``max_positions``.
     """
 
     def __init__(
@@ -45,6 +51,10 @@ class RiskManager:
         self._config_path: Path | None = Path(config_path) if config_path else None
         self._last_config_reload: float = 0.0
         self._config_reload_interval: float = 60.0  # seconds
+
+        # Track active entries by (symbol, cell_name) instead of relying
+        # on len(portfolio.positions) which only counts unique symbols.
+        self._active_entries: set[tuple[str, str]] = set()
 
     def _reload_config_if_needed(self) -> None:
         """Re-read ``max_positions`` from ``config.yaml`` if enough time has
@@ -92,27 +102,22 @@ class RiskManager:
 
         action = signal.get("action", "")
         symbol = signal.get("symbol", "")
+        cell_name: str = signal.get("cell_name", symbol)  # fallback to symbol
         price = float(signal.get("price", 0))
         sizing = float(signal.get("sizing", 0.01))
 
         if action == "BUY":
-            # Duplicate position check
-            if symbol in self.portfolio.positions:
-                logger.info(
-                    "RISK: {} ya en posicion — senal rechazada", symbol,
-                )
-                return None
-
-            # Position limit check
-            current_positions = len(self.portfolio.positions)
+            # Position limit check — counts ACTIVE ENTRIES, not unique symbols.
+            # Different cells CAN hold the same symbol simultaneously.
+            current_positions = len(self._active_entries)
             logger.info(
-                "RiskManager: checking signal — positions={}/{}",
-                current_positions, self.max_positions,
+                "RiskManager: checking signal — positions={}/{} (symbol={}, cell={})",
+                current_positions, self.max_positions, symbol, cell_name,
             )
             if current_positions >= self.max_positions:
                 logger.info(
-                    "RISK: Max positions ({}) alcanzado — {} rechazada",
-                    self.max_positions, symbol,
+                    "RISK: Max positions ({}) alcanzado — {} rechazada (cell={})",
+                    self.max_positions, symbol, cell_name,
                 )
                 return None
 
@@ -137,12 +142,18 @@ class RiskManager:
             qty = max(min_qty, raw_qty)
             signal["qty"] = qty
 
+            # Register this entry BEFORE returning so max_positions
+            # is enforced correctly on the next check.
+            self._active_entries.add((symbol, cell_name))
             logger.info(
-                "RISK: {} {} aprobada — qty={:.4f} (capital=${:.2f}, sizing={:.2%}, price=${:.2f})",
-                action, symbol, qty, capital, sizing, price,
+                "RISK: {} {} aprobada — qty={:.4f} (capital=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
+                action, symbol, qty, capital, sizing, price, cell_name,
             )
 
         elif action == "SELL":
+            # Unregister this entry so the slot frees up for new signals.
+            self._active_entries.discard((symbol, cell_name))
+
             # SELL always passes (any open position can be closed)
             qty = self.portfolio.positions.get(symbol, 0.0)
             if qty <= 0:
