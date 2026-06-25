@@ -6,6 +6,8 @@ conditions before allowing execution.
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -25,6 +27,7 @@ class RiskManager:
         portfolio: Any,
         max_positions: int = 5,
         max_drawdown: float = 0.03,
+        config_path: str | Path | None = None,
     ) -> None:
         """Initialise the risk manager.
 
@@ -32,10 +35,41 @@ class RiskManager:
             portfolio: Portfolio instance for state queries.
             max_positions: Maximum number of concurrent long positions.
             max_drawdown: Maximum allowed drawdown fraction (0.03 = 3%).
+            config_path: Path to ``config.yaml``. When set, ``max_positions``
+                is re-read from the file periodically so that live changes
+                take effect without restarting the bot.
         """
         self.portfolio = portfolio
         self.max_positions = max_positions
         self.max_drawdown = max_drawdown
+        self._config_path: Path | None = Path(config_path) if config_path else None
+        self._last_config_reload: float = 0.0
+        self._config_reload_interval: float = 60.0  # seconds
+
+    def _reload_config_if_needed(self) -> None:
+        """Re-read ``max_positions`` from ``config.yaml`` if enough time has
+        passed since the last read."""
+        if self._config_path is None:
+            return
+        now = time.monotonic()
+        if now - self._last_config_reload < self._config_reload_interval:
+            return
+        self._last_config_reload = now
+        try:
+            import yaml
+            with open(self._config_path) as f:
+                cfg = yaml.safe_load(f)
+            cfg_max = cfg.get("max_positions")
+            if cfg_max is not None and isinstance(cfg_max, (int, float)):
+                old = self.max_positions
+                self.max_positions = int(cfg_max)
+                if old != self.max_positions:
+                    logger.info(
+                        "RiskManager: max_positions actualizado {} -> {} (desde config.yaml)",
+                        old, self.max_positions,
+                    )
+        except Exception as exc:
+            logger.warning("RiskManager: no se pudo releer config.yaml: {}", exc)
 
     def approve(self, signal: dict[str, Any] | None) -> dict[str, Any] | None:
         """Approve or reject a trading signal.
@@ -53,6 +87,9 @@ class RiskManager:
         if signal is None:
             return None
 
+        # Re-read max_positions from config.yaml periodically
+        self._reload_config_if_needed()
+
         action = signal.get("action", "")
         symbol = signal.get("symbol", "")
         price = float(signal.get("price", 0))
@@ -68,6 +105,10 @@ class RiskManager:
 
             # Position limit check
             current_positions = len(self.portfolio.positions)
+            logger.info(
+                "RiskManager: checking signal — positions={}/{}",
+                current_positions, self.max_positions,
+            )
             if current_positions >= self.max_positions:
                 logger.info(
                     "RISK: Max positions ({}) alcanzado — {} rechazada",

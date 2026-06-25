@@ -3,8 +3,6 @@
   - BTCUSDT
   - ETHUSDT
   - LINKUSDT
-  symbol: LINKUSDT
-  timeframe: 1d
   entry:
     logic: AND
     conditions:
@@ -23,7 +21,7 @@
       atr_multiplier: 3.8000000000000003
   risk:
     sizing: 0.02
-    max_positions: 1
+    max_positions: 2
 - name: swing_trend_following
   symbol: BTCUSDT
   timeframe: 1d
@@ -41,14 +39,12 @@
       atr_multiplier: 2.7
   risk:
     sizing: 0.030000000000000002
-    max_positions: 5
+    max_positions: 2
 - name: swing_breakout
   symbols:
   - BTCUSDT
   - ETHUSDT
   - SOLUSDT
-  symbol: ETHUSDT
-  timeframe: 1d
   entry:
     logic: AND
     conditions:
@@ -69,14 +65,12 @@
       atr_multiplier: 0.5
   risk:
     sizing: 0.025
-    max_positions: 4
+    max_positions: 2
 - name: swing_mean_reversion
   symbols:
   - BTCUSDT
   - ETHUSDT
   - SOLUSDT
-  symbol: SOLUSDT
-  timeframe: 1d
   entry:
     logic: AND
     conditions:

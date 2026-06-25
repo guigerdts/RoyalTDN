@@ -84,8 +84,6 @@
   - BTCUSDT
   - ETHUSDT
   - ADAUSDT
-  symbol: ADAUSDT
-  timeframe: 30m
   entry:
     logic: AND
     conditions:

@@ -497,7 +497,7 @@ async def simulate(
 
     cell = Cell(strategy_config, inference_engine=InferenceEngine())
     portfolio = Portfolio(initial_capital=initial_capital)
-    risk_manager = RiskManager(portfolio, max_positions=strategy_config.get("risk", {}).get("max_positions", 5))
+    risk_manager = RiskManager(portfolio, max_positions=strategy_config.get("risk", {}).get("max_positions", 10))
 
     symbol = strategy_config.get("symbol", "")
     trades: list[dict[str, Any]] = []

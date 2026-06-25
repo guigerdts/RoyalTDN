@@ -115,6 +115,7 @@ async def main():
         portfolio,
         max_positions=config["max_positions"],
         max_drawdown=config["max_drawdown"],
+        config_path=config_path,
     )
 
     # Broker
