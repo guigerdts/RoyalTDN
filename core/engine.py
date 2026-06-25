@@ -258,6 +258,20 @@ class EventEngine:
                             trade_id=_trade_id,
                         )
 
+                # Reset cell state after successful SELL execution.
+                # This mirrors enter_position() — state only changes
+                # AFTER the trade is confirmed, not before.
+                if signal_action == "SELL":
+                    exit_pos = getattr(cell, "exit_position", None)
+                    if callable(exit_pos):
+                        try:
+                            exit_pos()
+                        except Exception:
+                            logger.exception(
+                                "Error al marcar celula {} como IDLE tras SELL",
+                                cell_name,
+                            )
+
                 logger.info(
                     "Trade ejecutado: {} {} {} @ ${:.2f} (orden: {})",
                     approved.get("symbol", ""),

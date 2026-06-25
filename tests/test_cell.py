@@ -155,6 +155,9 @@ class TestCell(unittest.TestCase):
         self.assertEqual(result["action"], "BUY")
         self.assertEqual(result["symbol"], "BTCUSDT")
         self.assertEqual(result["sizing"], 0.01)
+
+        # Simulate what the engine does after risk approval
+        self.cell.enter_position(result["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")
         self.assertGreater(self.cell.entry_price, 0)
 
@@ -203,10 +206,12 @@ class TestCell(unittest.TestCase):
         bars = _make_bars(20, base_price=50000.0, volatility=200.0)
         self.cell.bars = bars.copy()
 
-        # Enter position
-        self.loop.run_until_complete(self.cell.handle(
+        # Enter position (simulating engine flow: handle -> risk -> enter_position)
+        entry_result = self.loop.run_until_complete(self.cell.handle(
             _make_tick_event("BTCUSDT", 50000.0)
         ))
+        self.assertIsNotNone(entry_result)
+        self.cell.enter_position(entry_result["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")
 
         self.graph_mock.evaluate.return_value = False
@@ -221,6 +226,10 @@ class TestCell(unittest.TestCase):
         self.assertIsNotNone(result, f"Stop-loss should trigger at {crash_price:.2f}")
         self.assertEqual(result["action"], "SELL")
         self.assertEqual(result["symbol"], "BTCUSDT")
+        # State stays IN_POSITION until engine calls exit_position()
+        self.assertEqual(self.cell.state, "IN_POSITION")
+        # Simulate engine flow: after SELL execution, engine calls exit_position()
+        self.cell.exit_position()
         self.assertEqual(self.cell.state, "IDLE")
 
     def test_stop_loss_not_triggered_above_threshold(self):
@@ -228,9 +237,12 @@ class TestCell(unittest.TestCase):
         self.graph_mock.evaluate.return_value = True
         self.cell.bars = _make_bars(20, base_price=50000.0, volatility=200.0)
 
-        self.loop.run_until_complete(self.cell.handle(
+        entry_result = self.loop.run_until_complete(self.cell.handle(
             _make_tick_event("BTCUSDT", 50000.0)
         ))
+        self.assertIsNotNone(entry_result)
+        self.cell.enter_position(entry_result["price"])
+        self.assertEqual(self.cell.state, "IN_POSITION")
 
         # Price drops a little but should stay above ATR-based stop-loss
         # ATR ~225 with 2.0 multiplier → stop at ~49550
@@ -249,9 +261,11 @@ class TestCell(unittest.TestCase):
         self.graph_mock.evaluate.return_value = True
         self.cell.bars = _make_bars(20, base_price=50000.0, volatility=200.0)
 
-        self.loop.run_until_complete(self.cell.handle(
+        entry_result = self.loop.run_until_complete(self.cell.handle(
             _make_tick_event("BTCUSDT", 50000.0)
         ))
+        self.assertIsNotNone(entry_result)
+        self.cell.enter_position(entry_result["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")
 
         self.graph_mock.evaluate.return_value = False
@@ -265,6 +279,9 @@ class TestCell(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["action"], "SELL")
+        # State stays IN_POSITION until engine confirms execution
+        self.assertEqual(self.cell.state, "IN_POSITION")
+        self.cell.exit_position()
         self.assertEqual(self.cell.state, "IDLE")
 
     # -- Re-entry after exit ------------------------------------------------
@@ -274,10 +291,12 @@ class TestCell(unittest.TestCase):
         self.graph_mock.evaluate.return_value = True
         self.cell.bars = _make_bars(20, base_price=50000.0, volatility=200.0)
 
-        # Enter
-        self.loop.run_until_complete(self.cell.handle(
+        # Enter (simulating engine flow)
+        entry_1 = self.loop.run_until_complete(self.cell.handle(
             _make_tick_event("BTCUSDT", 50000.0)
         ))
+        self.assertIsNotNone(entry_1)
+        self.cell.enter_position(entry_1["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")
 
         # Stop-loss exit (aggressive drop)
@@ -288,6 +307,8 @@ class TestCell(unittest.TestCase):
         ))
         self.assertIsNotNone(exit_result, "Stop-loss should trigger on 30% drop")
         self.assertEqual(exit_result["action"], "SELL")
+        # Simulate engine: after SELL execution, cell resets
+        self.cell.exit_position()
         self.assertEqual(self.cell.state, "IDLE")
 
         # Re-enter
@@ -298,4 +319,6 @@ class TestCell(unittest.TestCase):
 
         self.assertIsNotNone(entry_result)
         self.assertEqual(entry_result["action"], "BUY")
+        # Simulate engine calling enter_position after risk approval
+        self.cell.enter_position(entry_result["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")

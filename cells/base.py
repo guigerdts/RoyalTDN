@@ -264,7 +264,11 @@ class Cell:
         return None
 
     def _exit_signal(self, current_price: float) -> dict[str, Any]:
-        """Generate a SELL signal and reset cell state.
+        """Generate a SELL signal WITHOUT resetting cell state.
+
+        State is reset by the engine via ``exit_position()`` AFTER
+        the RiskManager approves AND the broker executes the trade,
+        mirroring how ``enter_position()`` works for BUY signals.
 
         Args:
             current_price: Current market price.
@@ -273,19 +277,26 @@ class Cell:
             SELL signal dict with action, symbol, price, sizing,
             entry_price, and cell_name.
         """
-        self.state = "IDLE"
-        entry_price = self.entry_price
-        self.entry_price = 0.0
-        if hasattr(self, '_trailing_high'):
-            self._trailing_high = 0.0
         return {
             "action": "SELL",
             "symbol": self.symbol,
             "price": current_price,
             "sizing": self.sizing,
-            "entry_price": entry_price,
+            "entry_price": self.entry_price,
             "cell_name": self.name,
         }
+
+    def exit_position(self) -> None:
+        """Mark this cell as IDLE after a successful SELL execution.
+
+        Called by the EventEngine AFTER the RiskManager approves and
+        the broker executes the SELL trade.  This is the mirror of
+        ``enter_position()`` — state changes only after confirmation.
+        """
+        self.state = "IDLE"
+        self.entry_price = 0.0
+        if hasattr(self, '_trailing_high'):
+            self._trailing_high = 0.0
 
     # ── Data helpers ──────────────────────────────────────────────────
 

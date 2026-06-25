@@ -54,6 +54,11 @@ class RiskManager:
         # on len(portfolio.positions) which only counts unique symbols.
         self._active_entries: set[tuple[str, str]] = set()
 
+        # Track position qty per cell so that each cell sells only its
+        # own portion when multiple cells share the same symbol.
+        # Key: (symbol, cell_name) -> qty assigned at entry time.
+        self._entry_qty: dict[tuple[str, str], float] = {}
+
     def _reload_config_if_needed(self) -> None:
         """Re-read ``max_positions`` from ``config.yaml`` if enough time has
         passed since the last read."""
@@ -149,23 +154,30 @@ class RiskManager:
             # Register this entry BEFORE returning so max_positions
             # is enforced correctly on the next check.
             self._active_entries.add((symbol, cell_name))
+            # Store per-cell qty so each cell sells only its own portion
+            self._entry_qty[(symbol, cell_name)] = qty
             logger.info(
                 "RISK: {} {} aprobada — qty={:.4f} (capital=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
                 action, symbol, qty, capital, sizing, price, cell_name,
             )
 
         elif action == "SELL":
-            # Unregister this entry so the slot frees up for new signals.
-            self._active_entries.discard((symbol, cell_name))
-
-            # SELL always passes (any open position can be closed)
-            qty = self.portfolio.positions.get(symbol, 0.0)
+            # Use per-cell qty first; fall back to total symbol qty
+            # for entries created before this fix was deployed.
+            qty = self._entry_qty.pop((symbol, cell_name), None)
+            if qty is None:
+                qty = self.portfolio.positions.get(symbol, 0.0)
             if qty <= 0:
                 logger.warning(
                     "RISK REJECT: no position to sell (qty={}) — {} cell={}",
                     qty, symbol, cell_name,
                 )
+                # Do NOT discard from _active_entries — the cell stays
+                # IN_POSITION and can retry the exit on the next tick.
                 return None
+
+            # Only free the slot AFTER confirming there IS a position.
+            self._active_entries.discard((symbol, cell_name))
             signal["qty"] = qty
             logger.info(
                 "RISK: {} SELL aprobada — qty={} cell={}",
