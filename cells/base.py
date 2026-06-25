@@ -65,6 +65,17 @@ class Cell:
         self.entry_price: float = 0.0
         self.position_qty: float = 0.0
 
+    # ── State management ─────────────────────────────────────────────
+
+    def reset_state(self) -> None:
+        """Reset cell to initial IDLE state with empty state."""
+        self.state = "IDLE"
+        self.bars = []
+        self.entry_price = 0.0
+        self.position_qty = 0.0
+        if hasattr(self, "_trailing_high"):
+            self._trailing_high = 0.0
+
     # ── Exit rule parsing ─────────────────────────────────────────────
 
     def _parse_exit_rules(self) -> None:

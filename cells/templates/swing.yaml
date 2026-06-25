@@ -8,14 +8,19 @@
   entry:
     logic: AND
     conditions:
-    - indicator: zscore
+    - indicator: bollinger
       params:
         period: 20
-      operator: < 39.0
+        std: 2.0
+      operator: 'price < lower'
+    - indicator: rsi
+      params:
+        period: 14
+      operator: '< 35'
   exit:
-  - type: zscore
+  - type: take_profit
     params:
-      threshold: 1.5000000000000002
+      atr_multiplier: 2.0
   risk:
     sizing: 0.06
     max_positions: 1
@@ -75,14 +80,19 @@
   entry:
     logic: AND
     conditions:
-    - indicator: zscore
+    - indicator: bollinger
       params:
         period: 20
-      operator: < 39.0
+        std: 2.0
+      operator: 'price < lower'
+    - indicator: rsi
+      params:
+        period: 14
+      operator: '< 35'
   exit:
-  - type: zscore
+  - type: take_profit
     params:
-      threshold: 1.5000000000000002
+      atr_multiplier: 2.0
   risk:
     sizing: 0.06
     max_positions: 1
@@ -96,18 +106,18 @@
   entry:
     logic: AND
     conditions:
-    - indicator: momentum
+    - indicator: ema
       params:
-        period: 20
-      operator: '> 39.0'
-    - indicator: atr
+        period: 10
+      operator: 'price > ema'
+    - indicator: adx
       params:
-        period: 37
-        max_pct: 6.0
+        period: 14
+      operator: '> 20'
   exit:
   - type: trailing_stop
     params:
-      atr_multiplier: 1.3
+      atr_multiplier: 2.0
   risk:
     sizing: 0.02
     max_positions: 1

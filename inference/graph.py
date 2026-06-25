@@ -24,7 +24,7 @@ class ConditionNode:
         """
         self.indicator: str = condition["indicator"]
         self.params: dict[str, Any] = condition.get("params", {})
-        self.operator: str = condition["operator"]
+        self.operator: str = condition.get("operator", "> 0")
 
     def evaluate(self, data: Any) -> bool:
         """Evaluate this single condition against market data.

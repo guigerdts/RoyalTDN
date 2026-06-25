@@ -12,3 +12,9 @@ max_positions: 5
 max_drawdown: 0.03
 telegram_token: ""
 telegram_chat_id: ""
+
+# Periodic optimization (used when run.py --optimize is active)
+optimization:
+  interval_days: 30
+  metric: sharpe
+  trials: 100

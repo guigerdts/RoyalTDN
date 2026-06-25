@@ -293,6 +293,381 @@ def zscore(data: Any, period: int = 20) -> float:
 
 
 # ---------------------------------------------------------------------------
+# New indicators (7)
+# ---------------------------------------------------------------------------
+
+
+def range_breakout(data: Any, period: int = 10, factor: float = 0.5) -> bool:
+    """Detect if price breaks out of a recent range by *factor* of range width.
+
+    Range is defined as ``highest_high - lowest_low`` over *period* bars.
+    Breakout is confirmed when current close exceeds the range boundary
+    by at least ``range_width * factor``.
+
+    Args:
+        data: Dict with ``high``, ``low``, ``close`` lists.
+        period: Lookback window.
+        factor: Multiplier on range width to confirm breakout.
+
+    Returns:
+        True if an upside or downside breakout is detected.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=period)
+    high = _safe_numeric(_to_series(data, "high"), min_length=period)
+    low = _safe_numeric(_to_series(data, "low"), min_length=period)
+
+    if len(close) < period + 1 or len(high) < period + 1 or len(low) < period + 1:
+        return False
+
+    range_high = float(high.iloc[-period - 1 : -1].max())
+    range_low = float(low.iloc[-period - 1 : -1].min())
+    range_width = range_high - range_low
+
+    if range_width == 0.0:
+        return False
+
+    current_close = float(close.iloc[-1])
+    threshold = range_width * factor
+
+    # Upside breakout: close breaks above range high + threshold
+    if current_close > range_high + threshold:
+        return True
+    # Downside breakout: close breaks below range low - threshold
+    if current_close < range_low - threshold:
+        return True
+
+    return False
+
+
+def vwap_deviation(data: Any, factor: float = 1.5) -> bool:
+    """Check if current price deviates significantly from VWAP.
+
+    VWAP = sum(price * volume) / sum(volume) over all available bars.
+    Deviation = abs(close - vwap) / vwap * 100.
+
+    Args:
+        data: Dict with ``close`` and ``volume`` lists.
+        factor: Deviation threshold in percent.
+
+    Returns:
+        True if deviation > factor.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=5)
+    volume = _safe_numeric(_to_series(data, "volume"), min_length=5)
+
+    if len(close) < 5 or len(volume) < 5:
+        return False
+
+    # VWAP = Σ(typical_price * volume) / Σ(volume)
+    # Using close as typical price for simplicity
+    vwap = float((close * volume).sum() / volume.sum())
+
+    if vwap == 0.0:
+        return False
+
+    deviation_pct = abs(float(close.iloc[-1]) - vwap) / vwap * 100.0
+    return deviation_pct > factor
+
+
+def ichimoku(data: Any, tenkan: int = 7, kijun: int = 22, senkou_b: int = 44) -> bool:
+    """Evaluate Ichimoku Cloud trend.
+
+    Calculates Tenkan-sen, Kijun-sen, Senkou Span A, and Senkou Span B.
+    Returns True for a confirmed trend direction:
+      - Bullish: price above cloud AND Tenkan > Kijun
+      - Bearish: price below cloud AND Tenkan < Kijun
+
+    Args:
+        data: Dict with ``high``, ``low``, ``close`` lists.
+        tenkan: Tenkan-sen period.
+        kijun: Kijun-sen period.
+        senkou_b: Senkou Span B period.
+
+    Returns:
+        True if a clear trend is confirmed.
+    """
+    # Need enough data for the longest period
+    lookback = max(tenkan, kijun, senkou_b)
+    close = _safe_numeric(_to_series(data, "close"), min_length=lookback)
+    high = _safe_numeric(_to_series(data, "high"), min_length=lookback)
+    low = _safe_numeric(_to_series(data, "low"), min_length=lookback)
+
+    if len(close) < lookback + 1:
+        return False
+
+    # Tenkan-sen: (highest high + lowest low) / 2 over tenkan period
+    tenkan_high = float(high.iloc[-tenkan:].max())
+    tenkan_low = float(low.iloc[-tenkan:].min())
+    tenkan_val = (tenkan_high + tenkan_low) / 2.0
+
+    # Kijun-sen: (highest high + lowest low) / 2 over kijun period
+    kijun_high = float(high.iloc[-kijun:].max())
+    kijun_low = float(low.iloc[-kijun:].min())
+    kijun_val = (kijun_high + kijun_low) / 2.0
+
+    # Senkou Span A: (tenkan + kijun) / 2
+    senkou_a = (tenkan_val + kijun_val) / 2.0
+
+    # Senkou Span B: (highest high + lowest low) / 2 over senkou_b period
+    senkou_b_high = float(high.iloc[-senkou_b:].max())
+    senkou_b_low = float(low.iloc[-senkou_b:].min())
+    senkou_b_val = (senkou_b_high + senkou_b_low) / 2.0
+
+    current_close = float(close.iloc[-1])
+
+    # Bullish: price above cloud AND Tenkan > Kijun
+    cloud_top = max(senkou_a, senkou_b_val)
+    if current_close > cloud_top and tenkan_val > kijun_val:
+        return True
+
+    # Bearish: price below cloud AND Tenkan < Kijun
+    cloud_bottom = min(senkou_a, senkou_b_val)
+    if current_close < cloud_bottom and tenkan_val < kijun_val:
+        return True
+
+    return False
+
+
+def support_resistance(
+    data: Any,
+    lookback: int = 100,
+    touch_count: int = 2,
+) -> bool:
+    """Check if price is near a significant support or resistance level.
+
+    Identifies levels by clustering local minima (support) and maxima
+    (resistance) in the lookback window.  A level is valid if price
+    has touched it *touch_count* times.  Returns True when current
+    price is within 0.5 % of a valid level.
+
+    Args:
+        data: Dict with ``high``, ``low``, ``close`` lists.
+        lookback: Number of bars to scan.
+        touch_count: Minimum touches for a level to be significant.
+
+    Returns:
+        True if price is near a valid support or resistance level.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=lookback)
+    high = _safe_numeric(_to_series(data, "high"), min_length=lookback)
+    low = _safe_numeric(_to_series(data, "low"), min_length=lookback)
+
+    if len(close) < lookback + 1:
+        return False
+
+    # Find local minima (support candidates) and maxima (resistance)
+    window = 5  # look 2 bars each side for local extrema
+    supports: list[float] = []
+    resistances: list[float] = []
+
+    for i in range(window, lookback - window):
+        if low.iloc[i] == low.iloc[i - window : i + window + 1].min():
+            supports.append(float(low.iloc[i]))
+        if high.iloc[i] == high.iloc[i - window : i + window + 1].max():
+            resistances.append(float(high.iloc[i]))
+
+    # Cluster nearby levels (within 0.5 %)
+    def _cluster(levels: list[float], tolerance: float = 0.005) -> list[float]:
+        if not levels:
+            return []
+        levels.sort()
+        clustered: list[float] = []
+        group: list[float] = [levels[0]]
+        for lvl in levels[1:]:
+            if abs(lvl - group[-1]) / max(abs(group[-1]), 1.0) <= tolerance:
+                group.append(lvl)
+            else:
+                clustered.append(sum(group) / len(group))
+                group = [lvl]
+        if group:
+            clustered.append(sum(group) / len(group))
+        return clustered
+
+    clustered_support = _cluster(supports)
+    clustered_resistance = _cluster(resistances)
+
+    current_close = float(close.iloc[-1])
+    proximity = 0.005  # 0.5 %
+
+    for level in clustered_support:
+        if abs(current_close - level) / max(level, 1.0) <= proximity:
+            return True
+
+    for level in clustered_resistance:
+        if abs(current_close - level) / max(level, 1.0) <= proximity:
+            return True
+
+    return False
+
+
+def spread(data: Any, max_spread_pct: float = 0.1) -> bool:
+    """Check if market is liquid enough.
+
+    Since bid/ask data is not available from Binance ticker streams,
+    uses the current bar's high-low range as a spread proxy.
+
+    ``spread_pct = (high - low) / close * 100``
+
+    Args:
+        data: Dict with ``high``, ``low``, ``close`` lists.
+        max_spread_pct: Maximum acceptable spread in percent.
+
+    Returns:
+        True if the market is sufficiently liquid (spread < max).
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=1)
+    high = _safe_numeric(_to_series(data, "high"), min_length=1)
+    low = _safe_numeric(_to_series(data, "low"), min_length=1)
+
+    if len(close) < 1:
+        return True  # cannot measure → assume liquid
+
+    current_close = float(close.iloc[-1])
+    if current_close == 0.0:
+        return True
+
+    current_high = float(high.iloc[-1]) if len(high) > 0 else current_close
+    current_low = float(low.iloc[-1]) if len(low) > 0 else current_close
+
+    spread_pct = (current_high - current_low) / current_close * 100.0
+    return spread_pct < max_spread_pct
+
+
+def macd_divergence(
+    data: Any,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+    lookback: int = 20,
+) -> bool:
+    """Detect MACD divergence (bullish or bearish).
+
+    Calculates MACD line = EMA(fast) - EMA(slow) and its signal line.
+    Scans the last *lookback* bars for:
+      - Bullish divergence: price makes lower low, MACD makes higher low.
+      - Bearish divergence: price makes higher high, MACD makes lower high.
+
+    Args:
+        data: Dict with ``close`` list.
+        fast: Fast EMA period.
+        slow: Slow EMA period.
+        signal: Signal EMA period.
+        lookback: Window to scan for divergences.
+
+    Returns:
+        True if a divergence pattern is detected.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=slow + lookback)
+    if len(close) < slow + lookback:
+        return False
+
+    # MACD line
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+
+    # Use the last `lookback` bars
+    macd_window = _safe_numeric(macd_line.iloc[-lookback:], min_length=5)
+    close_window = _safe_numeric(close.iloc[-lookback:], min_length=5)
+
+    if len(macd_window) < 5 or len(close_window) < 5:
+        return False
+
+    # Find local minima and maxima
+    def _find_turns(series: pd.Series) -> tuple[list[int], list[int]]:
+        minima: list[int] = []
+        maxima: list[int] = []
+        for i in range(2, len(series) - 2):
+            if series.iloc[i] == series.iloc[i - 2 : i + 3].min():
+                minima.append(i)
+            if series.iloc[i] == series.iloc[i - 2 : i + 3].max():
+                maxima.append(i)
+        return minima, maxima
+
+    close_minima, close_maxima = _find_turns(close_window)
+    macd_minima, macd_maxima = _find_turns(macd_window)
+
+    # Bullish divergence: price lower low, MACD higher low
+    for ci in close_minima:
+        if ci <= 0 or ci >= len(close_window):
+            continue
+        prev_close_low = float(close_window.iloc[:ci].min())
+        if prev_close_low < float(close_window.iloc[ci]):
+            continue  # no lower low
+
+        # Find matching MACD low around same index
+        for mi in macd_minima:
+            if abs(mi - ci) <= 2:  # allow small offset
+                prev_macd_low = float(macd_window.iloc[:mi].min())
+                if float(macd_window.iloc[mi]) > prev_macd_low:
+                    # price lower low, MACD higher low → bullish divergence
+                    return True
+
+    # Bearish divergence: price higher high, MACD lower high
+    for ci in close_maxima:
+        if ci <= 0 or ci >= len(close_window):
+            continue
+        prev_close_high = float(close_window.iloc[:ci].max())
+        if prev_close_high > float(close_window.iloc[ci]):
+            continue  # no higher high
+
+        for mi in macd_maxima:
+            if abs(mi - ci) <= 2:
+                prev_macd_high = float(macd_window.iloc[:mi].max())
+                if float(macd_window.iloc[mi]) < prev_macd_high:
+                    # price higher high, MACD lower high → bearish divergence
+                    return True
+
+    return False
+
+
+def atr(data: Any, period: int = 20, max_pct: float = 4.0) -> bool:
+    """Check if volatility (ATR%) is within acceptable range.
+
+    ATR% = ATR / close * 100.  Returns True when ATR% < max_pct,
+    meaning the market is in a controlled-volatility regime.
+
+    Args:
+        data: Dict with ``high``, ``low``, ``close`` lists.
+        period: ATR lookback window.
+        max_pct: Maximum acceptable ATR as percent of price.
+
+    Returns:
+        True if volatility is below the threshold.
+    """
+    close = _safe_numeric(_to_series(data, "close"), min_length=period + 1)
+    high = _safe_numeric(_to_series(data, "high"), min_length=period + 1)
+    low = _safe_numeric(_to_series(data, "low"), min_length=period + 1)
+
+    if len(close) < period + 1:
+        return False
+
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    tr_safe = _safe_numeric(tr, min_length=period)
+    if len(tr_safe) < 1:
+        return False
+
+    atr_val = float(tr_safe.rolling(window=period, min_periods=period).mean().iloc[-1])
+    if pd.isna(atr_val) or atr_val == 0.0:
+        return False
+
+    current_close = float(close.iloc[-1])
+    if current_close == 0.0:
+        return False
+
+    atr_pct = atr_val / current_close * 100.0
+    return atr_pct < max_pct
+
+
+# ---------------------------------------------------------------------------
 # Indicator registry
 # ---------------------------------------------------------------------------
 
@@ -303,6 +678,13 @@ _INDICATORS: dict[str, Any] = {
     "ema": ema,
     "adx": adx,
     "zscore": zscore,
+    "range_breakout": range_breakout,
+    "vwap_deviation": vwap_deviation,
+    "ichimoku": ichimoku,
+    "support_resistance": support_resistance,
+    "spread": spread,
+    "macd_divergence": macd_divergence,
+    "atr": atr,
 }
 
 # ---------------------------------------------------------------------------

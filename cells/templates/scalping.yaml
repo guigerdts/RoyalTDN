@@ -10,19 +10,14 @@
   entry:
     logic: AND
     conditions:
-    - indicator: momentum
+    - indicator: ema
       params:
-        period: 20
-      operator: '> 39.0'
-    - indicator: volume_surge
-      params:
-        period: 37
-        factor: 3.2
-      operator: '> 14.0'
+        period: 5
+      operator: price > ema
     - indicator: rsi
       params:
-        period: 9
-      operator: < 11.0
+        period: 7
+      operator: '< 60'
   exit:
   - type: stop_loss
     params:
@@ -106,15 +101,15 @@
     conditions:
     - indicator: spread
       params:
-        max_spread_pct: 0.01
+        max_spread_pct: 0.22
     - indicator: atr
       params:
-        period: 2
-        max_pct: 8.9
+        period: 18
+        max_pct: 8.7
   exit:
   - type: take_profit
     params:
-      pct: 3.6
+      pct: 4.9
   risk:
-    sizing: 0.049999999999999996
-    max_positions: 3
+    sizing: 0.07500000000000001
+    max_positions: 1

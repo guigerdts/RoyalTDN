@@ -84,10 +84,14 @@ class EventEngine:
             if not self._running:
                 break
 
-            # Skip engine-emitted events (signals and trades are for
-            # dashboards / monitors only, not for cell processing).
+            # Only market-data events should reach cells.  Events
+            # re-emitted by the Journal (position, approved, rejected,
+            # executed — all with type != "tick") carry no current
+            # price, and feeding them to cells causes current_price =
+            # event.get("price", 0.0) → 0.0, corrupting signals with
+            # bogus prices (the original Bug 8).
             etype = event.get("type", "")
-            if etype in ("signal", "trade"):
+            if etype not in ("tick",):
                 continue
 
             await self._process_event(event)

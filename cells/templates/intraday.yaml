@@ -4,22 +4,21 @@
   - ETHUSDT
   - SOLUSDT
   symbol: ETHUSDT
-  timeframe: 15m
+  timeframe: 5m
   entry:
     logic: AND
     conditions:
-    - indicator: ema
+    - indicator: vwap
+      params: {}
+      operator: 'price > vwap'
+    - indicator: volume_surge
       params:
-        period: 12
-      operator: price > ema
-    - indicator: adx
-      params:
-        period: 21
-      operator: '> 35.0'
+        period: 20
+        factor: 1.2
   exit:
   - type: trailing_stop
     params:
-      atr_multiplier: 0.5
+      atr_multiplier: 1.5
   risk:
     sizing: 0.049999999999999996
     max_positions: 2
@@ -76,7 +75,7 @@
   exit:
   - type: take_profit
     params:
-      pct: 9.700000000000001
+      pct: 9.7
   risk:
     sizing: 0.005
     max_positions: 5
