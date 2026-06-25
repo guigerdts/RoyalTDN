@@ -13,15 +13,15 @@
       operator: price > vwap
     - indicator: volume_surge
       params:
-        period: 20
-        factor: 1.2
+        period: 15
+        factor: 2.2
   exit:
   - type: trailing_stop
     params:
-      atr_multiplier: 1.5
+      atr_multiplier: 0.5
   risk:
-    sizing: 0.049999999999999996
-    max_positions: 2
+    sizing: 0.1
+    max_positions: 4
 - name: intraday_vwap
   symbol: BTCUSDT
   timeframe: 30m
