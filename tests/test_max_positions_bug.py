@@ -138,7 +138,7 @@ def test_risk_manager_allows_multiple_entries_same_symbol() -> None:
             "cell_name": cell_name,
         }
         approved = rm.approve(signal)
-        if approved:
+        if approved.get("approved", False):
             approved_count += 1
             portfolio.update({
                 "action": "BUY",
@@ -180,7 +180,7 @@ def test_max_positions_still_enforced() -> None:
             "cell_name": f"cell_{i:02d}",
         }
         approved = rm.approve(signal)
-        if approved:
+        if approved.get("approved", False):
             approved_count += 1
 
     assert approved_count == 10, f"Only {approved_count} of 10 approved"
@@ -194,7 +194,11 @@ def test_max_positions_still_enforced() -> None:
         "cell_name": "cell_11",
     }
     rejected = rm.approve(eleventh)
-    assert rejected is None, "11th signal MUST be rejected (max_positions=10)"
+    assert rejected is not None, "approve() should return a dict"
+    assert not rejected.get("approved", False), "11th signal MUST be rejected (max_positions=10)"
+    assert rejected.get("reason") == "max_positions", (
+        f"Expected max_positions rejection, got {rejected.get('reason')}"
+    )
 
 
 # ── VERIFY: Cell stays IDLE after risk rejection ──────────────────
@@ -241,32 +245,32 @@ def test_sell_frees_slot_for_new_entry() -> None:
     # Entry 1
     s1 = rm.approve({"action": "BUY", "symbol": "BTCUSDT",
                      "price": 100, "sizing": 0.01, "cell_name": "cell_1"})
-    assert s1 is not None
+    assert s1.get("approved", False)
     portfolio.update({"action": "BUY", "symbol": "BTCUSDT",
                      "qty": s1["qty"], "price": 100})
 
     # Entry 2
     s2 = rm.approve({"action": "BUY", "symbol": "ETHUSDT",
                      "price": 100, "sizing": 0.01, "cell_name": "cell_2"})
-    assert s2 is not None
+    assert s2.get("approved", False)
     portfolio.update({"action": "BUY", "symbol": "ETHUSDT",
                      "qty": s2["qty"], "price": 100})
 
     # Entry 3 -> must fail (max_positions=2)
     s3 = rm.approve({"action": "BUY", "symbol": "SOLUSDT",
                      "price": 100, "sizing": 0.01, "cell_name": "cell_3"})
-    assert s3 is None
+    assert not s3.get("approved", False), "3rd signal MUST be rejected (max_positions=2)"
 
     # Sell BTC -> frees the slot
     sell = rm.approve({"action": "SELL", "symbol": "BTCUSDT",
                       "price": 110, "cell_name": "cell_1"})
-    assert sell is not None
+    assert sell.get("approved", False)
     portfolio.update({"action": "SELL", "symbol": "BTCUSDT",
                      "qty": sell["qty"], "price": 110})
 
     # Now SOL must be able to enter (slot freed)
     s4 = rm.approve({"action": "BUY", "symbol": "SOLUSDT",
                      "price": 100, "sizing": 0.01, "cell_name": "cell_3"})
-    assert s4 is not None, (
+    assert s4.get("approved", False), (
         "FIX FAILED: after selling BTC, the slot should be freed"
     )

@@ -26,34 +26,55 @@ class Portfolio:
         self.capital: float = initial_capital
         self.positions: dict[str, float] = {}  # symbol -> qty
         self._position_costs: dict[str, float] = {}  # symbol -> entry_price
+        self._peak_value: float = initial_capital  # peak tracked for drawdown
+        self._mtm_prices: dict[str, float] = {}  # symbol -> last market price
 
     def get_total_value(self) -> float:
-        """Return the current portfolio value (cash + positions at cost).
+        """Return the current portfolio value (cash + positions at market).
+
+        Uses mark-to-market prices when available, falls back to entry cost.
 
         Returns:
             Total portfolio value in cash-equivalent units.
         """
         total = self.capital
         for sym, qty in self.positions.items():
-            cost = self._position_costs.get(sym, 0.0)
-            total += qty * cost
+            price = self._mtm_prices.get(sym, self._position_costs.get(sym, 0.0))
+            total += qty * price
+        # Update peak-equity tracker (side effect for drawdown calculation)
+        self._peak_value = max(self._peak_value, total)
         return total
 
     def get_drawdown(self) -> float:
-        """Return the current drawdown as a fraction of initial capital.
+        """Return the current drawdown as a fraction of peak value.
 
-        Drawdown = max(0, (initial - total_value) / initial)
+        Drawdown = max(0, (peak - total_value) / peak)
 
-        Uses total value (cash + positions at cost) so that buying
-        a position doesn't artificially create a drawdown.
+        Uses peak-equity tracking so that growth resets the baseline,
+        unlike the old initial-capital formula.
 
         Returns:
             Drawdown ratio between 0.0 and 1.0.
         """
-        if self.initial_capital == 0.0:
+        if self._peak_value == 0.0:
             return 0.0
         total = self.get_total_value()
-        return max(0.0, (self.initial_capital - total) / self.initial_capital)
+        return max(0.0, (self._peak_value - total) / self._peak_value)
+
+    def update_price(self, symbol: str, price: float) -> None:
+        """Update mark-to-market price for an open position.
+
+        Stores the current market price so get_total_value() reflects
+        unrealized P&L. Updates peak-equity tracking after the change.
+
+        Args:
+            symbol: Trading pair symbol.
+            price: Current market price.
+        """
+        if symbol in self.positions:
+            self._mtm_prices[symbol] = price
+        # Update peak after the MTM adjustment
+        self._peak_value = max(self._peak_value, self.get_total_value())
 
     def update(self, trade: dict[str, Any]) -> None:
         """Update portfolio state from an executed trade.

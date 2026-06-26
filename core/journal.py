@@ -194,6 +194,7 @@ class Journal:
         self,
         symbol: str,
         capital: float,
+        direction: str = "long",
         trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a new position being opened."""
@@ -201,6 +202,7 @@ class Journal:
             "trade_id": trade_id,
             "symbol": symbol,
             "status": "opened",
+            "direction": direction,
             "capital": capital,
         })
 
@@ -209,6 +211,7 @@ class Journal:
         symbol: str,
         pnl: float,
         capital: float,
+        direction: str = "long",
         trade_id: str = "",
     ) -> dict[str, Any]:
         """Record a position being closed."""
@@ -216,6 +219,7 @@ class Journal:
             "trade_id": trade_id,
             "symbol": symbol,
             "status": "closed",
+            "direction": direction,
             "pnl": round(pnl, 2),
             "capital": capital,
         })

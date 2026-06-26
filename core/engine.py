@@ -150,16 +150,18 @@ class EventEngine:
                 logger.exception("Error en risk manager al aprobar senal")
                 continue
 
-            if approved is None:
+            if approved is None or not approved.get("approved", False):
+                detail = (approved.get("detail", "Risk check failed")
+                          if approved is not None else "Risk check failed")
                 logger.info(
-                    "Senal rechazada por risk manager: {} {}",
-                    signal_action,
-                    signal.get("symbol"),
+                    "Senal rechazada por risk manager: {} {} — {}",
+                    signal_action, signal.get("symbol"), detail,
                 )
                 if self.journal is not None:
                     await self.journal.rejected(
                         symbol=signal.get("symbol", ""),
                         action=signal_action,
+                        reason=detail,
                         trade_id=_trade_id,
                     )
                 # Cell stays IDLE — it can retry on the next event.
@@ -280,6 +282,15 @@ class EventEngine:
                     approved.get("price", 0.0),
                     result.get("order_id", ""),
                 )
+
+            # Mark-to-market on every tick for peak-equity drawdown
+            _symbol = event.get("symbol", "")
+            _price = event.get("price", None)
+            if _symbol and _price is not None:
+                try:
+                    self.risk_manager.portfolio.update_price(_symbol, _price)
+                except Exception:
+                    pass
 
     def stop(self) -> None:
         """Gracefully stop the event processing loop."""
