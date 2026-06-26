@@ -101,7 +101,8 @@ class RiskManager:
         """
         if signal is None:
             logger.warning("RISK REJECT: signal is None — no se puede aprobar")
-            return None
+            return {"approved": False, "reason": "null_signal",
+                    "detail": "Señal nula recibida"}
 
         # Re-read max_positions from config.yaml periodically
         self._reload_config_if_needed()
@@ -125,7 +126,8 @@ class RiskManager:
                     "RISK REJECT: max_positions reached ({}/{}) — {} cell={}",
                     current_positions, self.max_positions, symbol, cell_name,
                 )
-                return None
+                return {"approved": False, "reason": "max_positions",
+                        "detail": f"Límite de {self.max_positions} posiciones alcanzado ({symbol}, cell={cell_name})"}
 
             # Drawdown check
             drawdown = self.portfolio.get_drawdown()
@@ -134,7 +136,8 @@ class RiskManager:
                     "RISK REJECT: drawdown limit exceeded ({:.2%} >= {:.2%}) — {} cell={}",
                     drawdown, self.max_drawdown, symbol, cell_name,
                 )
-                return None
+                return {"approved": False, "reason": "drawdown",
+                        "detail": f"Drawdown {drawdown:.2%} supera límite {self.max_drawdown:.2%}"}
 
             # Calculate qty from capital * sizing / price (Bug 3)
             capital = self.portfolio.capital
@@ -143,7 +146,8 @@ class RiskManager:
                     "RISK REJECT: invalid capital/price (capital={}, price={}) — {} cell={}",
                     capital, price, symbol, cell_name,
                 )
-                return None
+                return {"approved": False, "reason": "invalid_params",
+                        "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
 
             raw_qty = (capital * sizing) / price
             # Minimum trade: 0.1% of capital worth of asset (prevents dust)
@@ -174,7 +178,8 @@ class RiskManager:
                 )
                 # Do NOT discard from _active_entries — the cell stays
                 # IN_POSITION and can retry the exit on the next tick.
-                return None
+                return {"approved": False, "reason": "no_position",
+                        "detail": f"No hay posición abierta para {symbol} al cerrar (cell={cell_name})"}
 
             # Only free the slot AFTER confirming there IS a position.
             self._active_entries.discard((symbol, cell_name))
@@ -189,6 +194,7 @@ class RiskManager:
                 "RISK REJECT: unknown action '{}' — {} cell={}",
                 action, symbol, cell_name,
             )
-            return None
+            return {"approved": False, "reason": "unknown_action",
+                    "detail": f"Acción desconocida: {action} (symbol={symbol}, cell={cell_name})"}
 
-        return signal
+        return {"approved": True, **signal}

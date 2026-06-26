@@ -136,7 +136,7 @@ class TestEventEngine(unittest.TestCase):
         cell.handle = AsyncMock(return_value=signal)
         self.engine.register(cell)
 
-        approved_signal = dict(signal)
+        approved_signal = {"approved": True, **signal}
         self.risk_manager.approve.return_value = approved_signal
 
         event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
@@ -150,7 +150,7 @@ class TestEventEngine(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
-        self.risk_manager.approve.assert_called_once_with(signal)
+        cell.enter_position.assert_called_once_with(50000)
         self.broker.submit_order.assert_awaited_once_with(approved_signal)
 
     def test_signal_rejected_by_risk(self):
