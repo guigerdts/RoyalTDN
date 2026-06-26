@@ -1,138 +1,217 @@
-#!/usr/bin/env python3
-"""Tests for RiskManager (FASE 16 additions).
+"""Unit tests for RiskManager: structured rejection paths, SHORT approve, and BUY-to-close.
 
-Verifies:
-1. check_portfolio_risk() — max positions, per-symbol exposure
-2. get_atr() with crypto client (integration check)
-
-Uso:
-    pytest tests/test_risk_manager.py -v
+Covers:
+- All 6 structured rejection paths return correct reason strings
+- SHORT signal approval when capacity available
+- SHORT at max_positions rejected
+- BUY-to-close recognition (closes short, returns approved)
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 
-class TestCheckPortfolioRisk:
-    """Test suite for check_portfolio_risk()."""
-
-    @staticmethod
-    def _make_pos(symbol: str, broker: str = "alpaca"):
-        """Helper to create a mock Position-like object."""
-        from collections import namedtuple
-        Pos = namedtuple("Pos", ["symbol", "broker"])
-        return Pos(symbol=symbol, broker=broker)
-
-    def test_passes_when_under_limits(self):
-        from royaltdn.risk_manager import check_portfolio_risk
-        mock_portfolio = MagicMock()
-        mock_portfolio.position_count.return_value = 2
-        mock_portfolio.get_all_positions.return_value = {
-            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
-            "alpaca:MSFT": self._make_pos("MSFT", "alpaca"),
-        }
-        mock_portfolio.get_symbol_exposure.return_value = 0.10
-        mock_portfolio.get_total_exposure.return_value = 0.20
-
-        passed, reason = check_portfolio_risk(mock_portfolio, 100000, max_positions=5, max_exposure_pct=0.25)
-        assert passed is True
-        assert reason == "ok"
-
-    def test_fails_when_max_positions_reached(self):
-        from royaltdn.risk_manager import check_portfolio_risk
-        mock_portfolio = MagicMock()
-        mock_portfolio.position_count.return_value = 5
-
-        passed, reason = check_portfolio_risk(mock_portfolio, 100000, max_positions=5, max_exposure_pct=0.25)
-        assert passed is False
-        assert "max_positions_reached" in reason
-
-    def test_fails_when_symbol_exceeds_max_exposure(self):
-        from royaltdn.risk_manager import check_portfolio_risk
-        mock_portfolio = MagicMock()
-        mock_portfolio.position_count.return_value = 1
-        mock_portfolio.get_all_positions.return_value = {
-            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
-        }
-        mock_portfolio.get_symbol_exposure.return_value = 0.30  # 30% > 25%
-
-        passed, reason = check_portfolio_risk(mock_portfolio, 100000, max_positions=5, max_exposure_pct=0.25)
-        assert passed is False
-        assert "exposure_limit_exceeded" in reason
-
-    def test_fails_when_total_exposure_exceeds_80_percent(self):
-        from royaltdn.risk_manager import check_portfolio_risk
-        mock_portfolio = MagicMock()
-        mock_portfolio.position_count.return_value = 1
-        mock_portfolio.get_all_positions.return_value = {
-            "alpaca:AAPL": self._make_pos("AAPL", "alpaca"),
-        }
-        mock_portfolio.get_symbol_exposure.return_value = 0.20
-        mock_portfolio.get_total_exposure.return_value = 0.85  # 85% > 80%
-
-        passed, reason = check_portfolio_risk(mock_portfolio, 100000, max_positions=5, max_exposure_pct=0.25)
-        assert passed is False
-        assert "total_exposure_exceeded" in reason
-
-    def test_passes_with_zero_equity(self):
-        from royaltdn.risk_manager import check_portfolio_risk
-        mock_portfolio = MagicMock()
-        mock_portfolio.position_count.return_value = 0
-
-        passed, reason = check_portfolio_risk(mock_portfolio, 0, max_positions=5, max_exposure_pct=0.25)
-        assert passed is True
+@pytest.fixture
+def portfolio():
+    """Return a mock Portfolio with adequate capital and no drawdown."""
+    p = MagicMock()
+    p.capital = 100_000.0
+    p.get_drawdown.return_value = 0.0
+    p.positions = {}
+    return p
 
 
-class TestGetATR:
-    """Test suite for get_atr() with crypto support."""
+@pytest.fixture
+def rm(portfolio):
+    """Return a RiskManager with max 5 positions, 3% max drawdown."""
+    from risk.manager import RiskManager
+    return RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
 
-    def test_get_atr_uses_crypto_client_for_crypto_symbols(self):
-        from royaltdn.risk_manager import get_atr
-        import pandas as pd
-        import numpy as np
 
-        mock_stock_client = MagicMock()
-        mock_crypto_client = MagicMock()
+def _buy_signal(symbol="BTCUSDT", cell_name="test_cell", price=50000.0, sizing=0.01):
+    return {
+        "action": "BUY",
+        "symbol": symbol,
+        "price": price,
+        "sizing": sizing,
+        "cell_name": cell_name,
+    }
 
-        # Create enough data for ATR calculation
-        dates = pd.date_range("2024-01-01", periods=20, freq="D")
-        df = pd.DataFrame({
-            "high": np.random.uniform(100, 110, 20),
-            "low": np.random.uniform(90, 100, 20),
-            "close": np.random.uniform(95, 105, 20),
-        }, index=dates)
 
-        # Mock get_crypto_bars to return the DataFrame
-        mock_crypto_client.get_crypto_bars.return_value.df = df
+def _short_signal(symbol="BTCUSDT", cell_name="test_cell", price=50000.0, sizing=0.01):
+    return {
+        "action": "SHORT",
+        "symbol": symbol,
+        "price": price,
+        "sizing": sizing,
+        "cell_name": cell_name,
+    }
 
-        with patch("royaltdn.risk_manager.CryptoBarsRequest"):
-            result = get_atr(mock_stock_client, "BTC/USD", period=14, crypto_data_client=mock_crypto_client)
 
-        assert isinstance(result, float)
-        assert result > 0
-        mock_crypto_client.get_crypto_bars.assert_called_once()
+def _sell_signal(symbol="BTCUSDT", cell_name="test_cell", price=51000.0):
+    return {
+        "action": "SELL",
+        "symbol": symbol,
+        "price": price,
+        "cell_name": cell_name,
+    }
 
-    def test_get_atr_uses_stock_client_for_stock_symbols(self):
-        from royaltdn.risk_manager import get_atr
 
-        mock_stock_client = MagicMock()
+# ── Structured rejection paths ───────────────────────────────────────────
 
-        import pandas as pd
-        import numpy as np
 
-        dates = pd.date_range("2024-01-01", periods=20, freq="D")
-        df = pd.DataFrame({
-            "high": np.random.uniform(100, 110, 20),
-            "low": np.random.uniform(90, 100, 20),
-            "close": np.random.uniform(95, 105, 20),
-        }, index=dates)
-        mock_stock_client.get_stock_bars.return_value.df = df
+def test_rejection_null_signal(rm):
+    """null_signal: signal is None → reason='null_signal'."""
+    result = rm.approve(None)
+    assert result is not None
+    assert not result["approved"]
+    assert result["reason"] == "null_signal"
+    assert isinstance(result["detail"], str)
 
-        result = get_atr(mock_stock_client, "AAPL", period=14)
-        assert isinstance(result, float)
-        assert result > 0
-        mock_stock_client.get_stock_bars.assert_called_once()
+
+def test_rejection_max_positions(rm):
+    """max_positions: pool full → reason='max_positions'."""
+    # Fill all 5 slots with BUY entries
+    for i in range(5):
+        sig = _buy_signal(symbol="BTCUSDT", cell_name=f"cell_{i}", price=50000.0)
+        result = rm.approve(sig)
+        assert result["approved"], f"Entry {i} should be approved"
+        # Must also update portfolio positions so SELL tracking works
+        rm.portfolio.positions["BTCUSDT"] = rm.portfolio.positions.get("BTCUSDT", 0.0) + result["qty"]
+
+    # 6th BUY should be rejected
+    result = rm.approve(_buy_signal(cell_name="cell_6"))
+    assert not result["approved"]
+    assert result["reason"] == "max_positions"
+
+
+def test_rejection_drawdown(rm):
+    """drawdown: exceeded threshold → reason='drawdown'."""
+    rm.portfolio.get_drawdown.return_value = 0.05  # 5% > 3% max
+    result = rm.approve(_buy_signal())
+    assert not result["approved"]
+    assert result["reason"] == "drawdown"
+
+
+def test_rejection_invalid_params(rm):
+    """invalid_params: capital <= 0 or price <= 0."""
+    rm.portfolio.capital = 0.0
+    result = rm.approve(_buy_signal(price=50000.0))
+    assert not result["approved"]
+    assert result["reason"] == "invalid_params"
+
+
+def test_rejection_no_position(rm):
+    """no_position: SELL when no position exists."""
+    result = rm.approve(_sell_signal())
+    assert not result["approved"]
+    assert result["reason"] == "no_position"
+
+
+def test_rejection_unknown_action(rm):
+    """unknown_action: e.g., HOLD is not recognized."""
+    result = rm.approve({"action": "HOLD", "symbol": "BTCUSDT", "cell_name": "test"})
+    assert not result["approved"]
+    assert result["reason"] == "unknown_action"
+
+
+# ── SHORT approval ───────────────────────────────────────────────────────
+
+
+def test_short_approval(rm):
+    """SHORT signal with capacity → approved with qty."""
+    result = rm.approve(_short_signal())
+    assert result["approved"]
+    assert result["qty"] > 0
+    assert ("BTCUSDT", "test_cell", "short") in rm._active_entries
+    assert ("BTCUSDT", "test_cell", "short") in rm._entry_qty
+
+
+def test_short_at_max_positions(rm):
+    """SHORT at max_positions → rejected with 'max_positions'."""
+    # Fill all 5 slots with BUY entries (mix of long and short)
+    for i in range(5):
+        sig = _buy_signal(symbol="BTCUSDT", cell_name=f"cell_{i}", price=50000.0)
+        result = rm.approve(sig)
+        assert result["approved"]
+        rm.portfolio.positions["BTCUSDT"] = rm.portfolio.positions.get("BTCUSDT", 0.0) + result["qty"]
+
+    # SHORT should be rejected
+    result = rm.approve(_short_signal(cell_name="cell_short"))
+    assert not result["approved"]
+    assert result["reason"] == "max_positions"
+
+
+def test_short_and_long_share_pool(rm):
+    """SHORT and BUY entries share the same max_positions pool."""
+    # 3 BUY entries
+    for i in range(3):
+        sig = _buy_signal(cell_name=f"buy_cell_{i}", price=50000.0)
+        result = rm.approve(sig)
+        assert result["approved"]
+        rm.portfolio.positions["BTCUSDT"] = rm.portfolio.positions.get("BTCUSDT", 0.0) + result["qty"]
+
+    # 2 SHORT entries
+    for i in range(2):
+        sig = _short_signal(cell_name=f"short_cell_{i}", price=50000.0)
+        result = rm.approve(sig)
+        assert result["approved"]
+
+    # Next entry (any direction) should fail
+    result = rm.approve(_buy_signal(cell_name="extra"))
+    assert not result["approved"]
+    assert result["reason"] == "max_positions"
+
+
+# ── BUY-to-close recognition ─────────────────────────────────────────────
+
+
+def test_buy_to_close_recognized(rm):
+    """BUY signal with matching short entry → approved (close-short)."""
+    # Enter short
+    short_result = rm.approve(_short_signal(cell_name="test_cell"))
+    assert short_result["approved"]
+    short_qty = short_result["qty"]
+
+    # BUY should match and close the short
+    buy_result = rm.approve(_buy_signal(cell_name="test_cell"))
+    assert buy_result["approved"]
+    assert buy_result["qty"] == short_qty
+    # Short entry should be removed
+    assert ("BTCUSDT", "test_cell", "short") not in rm._active_entries
+
+
+def test_buy_to_close_rejected_no_short(rm):
+    """BUY without matching short entry → treated as normal entry."""
+    result = rm.approve(_buy_signal(cell_name="unknown_cell"))
+    assert result["approved"]  # Normal entry, not a close
+
+
+def test_sell_frees_long_slot(rm):
+    """SELL should free the (symbol, cell, 'long') slot."""
+    # Enter long
+    buy_result = rm.approve(_buy_signal(cell_name="test_cell"))
+    assert buy_result["approved"]
+
+    # SELL frees the slot
+    sell_result = rm.approve(_sell_signal(cell_name="test_cell"))
+    assert sell_result["approved"]
+    assert ("BTCUSDT", "test_cell", "long") not in rm._active_entries
+
+
+def test_buy_to_close_short_with_direction_key(rm):
+    """BUY-to-close should match on (symbol, cell_name, 'short')."""
+    # Enter SHORT via cell_1
+    rm.approve(_short_signal(cell_name="cell_1"))
+    # Enter LONG via cell_2 (same symbol, different cell)
+    rm.approve(_buy_signal(cell_name="cell_2"))
+
+    # BUY from cell_1 should close SHORT, not affect LONG
+    result = rm.approve(_buy_signal(cell_name="cell_1"))
+    assert result["approved"]
+    assert ("BTCUSDT", "cell_1", "short") not in rm._active_entries
+    # cell_2's LONG should still be active
+    assert ("BTCUSDT", "cell_2", "long") in rm._active_entries

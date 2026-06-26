@@ -1,0 +1,163 @@
+name: scalping_momentum
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+- ADAUSDT
+- LINKUSDT
+symbol: BTCUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+  - indicator: ema
+    params:
+      period: 23
+    operator: price > ema
+  - indicator: rsi
+    params:
+      period: 23
+    operator: < 32.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: ema
+    params:
+      period: 23
+    operator: price < ema
+  - indicator: rsi
+    params:
+      period: 23
+    operator: '> 68.0'
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 4.7
+- type: take_profit
+  params:
+    atr_multiplier: 4.9
+risk:
+  sizing: 0.005
+  max_positions: 3
+---
+name: scalping_breakout
+symbol: SOLUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
+    params:
+      period: 17
+      factor: 0.8
+  - indicator: volume_surge
+    params:
+      period: 34
+      factor: 5.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
+    params:
+      period: 17
+      factor: 0.8
+  - indicator: volume_surge
+    params:
+      period: 34
+      factor: 5.0
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 1.1
+- type: take_profit
+  params:
+    atr_multiplier: 5.1000000000000005
+risk:
+  sizing: 0.005
+  max_positions: 3
+---
+name: scalping_reversion
+symbol: ETHUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+  - indicator: rsi
+    params:
+      period: 7
+    operator: < 25.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: rsi
+    params:
+      period: 7
+    operator: '> 75.0'
+exit:
+- type: take_profit
+  params:
+    atr_multiplier: 0.6
+risk:
+  sizing: 0.005
+  max_positions: 3
+---
+name: scalping_orderflow
+symbols:
+- BTCUSDT
+- ETHUSDT
+- ADAUSDT
+entry:
+  logic: AND
+  conditions:
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 4.8
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 4.8
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 4.5
+- type: take_profit
+  params:
+    atr_multiplier: 3.8000000000000003
+risk:
+  sizing: 0.005
+  max_positions: 3
+---
+name: scalping_spread
+symbol: LINKUSDT
+timeframe: 1m
+entry:
+  logic: AND
+  conditions:
+  - indicator: spread
+    params:
+      max_spread_pct: 0.22
+  - indicator: atr
+    params:
+      period: 18
+      max_pct: 8.7
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: spread
+    params:
+      max_spread_pct: 0.22
+  - indicator: atr
+    params:
+      period: 18
+      max_pct: 8.7
+exit:
+- type: take_profit
+  params:
+    pct: 4.9
+risk:
+  sizing: 0.005
+  max_positions: 3
