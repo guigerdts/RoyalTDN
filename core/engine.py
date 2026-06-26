@@ -34,6 +34,7 @@ class EventEngine:
         risk_manager: Any,
         execution_broker: Any,
         journal: Any = None,
+        trade_tracker: Any = None,
     ) -> None:
         """Initialise the event engine.
 
@@ -44,12 +45,15 @@ class EventEngine:
             execution_broker: PaperBroker or live broker for order
                 execution.
             journal: Optional Journal instance for structured trade logging.
+            trade_tracker: Optional TradeTracker instance for closed-trade
+                recording and metrics.
         """
         self.clock = clock
         self.bus = bus
         self.risk_manager = risk_manager
         self.execution_broker = execution_broker
         self.journal = journal
+        self.trade_tracker = trade_tracker
         self.cells: list[Any] = []
         self._running = False
 
@@ -260,6 +264,24 @@ class EventEngine:
                             trade_id=_trade_id,
                         )
 
+                # -- TradeTracker recording (T3.2) ------------------------------------
+                if self.trade_tracker is not None and signal_action == "SELL":
+                    _entry = approved.get("entry_price", 0.0)
+                    _exit_px = approved.get("price", 0.0)
+                    _qty = approved.get("qty", 0)
+                    _pnl = (_exit_px - _entry) * _qty
+                    self.trade_tracker.record_trade(
+                        symbol=approved.get("symbol", ""),
+                        direction="long",
+                        entry_price=_entry,
+                        exit_price=_exit_px,
+                        qty=_qty,
+                        pnl=_pnl,
+                        strategy_name=cell_name,
+                        exit_time=str(self.clock.now()),
+                        exit_reason="signal",
+                    )
+
                 # Reset cell state after successful SELL execution.
                 # This mirrors enter_position() — state only changes
                 # AFTER the trade is confirmed, not before.
@@ -283,14 +305,13 @@ class EventEngine:
                     result.get("order_id", ""),
                 )
 
-            # Mark-to-market on every tick for peak-equity drawdown
-            _symbol = event.get("symbol", "")
-            _price = event.get("price", None)
-            if _symbol and _price is not None:
-                try:
-                    self.risk_manager.portfolio.update_price(_symbol, _price)
-                except Exception:
-                    pass
+        # -- Mark-to-market update (T2.2) ------------------------------------
+        try:
+            self.risk_manager.portfolio.update_price(
+                event.get("symbol", ""), event.get("price", 0.0),
+            )
+        except Exception:
+            logger.exception("Error al actualizar precio en portfolio")
 
     def stop(self) -> None:
         """Gracefully stop the event processing loop."""
