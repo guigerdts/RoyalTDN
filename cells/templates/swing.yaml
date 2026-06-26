@@ -1,117 +1,178 @@
-- name: swing_reversion
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - LINKUSDT
-  entry:
-    logic: AND
-    conditions:
-    - indicator: bollinger_lower
-      params:
-        period: 20
-        std: 2.0
-      operator: price < bollinger_lower
-    - indicator: rsi
-      params:
-        period: 48
-      operator: < 32.0
-  exit:
-  - type: take_profit
+name: swing_reversion
+symbols:
+- BTCUSDT
+- ETHUSDT
+- LINKUSDT
+entry:
+  logic: AND
+  conditions:
+  - indicator: bollinger_lower
     params:
-      atr_multiplier: 3.8000000000000003
-  risk:
-    sizing: 0.02
-    max_positions: 2
-- name: swing_trend_following
-  symbol: BTCUSDT
-  timeframe: 1d
-  entry:
-    logic: AND
-    conditions:
-    - indicator: ichimoku
-      params:
-        tenkan: 19
-        kijun: 10
-        senkou_b: 64
-  exit:
-  - type: trailing_stop
+      period: 20
+      std: 2.0
+    operator: price < bollinger_lower
+  - indicator: rsi
     params:
-      atr_multiplier: 2.7
-  risk:
-    sizing: 0.030000000000000002
-    max_positions: 2
-- name: swing_breakout
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - SOLUSDT
-  entry:
-    logic: AND
-    conditions:
-    - indicator: range_breakout
-      params:
-        period: 4
-        factor: 1.0
-    - indicator: volume_surge
-      params:
-        period: 35
-        factor: 3.6
-  exit:
-  - type: stop_loss
+      period: 48
+    operator: < 32.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: bollinger_upper
     params:
-      atr_multiplier: 0.5
-  - type: take_profit
+      period: 20
+      std: 2.0
+    operator: price > bollinger_upper
+  - indicator: rsi
     params:
-      atr_multiplier: 0.5
-  risk:
-    sizing: 0.025
-    max_positions: 2
-- name: swing_mean_reversion
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - SOLUSDT
-  entry:
-    logic: AND
-    conditions:
-    - indicator: bollinger_lower
-      params:
-        period: 21
-        std: 2.0
-      operator: price < bollinger_lower
-    - indicator: rsi
-      params:
-        period: 35
-      operator: < 37.0
-  exit:
-  - type: take_profit
+      period: 48
+    operator: '> 68.0'
+exit:
+- type: take_profit
+  params:
+    atr_multiplier: 3.8000000000000003
+risk:
+  sizing: 0.005
+  max_positions: 2
+---
+name: swing_trend_following
+symbol: BTCUSDT
+timeframe: 1d
+entry:
+  logic: AND
+  conditions:
+  - indicator: ichimoku
     params:
-      atr_multiplier: 0.5
-  risk:
-    sizing: 0.025
-    max_positions: 2
-- name: swing_momentum
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - ADAUSDT
-  symbol: ADAUSDT
-  timeframe: 1d
-  entry:
-    logic: AND
-    conditions:
-    - indicator: ema
-      params:
-        period: 40
-      operator: price > ema
-    - indicator: adx
-      params:
-        period: 50
-      operator: '> 37.0'
-  exit:
-  - type: trailing_stop
+      tenkan: 19
+      kijun: 10
+      senkou_b: 64
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: ema
     params:
-      atr_multiplier: 0.9
-  risk:
-    sizing: 0.04
-    max_positions: 4
+      period: 40
+    operator: price < ema
+  - indicator: adx
+    params:
+      period: 50
+    operator: '> 25.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.7
+risk:
+  sizing: 0.005
+  max_positions: 2
+---
+name: swing_breakout
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
+    params:
+      period: 4
+      factor: 1.0
+  - indicator: volume_surge
+    params:
+      period: 35
+      factor: 3.6
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
+    params:
+      period: 4
+      factor: 1.0
+  - indicator: volume_surge
+    params:
+      period: 35
+      factor: 3.6
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 0.5
+- type: take_profit
+  params:
+    atr_multiplier: 0.5
+risk:
+  sizing: 0.005
+  max_positions: 2
+---
+name: swing_mean_reversion
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+entry:
+  logic: AND
+  conditions:
+  - indicator: bollinger_lower
+    params:
+      period: 21
+      std: 2.0
+    operator: price < bollinger_lower
+  - indicator: rsi
+    params:
+      period: 35
+    operator: < 37.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: bollinger_upper
+    params:
+      period: 21
+      std: 2.0
+    operator: price > bollinger_upper
+  - indicator: rsi
+    params:
+      period: 35
+    operator: '> 63.0'
+exit:
+- type: take_profit
+  params:
+    atr_multiplier: 0.5
+risk:
+  sizing: 0.005
+  max_positions: 2
+---
+name: swing_momentum
+symbols:
+- BTCUSDT
+- ETHUSDT
+- ADAUSDT
+symbol: ADAUSDT
+timeframe: 1d
+entry:
+  logic: AND
+  conditions:
+  - indicator: ema
+    params:
+      period: 40
+    operator: price > ema
+  - indicator: adx
+    params:
+      period: 50
+    operator: '> 37.0'
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: ema
+    params:
+      period: 40
+    operator: price < ema
+  - indicator: adx
+    params:
+      period: 50
+    operator: '> 37.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 0.9
+risk:
+  sizing: 0.005
+  max_positions: 4

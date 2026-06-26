@@ -102,7 +102,7 @@ class BinanceBroker:
         # Map action to Binance enum
         if action == "BUY":
             side = Side.BUY
-        elif action == "SELL":
+        elif action in ("SELL", "SHORT"):
             side = Side.SELL
         else:
             logger.warning("Unknown action '{}' in signal", action)
