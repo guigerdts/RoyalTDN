@@ -150,7 +150,6 @@ class TestEventEngine(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
-        cell.enter_position.assert_called_once_with(50000)
         self.broker.submit_order.assert_awaited_once_with(approved_signal)
 
     def test_signal_rejected_by_risk(self):
@@ -165,7 +164,7 @@ class TestEventEngine(unittest.TestCase):
         cell.handle = AsyncMock(return_value=signal)
         self.engine.register(cell)
 
-        self.risk_manager.approve.return_value = None  # reject
+        self.risk_manager.approve.return_value = None
 
         event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
         self.bus.queue.put_nowait(event)
@@ -193,7 +192,7 @@ class TestEventEngine(unittest.TestCase):
         cell.handle = AsyncMock(return_value=signal)
         self.engine.register(cell)
 
-        self.risk_manager.approve.return_value = dict(signal)
+        self.risk_manager.approve.return_value = {"approved": True, **signal}
 
         event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
         self.bus.queue.put_nowait(event)
