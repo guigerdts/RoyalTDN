@@ -174,16 +174,33 @@ class EventEngine:
                 # would trap the cell permanently.
                 continue
 
-            # Risk check passed — mark the cell as IN_POSITION for BUY signals.
-            # (SELL signals change the cell state in _exit_signal before
-            # returning, so we only update for BUY.)
+            # Risk check passed — update cell state based on action.
+            # BUY after risk approval: normally a long entry, BUT if the
+            # signal came from an IN_SHORT exit, it's a BUY-to-close and
+            # we must NOT call enter_position() (the cell exits instead).
+            # SHORT signals: mark the cell as IN_SHORT.
             enter_pos = getattr(cell, "enter_position", None)
             if signal_action == "BUY" and callable(enter_pos):
+                # Check if this BUY is a normal long entry or a BUY-to-close
+                # from an IN_SHORT exit. The cell's state tells us:
+                # if cell.state == "IN_SHORT", this is buy-to-cover.
+                cell_state = getattr(cell, "state", "IDLE")
+                if cell_state == "IN_SHORT":
+                    # BUY-to-close — do NOT enter_position, will exit later
+                    pass
+                else:
+                    try:
+                        enter_pos(approved.get("price", 0.0))
+                    except Exception:
+                        logger.exception(
+                            "Error al marcar celula {} como IN_POSITION", cell_name,
+                        )
+            elif signal_action == "SHORT" and callable(enter_pos):
                 try:
-                    enter_pos(approved.get("price", 0.0))
+                    enter_pos(approved.get("price", 0.0), direction="short")
                 except Exception:
                     logger.exception(
-                        "Error al marcar celula {} como IN_POSITION", cell_name,
+                        "Error al marcar celula {} como IN_SHORT", cell_name,
                     )
 
             if self.journal is not None:
@@ -249,16 +266,33 @@ class EventEngine:
                     _action = approved.get("action", "")
                     _symbol = approved.get("symbol", "")
                     _capital = self.risk_manager.portfolio.capital
+                    _entry_price = approved.get("entry_price", 0.0)
+                    _exit_price = approved.get("price", 0.0)
+                    _qty = approved.get("qty", 0)
+
                     if _action == "BUY":
+                        # BUY could be long entry or short close
+                        cell_state = getattr(cell, "state", "IDLE")
+                        if cell_state == "IN_SHORT":
+                            # BUY-to-close → journal position_closed with short PnL
+                            _pnl = (_entry_price - _exit_price) * _qty
+                            await self.journal.position_closed(
+                                _symbol, _pnl, _capital,
+                                direction="short",
+                                trade_id=_trade_id,
+                            )
+                        else:
+                            await self.journal.position_opened(
+                                _symbol, _capital, trade_id=_trade_id,
+                            )
+                    elif _action == "SHORT":
                         await self.journal.position_opened(
                             _symbol, _capital,
+                            direction="short",
                             trade_id=_trade_id,
                         )
                     elif _action == "SELL":
-                        _entry = approved.get("entry_price", 0.0)
-                        _exit_px = approved.get("price", 0.0)
-                        _qty = approved.get("qty", 0)
-                        _pnl = (_exit_px - _entry) * _qty
+                        _pnl = (_exit_price - _entry_price) * _qty
                         await self.journal.position_closed(
                             _symbol, _pnl, _capital,
                             trade_id=_trade_id,
@@ -281,19 +315,41 @@ class EventEngine:
                         exit_time=str(self.clock.now()),
                         exit_reason="signal",
                     )
+                elif self.trade_tracker is not None and signal_action == "BUY":
+                    # Only record if this is a buy-to-close (closing a short)
+                    cell_state = getattr(cell, "state", "IDLE")
+                    if cell_state == "IN_SHORT":
+                        _entry = approved.get("entry_price", 0.0)
+                        _exit_px = approved.get("price", 0.0)
+                        _qty = approved.get("qty", 0)
+                        _pnl = (_entry - _exit_px) * _qty
+                        self.trade_tracker.record_trade(
+                            symbol=approved.get("symbol", ""),
+                            direction="short",
+                            entry_price=_entry,
+                            exit_price=_exit_px,
+                            qty=_qty,
+                            pnl=_pnl,
+                            strategy_name=cell_name,
+                            exit_time=str(self.clock.now()),
+                            exit_reason="signal",
+                        )
 
-                # Reset cell state after successful SELL execution.
-                # This mirrors enter_position() — state only changes
-                # AFTER the trade is confirmed, not before.
-                if signal_action == "SELL":
-                    exit_pos = getattr(cell, "exit_position", None)
-                    if callable(exit_pos):
+                # Reset cell state after successful exit execution.
+                exit_pos = getattr(cell, "exit_position", None)
+                if signal_action in ("SELL", "BUY") and callable(exit_pos):
+                    # For BUY, only call exit_position if this is a buy-to-close
+                    if signal_action == "BUY":
+                        cell_state = getattr(cell, "state", "IDLE")
+                        if cell_state != "IN_SHORT":
+                            exit_pos = None  # Don't exit — it's a long entry
+                    if exit_pos is not None:
                         try:
                             exit_pos()
                         except Exception:
                             logger.exception(
-                                "Error al marcar celula {} como IDLE tras SELL",
-                                cell_name,
+                                "Error al marcar celula {} como IDLE tras {}",
+                                cell_name, signal_action,
                             )
 
                 logger.info(

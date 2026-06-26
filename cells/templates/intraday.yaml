@@ -1,102 +1,149 @@
-- name: intraday_trend
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - SOLUSDT
-  symbol: ETHUSDT
-  timeframe: 5m
-  entry:
-    logic: AND
-    conditions:
-    - indicator: vwap
-      params: {}
-      operator: price > vwap
-    - indicator: volume_surge
-      params:
-        period: 15
-        factor: 2.2
-  exit:
-  - type: trailing_stop
+name: intraday_trend
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+symbol: ETHUSDT
+timeframe: 5m
+entry:
+  logic: AND
+  conditions:
+  - indicator: vwap
+    params: {}
+    operator: price > vwap
+  - indicator: volume_surge
     params:
-      atr_multiplier: 0.5
-  risk:
-    sizing: 0.1
-    max_positions: 4
-- name: intraday_vwap
-  symbol: BTCUSDT
-  timeframe: 30m
-  entry:
-    logic: AND
-    conditions:
-    - indicator: vwap_deviation
-      params:
-        factor: 2.7
-  exit:
-  - type: take_profit
+      period: 15
+      factor: 2.2
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: vwap
+    params: {}
+    operator: price < vwap
+  - indicator: volume_surge
     params:
-      pct: 6.2
-  risk:
-    sizing: 0.07500000000000001
-    max_positions: 4
-- name: intraday_volume_breakout
-  symbol: SOLUSDT
-  timeframe: 30m
-  entry:
-    logic: AND
-    conditions:
-    - indicator: range_breakout
-      params:
-        period: 29
-        factor: 0.8
-    - indicator: volume_surge
-      params:
-        period: 27
-        factor: 3.3000000000000003
-  exit:
-  - type: stop_loss
+      period: 15
+      factor: 2.2
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 0.5
+risk:
+  sizing: 0.005
+  max_positions: 4
+---
+name: intraday_vwap
+symbol: BTCUSDT
+timeframe: 30m
+entry:
+  logic: AND
+  conditions:
+  - indicator: vwap_deviation
     params:
-      atr_multiplier: 5.6000000000000005
-  - type: take_profit
+      factor: 2.7
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: vwap_deviation
     params:
-      atr_multiplier: 1.6
-  risk:
-    sizing: 0.07
-    max_positions: 5
-- name: intraday_support_resistance
-  symbol: LINKUSDT
-  timeframe: 30m
-  entry:
-    logic: AND
-    conditions:
-    - indicator: support_resistance
-      params:
-        lookback: 93
-        touch_count: 4
-  exit:
-  - type: take_profit
+      factor: 2.7
+exit:
+- type: take_profit
+  params:
+    pct: 6.2
+risk:
+  sizing: 0.005
+  max_positions: 4
+---
+name: intraday_volume_breakout
+symbol: SOLUSDT
+timeframe: 30m
+entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
     params:
-      pct: 6.9
-  risk:
-    sizing: 0.005
-    max_positions: 4
-- name: intraday_macd_divergence
-  symbols:
-  - BTCUSDT
-  - ETHUSDT
-  - ADAUSDT
-  entry:
-    logic: AND
-    conditions:
-    - indicator: macd_divergence
-      params:
-        fast: 20
-        slow: 16
-        signal: 11
-        lookback: 42
-  exit:
-  - type: stop_loss
+      period: 29
+      factor: 0.8
+  - indicator: volume_surge
     params:
-      atr_multiplier: 0.8
-  risk:
-    sizing: 0.095
-    max_positions: 5
+      period: 27
+      factor: 3.3000000000000003
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: range_breakout
+    params:
+      period: 29
+      factor: 0.8
+  - indicator: volume_surge
+    params:
+      period: 27
+      factor: 3.3000000000000003
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 5.6000000000000005
+- type: take_profit
+  params:
+    atr_multiplier: 1.6
+risk:
+  sizing: 0.005
+  max_positions: 5
+---
+name: intraday_support_resistance
+symbol: LINKUSDT
+timeframe: 30m
+entry:
+  logic: AND
+  conditions:
+  - indicator: support_resistance
+    params:
+      lookback: 93
+      touch_count: 4
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: support_resistance
+    params:
+      lookback: 93
+      touch_count: 4
+exit:
+- type: take_profit
+  params:
+    pct: 6.9
+risk:
+  sizing: 0.005
+  max_positions: 4
+---
+name: intraday_macd_divergence
+symbols:
+- BTCUSDT
+- ETHUSDT
+- ADAUSDT
+entry:
+  logic: AND
+  conditions:
+  - indicator: macd_divergence
+    params:
+      fast: 20
+      slow: 16
+      signal: 11
+      lookback: 42
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: macd_divergence
+    params:
+      fast: 20
+      slow: 16
+      signal: 11
+      lookback: 42
+exit:
+- type: stop_loss
+  params:
+    atr_multiplier: 0.8
+risk:
+  sizing: 0.005
+  max_positions: 5

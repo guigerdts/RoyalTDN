@@ -150,6 +150,7 @@ class TestEventEngine(unittest.TestCase):
 
         self.loop.run_until_complete(_run())
 
+        self.risk_manager.approve.assert_called_once_with(signal)
         self.broker.submit_order.assert_awaited_once_with(approved_signal)
 
     def test_signal_rejected_by_risk(self):
@@ -164,7 +165,7 @@ class TestEventEngine(unittest.TestCase):
         cell.handle = AsyncMock(return_value=signal)
         self.engine.register(cell)
 
-        self.risk_manager.approve.return_value = None
+        self.risk_manager.approve.return_value = None  # reject
 
         event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
         self.bus.queue.put_nowait(event)
@@ -231,3 +232,152 @@ class TestEventEngine(unittest.TestCase):
         # Both cells should have been called
         bad_cell.handle.assert_awaited_once_with(event)
         good_cell.handle.assert_awaited_once_with(event)
+
+    # -- SHORT pipeline -------------------------------------------------------
+
+    def test_short_pipeline(self):
+        """SHORT signal → enter_position(direction='short') → broker → journal."""
+        cell = MockCell()
+        signal = {
+            "action": "SHORT",
+            "symbol": "BTCUSDT",
+            "price": 50000,
+            "qty": 0.01,
+            "entry_price": 50000,
+        }
+        cell.handle = AsyncMock(return_value=signal)
+        # Add enter_position so engine can call it
+        cell.enter_position = MagicMock()
+        cell.exit_position = MagicMock()
+        cell.state = "IDLE"
+        self.engine.register(cell)
+
+        approved_signal = {"approved": True, **signal}
+        self.risk_manager.approve.return_value = approved_signal
+
+        event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
+        self.bus.queue.put_nowait(event)
+
+        async def _run():
+            task = asyncio.create_task(self.engine.run())
+            await asyncio.sleep(0.05)
+            self.engine.stop()
+            await task
+
+        self.loop.run_until_complete(_run())
+
+        # Should call enter_position with direction="short"
+        cell.enter_position.assert_called_once_with(50000, direction="short")
+        self.broker.submit_order.assert_awaited_once()
+
+    def test_short_pipeline_broker_and_portfolio(self):
+        """SHORT signal should update broker portfolio and risk portfolio."""
+        from risk.portfolio import Portfolio
+
+        # Create real portfolio
+        portfolio = Portfolio(initial_capital=100_000.0)
+        self.risk_manager.portfolio = portfolio
+
+        cell = MockCell()
+        signal = {
+            "action": "SHORT",
+            "symbol": "BTCUSDT",
+            "price": 50000,
+            "qty": 0.02,
+            "sizing": 0.01,
+            "entry_price": 50000,
+        }
+        cell.handle = AsyncMock(return_value=signal)
+        cell.enter_position = MagicMock()
+        cell.exit_position = MagicMock()
+        cell.state = "IDLE"
+        self.engine.register(cell)
+
+        approved_signal = {"approved": True, **signal}
+        self.risk_manager.approve.return_value = approved_signal
+
+        event = {"type": "tick", "symbol": "BTCUSDT", "price": 50000}
+        self.bus.queue.put_nowait(event)
+
+        async def _run():
+            task = asyncio.create_task(self.engine.run())
+            await asyncio.sleep(0.05)
+            self.engine.stop()
+            await task
+
+        self.loop.run_until_complete(_run())
+
+        # Risk portfolio should have the short
+        assert "BTCUSDT" in portfolio._short_positions
+        assert portfolio._short_positions["BTCUSDT"] == 0.02
+
+    # -- BUY-to-close pipeline ------------------------------------------------
+
+    def test_buy_to_close_pipeline(self):
+        """BUY signal when IN_SHORT → close position → journal short PnL."""
+        cell = MockCell()
+        signal = {
+            "action": "BUY",
+            "symbol": "BTCUSDT",
+            "price": 25000,
+            "qty": 0.01,
+            "entry_price": 30000,
+        }
+        cell.handle = AsyncMock(return_value=signal)
+        cell.enter_position = MagicMock()
+        cell.exit_position = MagicMock()
+        cell.state = "IN_SHORT"  # Cell is in SHORT, so BUY is a close
+        cell.name = "test_cell"
+        self.engine.register(cell)
+
+        approved_signal = {"approved": True, **signal}
+        self.risk_manager.approve.return_value = approved_signal
+
+        event = {"type": "tick", "symbol": "BTCUSDT", "price": 25000}
+        self.bus.queue.put_nowait(event)
+
+        async def _run():
+            task = asyncio.create_task(self.engine.run())
+            await asyncio.sleep(0.05)
+            self.engine.stop()
+            await task
+
+        self.loop.run_until_complete(_run())
+
+        # Should NOT call enter_position (it's a close, not entry)
+        # Instead should call exit_position
+        cell.exit_position.assert_called_once()
+
+    def test_buy_to_close_does_not_enter_position(self):
+        """BUY-to-close should NOT call enter_position()."""
+        cell = MockCell()
+        signal = {
+            "action": "BUY",
+            "symbol": "BTCUSDT",
+            "price": 25000,
+            "qty": 0.01,
+            "entry_price": 30000,
+        }
+        cell.handle = AsyncMock(return_value=signal)
+        cell.enter_position = MagicMock()
+        cell.exit_position = MagicMock()
+        cell.state = "IN_SHORT"
+        cell.name = "test_cell"
+        self.engine.register(cell)
+
+        approved_signal = {"approved": True, **signal}
+        self.risk_manager.approve.return_value = approved_signal
+
+        event = {"type": "tick", "symbol": "BTCUSDT", "price": 25000}
+        self.bus.queue.put_nowait(event)
+
+        async def _run():
+            task = asyncio.create_task(self.engine.run())
+            await asyncio.sleep(0.05)
+            self.engine.stop()
+            await task
+
+        self.loop.run_until_complete(_run())
+
+        # enter_position should NOT be called for buy-to-close
+        cell.enter_position.assert_not_called()

@@ -28,6 +28,8 @@ class Portfolio:
         self._position_costs: dict[str, float] = {}  # symbol -> entry_price
         self._peak_value: float = initial_capital  # peak tracked for drawdown
         self._mtm_prices: dict[str, float] = {}  # symbol -> last market price
+        self._short_positions: dict[str, float] = {}  # symbol -> qty (negative liability)
+        self._short_position_costs: dict[str, float] = {}  # symbol -> entry_price
 
     def get_total_value(self) -> float:
         """Return the current portfolio value (cash + positions at market).
@@ -41,6 +43,12 @@ class Portfolio:
         for sym, qty in self.positions.items():
             price = self._mtm_prices.get(sym, self._position_costs.get(sym, 0.0))
             total += qty * price
+        # Short liability: we owe the shares back if we close the short
+        short_liability = sum(
+            self._short_positions.get(sym, 0) * self._mtm_prices.get(sym, 0)
+            for sym in self._short_positions
+        )
+        total -= short_liability
         # Update peak-equity tracker (side effect for drawdown calculation)
         self._peak_value = max(self._peak_value, total)
         return total
@@ -73,6 +81,8 @@ class Portfolio:
         """
         if symbol in self.positions:
             self._mtm_prices[symbol] = price
+        elif hasattr(self, '_short_positions') and symbol in self._short_positions:
+            self._mtm_prices[symbol] = price
         # Update peak after the MTM adjustment
         self._peak_value = max(self._peak_value, self.get_total_value())
 
@@ -88,9 +98,28 @@ class Portfolio:
         symbol = trade.get("symbol", "")
 
         if action == "BUY":
-            self.capital -= qty * price
-            self.positions[symbol] = self.positions.get(symbol, 0.0) + qty
-            self._position_costs[symbol] = price
+            # BUY could be long entry or short close (buy-to-cover)
+            if symbol in self._short_positions and self._short_positions[symbol] > 0:
+                # Close short position
+                entry = self._short_position_costs.get(symbol, price)
+                pnl = (entry - price) * qty
+                self.capital -= qty * price
+                self._short_positions[symbol] -= qty
+                if self._short_positions[symbol] <= 0:
+                    del self._short_positions[symbol]
+                    if symbol in self._short_position_costs:
+                        del self._short_position_costs[symbol]
+                return pnl
+            else:
+                # Normal BUY entry
+                self.capital -= qty * price
+                self.positions[symbol] = self.positions.get(symbol, 0.0) + qty
+                self._position_costs[symbol] = price
+        elif action == "SHORT":
+            # Short entry — you receive cash from selling borrowed shares
+            self.capital += qty * price
+            self._short_positions[symbol] = self._short_positions.get(symbol, 0.0) + qty
+            self._short_position_costs[symbol] = price
         elif action == "SELL":
             self.capital += qty * price
             self.positions[symbol] = self.positions.get(symbol, 0.0) - qty

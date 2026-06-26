@@ -88,8 +88,24 @@ class PaperBroker:
         symbol = trade.get("symbol", "")
 
         if action == "BUY":
-            self.capital -= qty * price
-            self.positions[symbol] = self.positions.get(symbol, 0.0) + qty
+            # BUY could be long entry or short close (buy-to-cover)
+            short_positions = getattr(self, '_short_positions', {})
+            if symbol in short_positions and short_positions[symbol] > 0:
+                # Close short — capital decreases
+                self.capital -= qty * price
+                short_positions[symbol] -= qty
+                if short_positions[symbol] <= 0:
+                    short_positions.pop(symbol, None)
+            else:
+                # Normal BUY entry
+                self.capital -= qty * price
+                self.positions[symbol] = self.positions.get(symbol, 0.0) + qty
+        elif action == "SHORT":
+            # Short entry — you receive cash from selling borrowed shares
+            self.capital += qty * price
+            if not hasattr(self, '_short_positions'):
+                self._short_positions = {}
+            self._short_positions[symbol] = self._short_positions.get(symbol, 0.0) + qty
         elif action == "SELL":
             self.capital += qty * price
             self.positions[symbol] = self.positions.get(symbol, 0.0) - qty
