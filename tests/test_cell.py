@@ -1,14 +1,26 @@
 """Unit tests for the Cell class.
 
 Tests cover initialisation, symbol filtering, entry/exit condition
-evaluation, stop-loss, and take-profit behaviour.
+evaluation, stop-loss, take-profit, and SHORT entry/exit behaviour.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
+
+# ── numpy compatibility shim ──────────────────────────────────────────
+# inference.graph → inference.conditions → numpy (broken in some envs).
+# Pre-seed sys.modules so that patch("inference.graph.build_graph") and
+# the lazy import inside Cell.__init__ both resolve without hitting the
+# numpy dependency chain.
+if "inference.graph" not in sys.modules:
+    import types  # noqa: E402 (imported after sys guard)
+    _inf_graph = types.ModuleType("inference.graph")
+    _inf_graph.build_graph = MagicMock()
+    sys.modules["inference.graph"] = _inf_graph
 
 
 def _make_bars(count: int, base_price: float = 50000.0, volatility: float = 200.0) -> list[dict]:
@@ -322,3 +334,99 @@ class TestCell(unittest.TestCase):
         # Simulate engine calling enter_position after risk approval
         self.cell.enter_position(entry_result["price"])
         self.assertEqual(self.cell.state, "IN_POSITION")
+
+    # -- SHORT entry ---------------------------------------------------------
+
+    def test_short_entry_with_config(self):
+        """Cell with short_entry config → SHORT signal."""
+        self.cell.short_entry_config = {
+            "logic": "AND",
+            "conditions": [{"indicator": "rsi", "params": {"period": 7}, "operator": "> 70"}],
+        }
+        short_graph = MagicMock()
+        short_graph.evaluate.return_value = True
+        self.cell._short_entry_graph = short_graph
+        self.cell.bars = _make_bars(25)
+        self.graph_mock.evaluate.return_value = False  # ensure _check_entry fails
+
+        event = _make_tick_event("BTCUSDT", 50000.0)
+        result = self.loop.run_until_complete(self.cell.handle(event))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "SHORT")
+        self.assertEqual(result["symbol"], "BTCUSDT")
+        self.assertEqual(result["cell_name"], "ema_cross")
+
+    def test_short_entry_without_config(self):
+        """Cell without short_entry → _check_short_entry returns None."""
+        self.cell.short_entry_config = {}
+        self.cell._short_entry_graph = None
+        self.cell.bars = _make_bars(25)
+        self.graph_mock.evaluate.return_value = False
+
+        event = _make_tick_event("BTCUSDT", 50000.0)
+        result = self.loop.run_until_complete(self.cell.handle(event))
+
+        self.assertIsNone(result)
+        self.assertEqual(self.cell.state, "IDLE")
+
+    # -- SHORT exit (IN_SHORT state) -----------------------------------------
+
+    def test_short_exit_take_profit(self):
+        """IN_SHORT: price drops below inverted TP threshold → BUY."""
+        self.cell.state = "IN_SHORT"
+        self.cell.entry_price = 30000.0
+        self.cell.exit_take_profit = 4.0
+        self.cell.bars = _make_bars(25, base_price=30000.0, volatility=200.0)
+
+        # With ATR~200, entry=30000 → atr_pct≈0.0067
+        # TP threshold = 30000 * (1 - 4.0 * 0.0067) ≈ 30000 * 0.973 ≈ 29196
+        drop_price = 25000.0
+        result = self.cell._check_exit(drop_price)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "BUY")
+        self.assertEqual(result["entry_price"], 30000.0)
+
+    def test_short_exit_stop_loss(self):
+        """IN_SHORT: price rises above inverted SL threshold → BUY."""
+        self.cell.state = "IN_SHORT"
+        self.cell.entry_price = 30000.0
+        self.cell.exit_stop_loss = 2.0
+        self.cell.bars = _make_bars(25, base_price=30000.0, volatility=200.0)
+
+        # With ATR~200, entry=30000 → atr_pct≈0.0067
+        # SL threshold = 30000 * (1 + 2.0 * 0.0067) ≈ 30000 * 1.013 ≈ 30402
+        surge_price = 33000.0
+        result = self.cell._check_exit(surge_price)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "BUY")
+
+    def test_short_exit_trailing_stop(self):
+        """IN_SHORT: trailing_low tracks, exit when price rises above."""
+        self.cell.state = "IN_SHORT"
+        self.cell.entry_price = 30000.0
+        # Isolate trailing test: clear SL/TP so they don't pre-empt
+        self.cell.exit_stop_loss = None
+        self.cell.exit_take_profit = None
+        self.cell.exit_trailing_stop = 2.0
+        self.cell._trailing_low = 0.0
+        self.cell._trailing_high = 0.0
+        self.cell.bars = _make_bars(25, base_price=30000.0, volatility=200.0)
+
+        # First call sets _trailing_low (no exit)
+        result = self.cell._check_exit(29000.0)
+        self.assertIsNone(result)
+        self.assertEqual(self.cell._trailing_low, 29000.0)
+
+        # Price goes lower → _trailing_low updates (still no exit)
+        result = self.cell._check_exit(28500.0)
+        self.assertIsNone(result)
+        self.assertEqual(self.cell._trailing_low, 28500.0)
+
+        # Price rises above _trailing_low + trail_distance → exit
+        # trail_distance = 2.0 * atr (~400) → exit at 28500 + 400 = 28900
+        result = self.cell._check_exit(29200.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["action"], "BUY")
