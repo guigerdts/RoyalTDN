@@ -124,42 +124,56 @@ def test_short_entry_updates_capital(portfolio):
 
 
 def test_short_close_pnl(portfolio):
-    """Close short with BUY: PnL = (entry - exit) * qty = (30000-25000)*0.1 = 500.0."""
-    # Enter short
+    """Close short with BUY: PnL = (entry - exit) * qty = (30000-25000)*0.1 = 500.0.
+
+    ``Portfolio.update()`` returns ``None`` (B9 fix — return type is
+    consistent). PnL is verified through capital change instead.
+    """
+    initial = portfolio.capital
+    # Enter short: capital += qty * price = 0.1 * 30000 = 3000
     portfolio.update({
         "action": "SHORT",
         "symbol": "BTCUSDT",
         "qty": 0.1,
         "price": 30000.0,
     })
-    # Close short (buy-to-cover)
-    pnl = portfolio.update({
+    assert portfolio.capital == initial + 3000.0
+    # Close short (buy-to-cover): capital -= qty * price = 0.1 * 25000 = 2500
+    portfolio.update({
         "action": "BUY",
         "symbol": "BTCUSDT",
         "qty": 0.1,
         "price": 25000.0,
     })
-    assert pnl == 500.0
+    # PnL = capital change = (initial + 3000 - 2500) - initial = 500.0
+    assert portfolio.capital == initial + 500.0
     # Position should be removed
     assert "BTCUSDT" not in portfolio._short_positions
     assert "BTCUSDT" not in portfolio._short_position_costs
 
 
 def test_short_close_negative_pnl(portfolio):
-    """Close short at higher price: PnL = (30000 - 32000) * 0.1 = -200.0 (loss)."""
+    """Close short at higher price: PnL = (30000 - 32000) * 0.1 = -200.0 (loss).
+
+    ``Portfolio.update()`` returns ``None`` (B9 fix). PnL verified via
+    capital change.
+    """
+    initial = portfolio.capital
     portfolio.update({
         "action": "SHORT",
         "symbol": "BTCUSDT",
         "qty": 0.1,
         "price": 30000.0,
     })
-    pnl = portfolio.update({
+    assert portfolio.capital == initial + 3000.0
+    portfolio.update({
         "action": "BUY",
         "symbol": "BTCUSDT",
         "qty": 0.1,
         "price": 32000.0,
     })
-    assert pnl == -200.0
+    # PnL = (initial + 3000 - 3200) - initial = -200.0
+    assert portfolio.capital == initial - 200.0
 
 
 # ── Short liability in get_total_value ───────────────────────────────────
