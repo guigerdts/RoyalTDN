@@ -97,21 +97,38 @@ class Cell:
     # ── Exit rule parsing ─────────────────────────────────────────────
 
     def _parse_exit_rules(self) -> None:
-        """Parse the YAML exit list into structured rule attributes."""
+        """Parse the YAML exit list into structured rule attributes.
+
+        Supports two parameter modes:
+        - ``atr_multiplier`` (float): exit distance = multiplier × ATR %
+        - ``pct`` (float): exit distance = fixed percentage of entry price
+        """
         self.exit_stop_loss: float | None = None      # ATR multiplier
+        self.exit_stop_loss_pct: float | None = None   # fixed % (0.062 = 6.2%)
         self.exit_take_profit: float | None = None     # ATR multiplier
+        self.exit_take_profit_pct: float | None = None # fixed % (0.062 = 6.2%)
         self.exit_trailing_stop: float | None = None   # ATR multiplier
+        self.exit_trailing_stop_pct: float | None = None
         self.exit_zscore_threshold: float | None = None
 
         for rule in self.exit_list:
             rule_type = rule.get("type", "")
             params = rule.get("params", {})
             if rule_type == "stop_loss":
-                self.exit_stop_loss = float(params.get("atr_multiplier", 1.5))
+                if "pct" in params:
+                    self.exit_stop_loss_pct = float(params["pct"]) / 100.0
+                else:
+                    self.exit_stop_loss = float(params.get("atr_multiplier", 1.5))
             elif rule_type == "take_profit":
-                self.exit_take_profit = float(params.get("atr_multiplier", 3.0))
+                if "pct" in params:
+                    self.exit_take_profit_pct = float(params["pct"]) / 100.0
+                else:
+                    self.exit_take_profit = float(params.get("atr_multiplier", 3.0))
             elif rule_type == "trailing_stop":
-                self.exit_trailing_stop = float(params.get("atr_multiplier", 2.0))
+                if "pct" in params:
+                    self.exit_trailing_stop_pct = float(params["pct"]) / 100.0
+                else:
+                    self.exit_trailing_stop = float(params.get("atr_multiplier", 2.0))
             elif rule_type == "zscore":
                 self.exit_zscore_threshold = float(params.get("threshold", 0.5))
 
@@ -281,8 +298,27 @@ class Cell:
         atr_pct = atr / self.entry_price if self.entry_price > 0 else 0.0
         is_short = self.state == "IN_SHORT"
 
-        # Stop-loss (ATR-based)
-        if self.exit_stop_loss is not None:
+        # Stop-loss (supports pct and ATR modes)
+        if self.exit_stop_loss_pct is not None:
+            if is_short:
+                stop_price = self.entry_price * (1.0 + self.exit_stop_loss_pct)
+                if current_price >= stop_price:
+                    logger.info(
+                        "{} {} SHORT STOP-LOSS @ ${:.2f} ({:.1f}%, entry ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_stop_loss_pct * 100, self.entry_price,
+                    )
+                    return self._exit_signal(current_price)
+            else:
+                stop_price = self.entry_price * (1.0 - self.exit_stop_loss_pct)
+                if current_price <= stop_price:
+                    logger.info(
+                        "{} {} STOP-LOSS @ ${:.2f} ({:.1f}%, entry ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_stop_loss_pct * 100, self.entry_price,
+                    )
+                    return self._exit_signal(current_price)
+        elif self.exit_stop_loss is not None:
             if is_short:
                 stop_price = self.entry_price * (1.0 + self.exit_stop_loss * atr_pct)
                 if current_price >= stop_price:
@@ -300,8 +336,27 @@ class Cell:
                     )
                     return self._exit_signal(current_price)
 
-        # Take-profit (ATR-based)
-        if self.exit_take_profit is not None:
+        # Take-profit (supports pct and ATR modes)
+        if self.exit_take_profit_pct is not None:
+            if is_short:
+                take_price = self.entry_price * (1.0 - self.exit_take_profit_pct)
+                if current_price <= take_price:
+                    logger.info(
+                        "{} {} SHORT TAKE-PROFIT @ ${:.2f} ({:.1f}%, entry ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_take_profit_pct * 100, self.entry_price,
+                    )
+                    return self._exit_signal(current_price)
+            else:
+                take_price = self.entry_price * (1.0 + self.exit_take_profit_pct)
+                if current_price >= take_price:
+                    logger.info(
+                        "{} {} TAKE-PROFIT @ ${:.2f} ({:.1f}%, entry ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_take_profit_pct * 100, self.entry_price,
+                    )
+                    return self._exit_signal(current_price)
+        elif self.exit_take_profit is not None:
             if is_short:
                 take_price = self.entry_price * (1.0 - self.exit_take_profit * atr_pct)
                 if current_price <= take_price:
@@ -319,17 +374,18 @@ class Cell:
                     )
                     return self._exit_signal(current_price)
 
-        # Trailing stop (ATR-based) — direction-aware
-        if self.exit_trailing_stop is not None:
-            trail_distance = self.exit_trailing_stop * atr
+        # Trailing stop (supports pct and ATR modes) — direction-aware
+        if self.exit_trailing_stop_pct is not None:
+            trail_distance = self.exit_trailing_stop_pct * self.entry_price
             if is_short:
                 if self._trailing_low == 0.0:
                     self._trailing_low = current_price
                 self._trailing_low = min(self._trailing_low, current_price)
                 if current_price >= self._trailing_low + trail_distance:
                     logger.info(
-                        "{} {} SHORT TRAILING-STOP @ ${:.2f} (low ${:.2f})",
-                        self.symbol, self.name, current_price, self._trailing_low,
+                        "{} {} SHORT TRAILING-STOP @ ${:.2f} ({:.1f}%, low ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_trailing_stop_pct * 100, self._trailing_low,
                     )
                     self._trailing_low = 0.0
                     return self._exit_signal(current_price)
@@ -339,8 +395,33 @@ class Cell:
                 self._trailing_high = max(self._trailing_high, current_price)
                 if current_price <= self._trailing_high - trail_distance:
                     logger.info(
-                        "{} {} TRAILING-STOP @ ${:.2f} (high ${:.2f})",
-                        self.symbol, self.name, current_price, self._trailing_high,
+                        "{} {} TRAILING-STOP @ ${:.2f} ({:.1f}%, high ${:.2f})",
+                        self.symbol, self.name, current_price,
+                        self.exit_trailing_stop_pct * 100, self._trailing_high,
+                    )
+                    self._trailing_high = 0.0
+                    return self._exit_signal(current_price)
+        elif self.exit_trailing_stop is not None:
+            trail_distance = self.exit_trailing_stop * atr
+            if is_short:
+                if self._trailing_low == 0.0:
+                    self._trailing_low = current_price
+                self._trailing_low = min(self._trailing_low, current_price)
+                if current_price >= self._trailing_low + trail_distance:
+                    logger.info(
+                        "{} {} SHORT TRAILING-STOP @ ${:.2f} (ATR {:.2f}, low ${:.2f})",
+                        self.symbol, self.name, current_price, atr, self._trailing_low,
+                    )
+                    self._trailing_low = 0.0
+                    return self._exit_signal(current_price)
+            else:
+                if self._trailing_high == 0.0:
+                    self._trailing_high = current_price
+                self._trailing_high = max(self._trailing_high, current_price)
+                if current_price <= self._trailing_high - trail_distance:
+                    logger.info(
+                        "{} {} TRAILING-STOP @ ${:.2f} (ATR {:.2f}, high ${:.2f})",
+                        self.symbol, self.name, current_price, atr, self._trailing_high,
                     )
                     self._trailing_high = 0.0
                     return self._exit_signal(current_price)

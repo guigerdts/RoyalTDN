@@ -9,7 +9,7 @@ symbols:
 strategies_dir: cells/templates/
 initial_capital: 100000.0
 max_positions: 10
-max_drawdown: 0.03
+max_drawdown: 0.20
 telegram_token: ""
 telegram_chat_id: ""
 

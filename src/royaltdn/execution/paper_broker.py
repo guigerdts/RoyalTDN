@@ -27,7 +27,9 @@ class PaperBroker:
         """
         self.initial_capital: float = initial_capital
         self.capital: float = initial_capital
+        self._peak_equity: float = initial_capital
         self.positions: dict[str, float] = {}
+        self._short_positions: dict[str, float] = {}
         self.trades: list[dict[str, Any]] = []
         self._order_counter: int = 0
         self.bus: Any = None
@@ -89,13 +91,12 @@ class PaperBroker:
 
         if action == "BUY":
             # BUY could be long entry or short close (buy-to-cover)
-            short_positions = getattr(self, '_short_positions', {})
-            if symbol in short_positions and short_positions[symbol] > 0:
+            if symbol in self._short_positions and self._short_positions[symbol] > 0:
                 # Close short — capital decreases
                 self.capital -= qty * price
-                short_positions[symbol] -= qty
-                if short_positions[symbol] <= 0:
-                    short_positions.pop(symbol, None)
+                self._short_positions[symbol] -= qty
+                if self._short_positions[symbol] <= 0:
+                    self._short_positions.pop(symbol, None)
             else:
                 # Normal BUY entry
                 self.capital -= qty * price
@@ -103,14 +104,16 @@ class PaperBroker:
         elif action == "SHORT":
             # Short entry — you receive cash from selling borrowed shares
             self.capital += qty * price
-            if not hasattr(self, '_short_positions'):
-                self._short_positions = {}
             self._short_positions[symbol] = self._short_positions.get(symbol, 0.0) + qty
         elif action == "SELL":
             self.capital += qty * price
             self.positions[symbol] = self.positions.get(symbol, 0.0) - qty
             if self.positions.get(symbol, 0.0) <= 0.0:
                 self.positions.pop(symbol, None)
+
+        # Track peak equity for drawdown calculation
+        if self.capital > self._peak_equity:
+            self._peak_equity = self.capital
 
     def get_total_value(self) -> float:
         """Return the current account value.
@@ -122,11 +125,15 @@ class PaperBroker:
         return self.capital
 
     def get_drawdown(self) -> float:
-        """Return the current drawdown from initial capital.
+        """Return the current drawdown from peak equity.
+
+        Uses ``_peak_equity`` (tracked in ``update_portfolio``) instead
+        of ``initial_capital`` so that drawdown reflects actual peak-to-
+        trough decline after growth. Fixes bug B3.
 
         Returns:
             Drawdown ratio between 0.0 and 1.0.
         """
-        if self.initial_capital == 0.0:
+        if self._peak_equity == 0.0:
             return 0.0
-        return max(0.0, (self.initial_capital - self.capital) / self.initial_capital)
+        return max(0.0, (self._peak_equity - self.capital) / self._peak_equity)

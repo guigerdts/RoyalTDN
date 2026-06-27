@@ -102,14 +102,12 @@ class Portfolio:
             if symbol in self._short_positions and self._short_positions[symbol] > 0:
                 # Close short position
                 entry = self._short_position_costs.get(symbol, price)
-                pnl = (entry - price) * qty
                 self.capital -= qty * price
                 self._short_positions[symbol] -= qty
                 if self._short_positions[symbol] <= 0:
                     del self._short_positions[symbol]
                     if symbol in self._short_position_costs:
                         del self._short_position_costs[symbol]
-                return pnl
             else:
                 # Normal BUY entry
                 self.capital -= qty * price

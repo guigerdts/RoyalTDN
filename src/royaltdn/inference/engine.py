@@ -24,23 +24,5 @@ class InferenceEngine:
     def __init__(self) -> None:
         pass
 
-    def evaluate(self, entry_config: dict[str, Any], data: dict[str, Any]) -> bool:
-        """Evaluate an entry/exit rule set against market data.
-
-        Args:
-            entry_config: Rule config dict (the ``entry`` or ``exit``
-                section from a cell YAML).
-            data: Market data dict containing price series, volume
-                series, etc. Expected keys include ``close``, ``volume``,
-                and optionally ``high``/``low``.
-
-        Returns:
-            True if all conditions in the rule tree are satisfied,
-            False otherwise.
-
-        Raises:
-            ValueError: If the config structure is invalid.
-        """
-        root = build_graph(entry_config)
-        result = root.evaluate(data)
-        return result
+    # Note: evaluate() was removed (B8) — dead code.
+    # Callers use Cell + GraphNode.build_graph() directly.

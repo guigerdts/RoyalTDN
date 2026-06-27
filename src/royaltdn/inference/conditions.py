@@ -297,20 +297,30 @@ def zscore(data: Any, period: int = 20) -> float:
 # ---------------------------------------------------------------------------
 
 
-def range_breakout(data: Any, period: int = 10, factor: float = 0.5) -> bool:
+def range_breakout(
+    data: Any,
+    period: int = 10,
+    factor: float = 0.5,
+    direction: str = "any",
+) -> bool:
     """Detect if price breaks out of a recent range by *factor* of range width.
 
     Range is defined as ``highest_high - lowest_low`` over *period* bars.
     Breakout is confirmed when current close exceeds the range boundary
     by at least ``range_width * factor``.
 
+    Supports filtering by breakout *direction* so that short-entry
+    conditions can require a downside breakout (fixes bug B7).
+
     Args:
         data: Dict with ``high``, ``low``, ``close`` lists.
         period: Lookback window.
         factor: Multiplier on range width to confirm breakout.
+        direction: ``"any"`` (default, backward-compatible), ``"up"`` for
+            upside-only, ``"down"`` for downside-only.
 
     Returns:
-        True if an upside or downside breakout is detected.
+        True if a breakout is detected in the requested direction.
     """
     close = _safe_numeric(_to_series(data, "close"), min_length=period)
     high = _safe_numeric(_to_series(data, "high"), min_length=period)
@@ -329,14 +339,14 @@ def range_breakout(data: Any, period: int = 10, factor: float = 0.5) -> bool:
     current_close = float(close.iloc[-1])
     threshold = range_width * factor
 
-    # Upside breakout: close breaks above range high + threshold
-    if current_close > range_high + threshold:
-        return True
-    # Downside breakout: close breaks below range low - threshold
-    if current_close < range_low - threshold:
-        return True
+    upside = current_close > range_high + threshold
+    downside = current_close < range_low - threshold
 
-    return False
+    if direction == "up":
+        return upside
+    if direction == "down":
+        return downside
+    return upside or downside
 
 
 def vwap_deviation(data: Any, factor: float = 1.5) -> bool:

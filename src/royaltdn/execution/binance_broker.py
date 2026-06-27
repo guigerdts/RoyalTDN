@@ -142,6 +142,40 @@ class BinanceBroker:
                 "reason": str(exc),
             }
 
+    @staticmethod
+    def _parse_symbol(symbol: str) -> tuple[str, str]:
+        """Split a Binance trading pair into (base, quote) asset.
+
+        Binance symbols are concatenated base+quote (e.g. ``"BTCUSDT"``,
+        ``"ETHBTC"``). This method strips known quote-asset suffixes to
+        extract each side.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``, ``"ETHBTC"``.
+
+        Returns:
+            Tuple of ``(base_asset, quote_asset)``.
+
+        Raises:
+            ValueError: If no known quote suffix is found.
+        """
+        # Known quote assets — longest first to avoid partial matches
+        known_quotes = [
+            "BUSD", "USDC", "USDT", "PAX", "TUSD", "USDS",
+            "BTC", "ETH", "BNB", "XRP",
+            "BRL", "EUR", "TRY", "GBP",
+            "DAI", "FDUSD",
+        ]
+
+        for quote in known_quotes:
+            if symbol.endswith(quote) and len(symbol) > len(quote):
+                base = symbol[: -len(quote)]
+                return base, quote
+
+        raise ValueError(
+            f"Cannot parse symbol '{symbol}': no known quote suffix found"
+        )
+
     def _estimate_qty(
         self,
         symbol: str,
@@ -161,17 +195,15 @@ class BinanceBroker:
             Estimated quantity, floored to a safe value.
         """
         try:
+            base_asset, quote_asset = self._parse_symbol(symbol)
             if side == Side.BUY:
                 # Use quote asset balance (e.g. USDT)
-                quote = symbol.replace("USDT", "").replace("BTC", "")
-                base_asset = "USDT" if "USDT" in symbol else "BTC"
-                balance = self._client.get_asset_balance(asset=base_asset)
+                balance = self._client.get_asset_balance(asset=quote_asset)
                 available = float(balance["free"]) if balance else 0.0
                 qty = (available * sizing) / price
             else:
                 # Use base asset balance (e.g. BTC)
-                base = symbol.replace("USDT", "").replace("BTC", "")
-                balance = self._client.get_asset_balance(asset=base)
+                balance = self._client.get_asset_balance(asset=base_asset)
                 available = float(balance["free"]) if balance else 0.0
                 qty = available * sizing
 
