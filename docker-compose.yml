@@ -44,7 +44,7 @@ services:
   # Redis Stack — Streams, caché, pub/sub (Fase 3+)
   # ═══════════════════════════════════════════════════════════════════════════
   redis:
-    image: redis/redis-stack:latest
+    image: redis:alpine
     container_name: royaltdn-redis
     restart: unless-stopped
     ports:

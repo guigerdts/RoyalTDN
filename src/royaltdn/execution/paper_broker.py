@@ -2,6 +2,17 @@
 
 Simulates order execution without real capital. Maintains an internal
 order book, tracks positions, and reports fills synchronously.
+
+Portfolio integration (M2)
+--------------------------
+PaperBroker delegates **all portfolio state** (capital, positions,
+drawdown) to a :class:`~royaltdn.risk.portfolio.Portfolio` instance.
+The broker only handles order lifecycle, ticketing, and fill reporting
+— it is **not** a second source of truth for the account.
+
+When no explicit ``portfolio`` is passed, PaperBroker creates one
+internally so that ``update_portfolio()`` always goes through the
+unified code path.
 """
 
 from __future__ import annotations
@@ -10,29 +21,75 @@ from typing import Any
 
 from loguru import logger
 
+from royaltdn.risk.portfolio import Portfolio
+
 
 class PaperBroker:
     """Paper trading broker.
 
     Simulates trade execution: all orders are immediately filled at
-    the requested price. Tracks capital, positions, and trade history
-    for reporting and analysis.
+    the requested price. All capital and position tracking is delegated
+    to a :class:`~royaltdn.risk.portfolio.Portfolio` instance.
     """
 
-    def __init__(self, initial_capital: float = 100_000.0) -> None:
+    def __init__(
+        self,
+        initial_capital: float = 100_000.0,
+        portfolio: Portfolio | None = None,
+    ) -> None:
         """Initialise the paper broker.
 
         Args:
-            initial_capital: Starting cash balance for the paper account.
+            initial_capital: Starting cash balance. Used to create an
+                internal portfolio when none is provided.
+            portfolio: An optional :class:`~royaltdn.risk.portfolio.Portfolio`
+                instance. When ``None``, an internal portfolio is created.
         """
         self.initial_capital: float = initial_capital
-        self.capital: float = initial_capital
-        self._peak_equity: float = initial_capital
-        self.positions: dict[str, float] = {}
-        self._short_positions: dict[str, float] = {}
+        self._portfolio: Portfolio = portfolio or Portfolio(
+            initial_capital=initial_capital,
+        )
         self.trades: list[dict[str, Any]] = []
         self._order_counter: int = 0
         self.bus: Any = None
+
+    # ── Portfolio attribute access (read-through) ────────────────────────
+
+    @property
+    def capital(self) -> float:
+        """Current cash balance, proxied from the portfolio."""
+        return self._portfolio.capital
+
+    @capital.setter
+    def capital(self, value: float) -> None:
+        self._portfolio.capital = value
+
+    @property
+    def positions(self) -> dict[str, float]:
+        """Open long positions, proxied from the portfolio."""
+        return self._portfolio.positions
+
+    @positions.setter
+    def positions(self, value: dict[str, float]) -> None:
+        self._portfolio.positions = value
+
+    @property
+    def _short_positions(self) -> dict[str, float]:
+        return self._portfolio._short_positions
+
+    @_short_positions.setter
+    def _short_positions(self, value: dict[str, float]) -> None:
+        self._portfolio._short_positions = value
+
+    @property
+    def _peak_equity(self) -> float:
+        return self._portfolio._peak_value
+
+    @_peak_equity.setter
+    def _peak_equity(self, value: float) -> None:
+        self._portfolio._peak_value = value
+
+    # ── Public API ───────────────────────────────────────────────────────
 
     def set_bus(self, bus: Any) -> None:
         """Attach an EventBus to the broker for status broadcasts.
@@ -78,62 +135,32 @@ class PaperBroker:
         return trade
 
     def update_portfolio(self, trade: dict[str, Any]) -> None:
-        """Update internal capital and positions after a filled trade.
+        """Update portfolio state after a filled trade.
+
+        Always delegates to ``self._portfolio.update()`` (M2).
 
         Args:
             trade: Trade dict with ``action``, ``symbol``, ``qty``,
                 ``price``.
         """
-        action = trade.get("action", "")
-        qty = float(trade.get("qty", 0))
-        price = float(trade.get("price", 0))
-        symbol = trade.get("symbol", "")
-
-        if action == "BUY":
-            # BUY could be long entry or short close (buy-to-cover)
-            if symbol in self._short_positions and self._short_positions[symbol] > 0:
-                # Close short — capital decreases
-                self.capital -= qty * price
-                self._short_positions[symbol] -= qty
-                if self._short_positions[symbol] <= 0:
-                    self._short_positions.pop(symbol, None)
-            else:
-                # Normal BUY entry
-                self.capital -= qty * price
-                self.positions[symbol] = self.positions.get(symbol, 0.0) + qty
-        elif action == "SHORT":
-            # Short entry — you receive cash from selling borrowed shares
-            self.capital += qty * price
-            self._short_positions[symbol] = self._short_positions.get(symbol, 0.0) + qty
-        elif action == "SELL":
-            self.capital += qty * price
-            self.positions[symbol] = self.positions.get(symbol, 0.0) - qty
-            if self.positions.get(symbol, 0.0) <= 0.0:
-                self.positions.pop(symbol, None)
-
-        # Track peak equity for drawdown calculation
-        if self.capital > self._peak_equity:
-            self._peak_equity = self.capital
+        self._portfolio.update(trade)
 
     def get_total_value(self) -> float:
         """Return the current account value.
 
+        Delegates to ``portfolio.get_total_value()``.
+
         Returns:
-            Cash balance (positions are not marked-to-market in this
-            simplified implementation).
+            Current account value in cash-equivalent units.
         """
-        return self.capital
+        return self._portfolio.get_total_value()
 
     def get_drawdown(self) -> float:
         """Return the current drawdown from peak equity.
 
-        Uses ``_peak_equity`` (tracked in ``update_portfolio``) instead
-        of ``initial_capital`` so that drawdown reflects actual peak-to-
-        trough decline after growth. Fixes bug B3.
+        Delegates to ``portfolio.get_drawdown()``.
 
         Returns:
             Drawdown ratio between 0.0 and 1.0.
         """
-        if self._peak_equity == 0.0:
-            return 0.0
-        return max(0.0, (self._peak_equity - self.capital) / self._peak_equity)
+        return self._portfolio.get_drawdown()

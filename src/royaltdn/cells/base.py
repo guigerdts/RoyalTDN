@@ -40,6 +40,7 @@ class Cell:
         """
         self.name: str = config.get("name", "unnamed")
         self.symbol: str = config.get("symbol", "")
+        self.source_file: str = config.get("_source_file", "")
         self.state: str = "IDLE"
 
         # ── Parse risk config ──────────────────────────────────────────

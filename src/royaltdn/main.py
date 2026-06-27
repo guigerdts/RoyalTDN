@@ -26,6 +26,7 @@ from royaltdn.cells.base import Cell
 from royaltdn.risk.portfolio import Portfolio
 from royaltdn.risk.manager import RiskManager
 from royaltdn.execution.paper_broker import PaperBroker
+from royaltdn.config import BotConfig, ConfigValidationError
 from royaltdn.db import init_pool
 
 
@@ -97,10 +98,15 @@ async def _optimization_scheduler(
 async def main():
     args = parse_args()
 
-    # Cargar config
+    # Cargar y validar config
     config_path = Path(__file__).parent / "config.yaml"
     with open(config_path) as f:
-        config = yaml.safe_load(f)
+        raw = yaml.safe_load(f)
+    try:
+        cfg = BotConfig.from_dict(raw)
+    except ConfigValidationError as exc:
+        logger.critical("Configuracion invalida:\n{}", exc)
+        sys.exit(1)
 
     # Inicializar componentes
     bus = EventBus()
@@ -109,28 +115,27 @@ async def main():
     registry = CellRegistry()
 
     # Portfolio y Risk
-    portfolio = Portfolio(initial_capital=config["initial_capital"])
+    portfolio = Portfolio(initial_capital=cfg.initial_capital)
     risk_manager = RiskManager(
         portfolio,
-        max_positions=config["max_positions"],
-        max_drawdown=config["max_drawdown"],
+        max_positions=cfg.max_positions,
+        max_drawdown=cfg.max_drawdown,
         config_path=config_path,
     )
 
     # Broker
-    broker_type = config.get("broker", "paper")
-    if broker_type == "binance":
+    if cfg.broker == "binance":
         try:
             from royaltdn.execution.binance_broker import BinanceBroker
             api_key = os.getenv("BINANCE_API_KEY", "")
             api_secret = os.getenv("BINANCE_SECRET_KEY", "")
-            broker = BinanceBroker(api_key, api_secret, testnet=config.get("testnet", True))
+            broker = BinanceBroker(api_key, api_secret, testnet=cfg.testnet)
         except Exception as e:
             logger.warning("Binance broker no disponible ({}), usando paper", e)
-            broker = PaperBroker(initial_capital=config["initial_capital"], portfolio=portfolio)
+            broker = PaperBroker(initial_capital=cfg.initial_capital, portfolio=portfolio)
     else:
-        broker = PaperBroker(initial_capital=config["initial_capital"], portfolio=portfolio)
-    
+        broker = PaperBroker(initial_capital=cfg.initial_capital, portfolio=portfolio)
+
     broker.set_bus(bus)
 
     # ── TimescaleDB persistence ──────────────────────────────────────────────
@@ -152,7 +157,7 @@ async def main():
     engine = EventEngine(clock, bus, risk_manager, broker, journal=journal, trade_tracker=trade_tracker)
 
     # Cargar celulas desde YAML
-    strategies_dir = Path(__file__).parent / config["strategies_dir"]
+    strategies_dir = cfg.strategies_path
     cells = load_cells(str(strategies_dir), inference_engine)
     for cell in cells:
         engine.register(cell)
@@ -160,7 +165,7 @@ async def main():
         logger.info("Celula registrada: {} ({})", cell.name, cell.symbol)
 
     logger.info("CellMesh iniciado — {} celulas, {} simbolos, broker={}",
-                len(cells), len(config["symbols"]), broker_type)
+                len(cells), len(cfg.symbols), cfg.broker)
 
     # ── Background task registry (track all tasks for cleanup) ──────────
     _background_tasks: list[asyncio.Task] = []
@@ -177,7 +182,7 @@ async def main():
 
     # Iniciar feed de datos
     from royaltdn.data.binance_feed import BinanceFeed
-    feed = BinanceFeed(config["symbols"], bus)
+    feed = BinanceFeed(cfg.symbols, bus)
     _background_tasks.append(asyncio.create_task(feed.start()))
 
     # Iniciar dashboard
@@ -204,17 +209,14 @@ async def main():
 
     # ── Periodic optimization scheduler ──────────────────────────────────
     if args.optimize:
-        opt_config = config.get("optimization", {})
-        interval_days = opt_config.get("interval_days", 30)
-        opt_metric = opt_config.get("metric", "sharpe")
-        opt_trials = opt_config.get("trials", 100)
+        opt = cfg.optimization
 
         logger.info("Optimizacion periodica activada — cada {} dia(s), metrica={}",
-                     interval_days, opt_metric)
+                     opt.interval_days, opt.metric)
         _background_tasks.append(asyncio.create_task(_optimization_scheduler(
-            interval_days=interval_days,
-            metric=opt_metric,
-            trials=opt_trials,
+            interval_days=opt.interval_days,
+            metric=opt.metric,
+            trials=opt.trials,
         )))
     else:
         logger.debug("Optimizacion periodica desactivada (usar --optimize para activar)")

@@ -55,7 +55,7 @@ def test_33_cells_reach_10_positions_on_5_symbols() -> None:
         clock = RealClock()
         portfolio = Portfolio(initial_capital=1_000_000.0)
         rm = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=1_000_000.0)
+        broker = PaperBroker(initial_capital=1_000_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, rm, broker)
 
         # Create 33 cells across 5 symbols (like the real bot)

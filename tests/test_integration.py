@@ -53,7 +53,7 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         # Mock cell that always returns a BUY signal (using sizing fraction)
@@ -101,7 +101,7 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         cell = MagicMock()
@@ -155,7 +155,7 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         # BTC cell — generates signal
@@ -207,7 +207,7 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         btc_cell = MagicMock()
@@ -275,7 +275,7 @@ class TestIntegration(unittest.TestCase):
         portfolio = Portfolio(initial_capital=100_000.0)
         # Only 1 position allowed
         risk_manager = RiskManager(portfolio, max_positions=1, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         cell = MagicMock()
@@ -339,7 +339,7 @@ class TestIntegration(unittest.TestCase):
         risk_manager = RiskManager(
             portfolio, max_positions=5, max_drawdown=0.03  # 3% max
         )
-        broker = PaperBroker(initial_capital=100_000.0)
+        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         cell = MagicMock()

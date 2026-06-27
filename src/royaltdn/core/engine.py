@@ -241,19 +241,8 @@ class EventEngine:
                         trade_id=_trade_id,
                     )
 
-                # Update broker's internal portfolio
-                update_portfolio = getattr(
-                    self.execution_broker, "update_portfolio", None
-                )
-                if callable(update_portfolio):
-                    try:
-                        update_portfolio(trade_event)
-                    except Exception:
-                        logger.exception(
-                            "Error al actualizar portafolio del broker"
-                        )
-
-                # Sync RiskManager's Portfolio (Bug 4)
+                # Update RiskManager's Portfolio (single source of truth —
+                # M2: all state goes through Portfolio, not the broker).
                 try:
                     self.risk_manager.portfolio.update(trade_event)
                 except Exception:

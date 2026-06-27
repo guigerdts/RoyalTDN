@@ -2,10 +2,17 @@
 
 Executes market orders directly on Binance via the python-binance
 client. Falls back to PaperBroker if the client library is unavailable.
+
+Rate limiting (M7)
+------------------
+All REST calls are gated by an :class:`asyncio.Semaphore` configured
+with ``max_concurrent`` (default 10) to avoid hitting Binance API rate
+limits.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -41,6 +48,7 @@ class BinanceBroker:
         api_key: str,
         api_secret: str,
         testnet: bool = True,
+        max_concurrent: int = 10,
     ) -> None:
         """Initialise the Binance broker.
 
@@ -48,11 +56,15 @@ class BinanceBroker:
             api_key: Binance API key.
             api_secret: Binance API secret.
             testnet: If True (default), connect to Binance testnet.
+            max_concurrent: Max concurrent REST requests (default 10).
+                Binance standard accounts allow ~1200 weight/min; each
+                call typically costs 1–10 weight.
         """
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
         self._bus: EventBus | None = None
+        self._rate_limiter: asyncio.Semaphore = asyncio.Semaphore(max_concurrent)
 
         if _BINANCE_AVAILABLE:
             self._client = Client(api_key, api_secret, testnet=testnet)
@@ -111,17 +123,18 @@ class BinanceBroker:
         # Estimate quantity from capital (simplified — user should
         # pass a pre-calculated qty via signal for production)
         # Here we use the signal's price as a rough quote
-        qty = self._estimate_qty(symbol, side, sizing, price)
+        qty = await self._estimate_qty(symbol, side, sizing, price)
         if qty <= 0:
             return {"status": "error", "reason": f"Estimated qty <= 0 for {symbol}"}
 
         try:
-            result = self._client.create_order(
-                symbol=symbol,
-                side=side,
-                type=OrderType.MARKET,
-                quantity=qty,
-            )
+            async with self._rate_limiter:
+                result = self._client.create_order(
+                    symbol=symbol,
+                    side=side,
+                    type=OrderType.MARKET,
+                    quantity=qty,
+                )
             logger.info(
                 "Live {} {} {} — order_id={}",
                 side, qty, symbol, result.get("orderId", "unknown"),
@@ -176,7 +189,7 @@ class BinanceBroker:
             f"Cannot parse symbol '{symbol}': no known quote suffix found"
         )
 
-    def _estimate_qty(
+    async def _estimate_qty(
         self,
         symbol: str,
         side: Any,
@@ -184,6 +197,8 @@ class BinanceBroker:
         price: float,
     ) -> float:
         """Estimate order quantity from available balance.
+
+        Rate-limited via ``self._rate_limiter`` (M7).
 
         Args:
             symbol: Trading pair.
@@ -198,12 +213,14 @@ class BinanceBroker:
             base_asset, quote_asset = self._parse_symbol(symbol)
             if side == Side.BUY:
                 # Use quote asset balance (e.g. USDT)
-                balance = self._client.get_asset_balance(asset=quote_asset)
+                async with self._rate_limiter:
+                    balance = self._client.get_asset_balance(asset=quote_asset)
                 available = float(balance["free"]) if balance else 0.0
                 qty = (available * sizing) / price
             else:
                 # Use base asset balance (e.g. BTC)
-                balance = self._client.get_asset_balance(asset=base_asset)
+                async with self._rate_limiter:
+                    balance = self._client.get_asset_balance(asset=base_asset)
                 available = float(balance["free"]) if balance else 0.0
                 qty = available * sizing
 

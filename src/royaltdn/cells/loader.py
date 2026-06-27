@@ -85,6 +85,78 @@ def _expand_strategy_config(config: dict) -> list[dict]:
     return result
 
 
+def _load_cells_from_docs(
+    documents: list[Any],
+    inference_engine: Any,
+    source_name: str,
+) -> list[Cell]:
+    """Parse a list of YAML documents into Cell objects.
+
+    Each cell is tagged with ``_source_file`` so the :class:`HotReloader
+    <royaltdn.core.hot_reload.HotReloader>` can swap cells
+    granularly per file (M6).
+
+    Args:
+        documents: Parsed YAML documents from ``yaml.safe_load_all``.
+        inference_engine: Shared InferenceEngine for new cells.
+        source_name: Human-readable source name (file name) for logging.
+
+    Returns:
+        List of Cell instances.
+    """
+    cells: list[Cell] = []
+    loaded = 0
+
+    for doc in documents:
+        if doc is None:
+            continue
+        if isinstance(doc, dict):
+            for expanded in _expand_strategy_config(doc):
+                expanded["_source_file"] = source_name
+                cell = Cell(expanded, inference_engine=inference_engine)
+                cells.append(cell)
+                logger.info("Celula cargada: {} ({}) desde {}", cell.name, cell.symbol, source_name)
+                loaded += 1
+        elif isinstance(doc, list):
+            for item in doc:
+                if isinstance(item, dict):
+                    for expanded in _expand_strategy_config(item):
+                        expanded["_source_file"] = source_name
+                        cell = Cell(expanded, inference_engine=inference_engine)
+                        cells.append(cell)
+                        logger.info("Celula cargada: {} ({}) desde {}", cell.name, cell.symbol, source_name)
+                        loaded += 1
+                else:
+                    logger.warning("Elemento no-dict ignorado en {}: {}", source_name, type(item).__name__)
+        else:
+            logger.warning("Documento de tipo {} ignorado en {}", type(doc).__name__, source_name)
+
+    if loaded == 0:
+        logger.warning("{} — no se cargaron celulas", source_name)
+
+    return cells
+
+
+def load_cells_from_file(yaml_path: Path, inference_engine: Any) -> list[Cell]:
+    """Load cell definitions from a single YAML file.
+
+    Args:
+        yaml_path: Path to the ``.yaml`` strategy file.
+        inference_engine: Shared InferenceEngine for new cells.
+
+    Returns:
+        List of Cell instances parsed from the file.
+    """
+    try:
+        with open(yaml_path) as f:
+            documents = list(yaml.safe_load_all(f))
+    except Exception:
+        logger.exception("Error leyendo {} — se salta", yaml_path)
+        return []
+
+    return _load_cells_from_docs(documents, inference_engine, yaml_path.name)
+
+
 def load_cells(
     strategies_dir: str,
     inference_engine: Any,
@@ -102,37 +174,7 @@ def load_cells(
         return cells
 
     for yaml_path in sorted(dir_path.glob("*.yaml")):
-        try:
-            with open(yaml_path) as f:
-                documents = list(yaml.safe_load_all(f))
-        except Exception:
-            logger.exception("Error leyendo {} — se salta", yaml_path)
-            continue
-
-        loaded = 0
-        for doc in documents:
-            if doc is None:
-                continue  # skip empty documents
-            if isinstance(doc, dict):
-                for expanded in _expand_strategy_config(doc):
-                    cell = Cell(expanded, inference_engine=inference_engine)
-                    cells.append(cell)
-                    logger.info("Celula cargada: {} ({}) desde {}", cell.name, cell.symbol, yaml_path.name)
-                    loaded += 1
-            elif isinstance(doc, list):
-                for item in doc:
-                    if isinstance(item, dict):
-                        for expanded in _expand_strategy_config(item):
-                            cell = Cell(expanded, inference_engine=inference_engine)
-                            cells.append(cell)
-                            logger.info("Celula cargada: {} ({}) desde {}", cell.name, cell.symbol, yaml_path.name)
-                            loaded += 1
-                    else:
-                        logger.warning("Elemento no-dict ignorado en {}: {}", yaml_path.name, type(item).__name__)
-            else:
-                logger.warning("Documento de tipo {} ignorado en {}", type(doc).__name__, yaml_path.name)
-
-        if loaded == 0:
-            logger.warning("{} — no se cargaron celulas", yaml_path.name)
+        file_cells = load_cells_from_file(yaml_path, inference_engine)
+        cells.extend(file_cells)
 
     return cells
