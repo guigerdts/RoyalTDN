@@ -154,6 +154,7 @@ async def main():
 
     # Engine
     trade_tracker = TradeTracker()
+    risk_manager._trade_tracker = trade_tracker  # enable cell performance eviction
     engine = EventEngine(clock, bus, risk_manager, broker, journal=journal, trade_tracker=trade_tracker)
 
     # Cargar celulas desde YAML

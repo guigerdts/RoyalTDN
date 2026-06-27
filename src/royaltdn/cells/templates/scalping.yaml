@@ -33,10 +33,10 @@ short_entry:
 exit:
 - type: stop_loss
   params:
-    atr_multiplier: 4.7
+    pct: 0.35
 - type: take_profit
   params:
-    atr_multiplier: 4.9
+    pct: 0.45
 risk:
   sizing: 0.005
   max_positions: 3
@@ -70,10 +70,10 @@ short_entry:
 exit:
 - type: stop_loss
   params:
-    atr_multiplier: 1.1
+    pct: 0.30
 - type: take_profit
   params:
-    atr_multiplier: 5.1
+    pct: 1.00
 risk:
   sizing: 0.005
   max_positions: 3
@@ -99,7 +99,7 @@ short_entry:
 exit:
 - type: take_profit
   params:
-    atr_multiplier: 0.6
+    pct: 0.40
 risk:
   sizing: 0.005
   max_positions: 3
@@ -127,10 +127,10 @@ short_entry:
 exit:
 - type: stop_loss
   params:
-    atr_multiplier: 4.5
+    pct: 0.35
 - type: take_profit
   params:
-    atr_multiplier: 3.8
+    pct: 0.50
 risk:
   sizing: 0.005
   max_positions: 3

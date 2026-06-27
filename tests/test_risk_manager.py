@@ -28,7 +28,7 @@ def portfolio():
 def rm(portfolio):
     """Return a RiskManager with max 5 positions, 3% max drawdown."""
     from royaltdn.risk.manager import RiskManager
-    return RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
+    return RiskManager(portfolio, max_positions=5, max_drawdown=0.03, max_per_symbol=10)
 
 
 def _buy_signal(symbol="BTCUSDT", cell_name="test_cell", price=50000.0, sizing=0.01):
@@ -215,3 +215,98 @@ def test_buy_to_close_short_with_direction_key(rm):
     assert ("BTCUSDT", "cell_1", "short") not in rm._active_entries
     # cell_2's LONG should still be active
     assert ("BTCUSDT", "cell_2", "long") in rm._active_entries
+
+
+# ── max_per_symbol ─────────────────────────────────────────────────────────
+
+
+def test_rejection_max_per_symbol(portfolio):
+    """max_per_symbol: same symbol hits per-symbol limit."""
+    from royaltdn.risk.manager import RiskManager
+    rm_limit = RiskManager(portfolio, max_positions=10, max_per_symbol=2)
+
+    for i in range(2):
+        sig = _buy_signal(symbol="BTCUSDT", cell_name=f"cell_{i}", price=50000.0)
+        result = rm_limit.approve(sig)
+        assert result["approved"], f"Entry {i} should be approved"
+
+    # 3rd BTC entry should be rejected (max_per_symbol=2)
+    result = rm_limit.approve(_buy_signal(symbol="BTCUSDT", cell_name="cell_2"))
+    assert not result["approved"]
+    assert result["reason"] == "max_per_symbol"
+
+    # Different symbol should still work
+    result = rm_limit.approve(_buy_signal(symbol="ETHUSDT", cell_name="cell_3"))
+    assert result["approved"]
+
+
+def test_max_per_symbol_mixed_directions(portfolio):
+    """max_per_symbol counts both long and short for the same symbol."""
+    from royaltdn.risk.manager import RiskManager
+    rm_limit = RiskManager(portfolio, max_positions=10, max_per_symbol=2)
+
+    rm_limit.approve(_buy_signal(symbol="BTCUSDT", cell_name="cell_0"))
+    rm_limit.approve(_short_signal(symbol="BTCUSDT", cell_name="cell_1"))
+
+    # 3rd BTC entry (any direction) should be rejected
+    result = rm_limit.approve(_buy_signal(symbol="BTCUSDT", cell_name="cell_2"))
+    assert not result["approved"]
+    assert result["reason"] == "max_per_symbol"
+
+
+# ── Cell performance eviction ──────────────────────────────────────────────
+
+
+def _mock_trade_tracker(perf: dict[str, float]) -> MagicMock:
+    """Return a TradeTracker mock with per_cell_stats for the given cells.
+
+    perf mapping: cell_name -> win_rate
+    """
+    tt = MagicMock()
+    stats = {
+        name: {"win_rate": wr, "total_trades": 10.0, "total_pnl": 100.0, "avg_pnl": 10.0}
+        for name, wr in perf.items()
+    }
+    tt.per_cell_stats.return_value = stats
+    return tt
+
+
+def test_eviction_replaces_worst_cell(portfolio):
+    """When max_positions reached, a high-win-rate cell evicts the lowest."""
+    from royaltdn.risk.manager import RiskManager
+
+    tt = _mock_trade_tracker({"good_cell": 0.80, "bad_cell": 0.20, "best_cell": 0.90})
+    rm = RiskManager(portfolio, max_positions=2, max_per_symbol=10, trade_tracker=tt)
+
+    # Fill slots with bad and good cells
+    r1 = rm.approve(_buy_signal(symbol="BTCUSDT", cell_name="bad_cell"))
+    assert r1["approved"]
+    r2 = rm.approve(_buy_signal(symbol="ETHUSDT", cell_name="good_cell"))
+    assert r2["approved"]
+
+    # best_cell (0.90) should evict bad_cell (0.20)
+    r3 = rm.approve(_buy_signal(symbol="SOLUSDT", cell_name="best_cell"))
+    assert r3["approved"]
+    assert "evicted" in r3
+    assert r3["evicted"]["cell_name"] == "bad_cell"
+
+    # bad_cell should no longer be active
+    assert ("BTCUSDT", "bad_cell", "long") not in rm._active_entries
+    # best_cell should be active
+    assert ("SOLUSDT", "best_cell", "long") in rm._active_entries
+
+
+def test_eviction_not_for_equal_or_worse_cell(portfolio):
+    """A cell with lower win rate does NOT evict a higher-performing one."""
+    from royaltdn.risk.manager import RiskManager
+
+    tt = _mock_trade_tracker({"good_cell": 0.80, "bad_cell": 0.20, "worst_cell": 0.10})
+    rm = RiskManager(portfolio, max_positions=2, max_per_symbol=10, trade_tracker=tt)
+
+    rm.approve(_buy_signal(symbol="BTCUSDT", cell_name="good_cell"))
+    rm.approve(_buy_signal(symbol="ETHUSDT", cell_name="bad_cell"))
+
+    # worst_cell (0.10) should NOT evict good_cell (0.80)
+    result = rm.approve(_buy_signal(symbol="SOLUSDT", cell_name="worst_cell"))
+    assert not result["approved"]
+    assert result["reason"] == "max_positions"

@@ -174,6 +174,42 @@ class EventEngine:
                 # would trap the cell permanently.
                 continue
 
+            # ── Eviction handling ──────────────────────────────────────────
+            # When the RiskManager evicted a low-performing cell to make room
+            # for this signal, we must close the evicted position first.
+            evicted = approved.get("evicted")
+            if evicted is not None:
+                evict_sym = evicted.get("symbol", "")
+                evict_cell = evicted.get("cell_name", "")
+                evict_dir = evicted.get("direction", "long")
+                evict_qty = evicted.get("qty", 0.0)
+
+                # Build a close order: SELL for long, BUY for short
+                evict_action = "SELL" if evict_dir == "long" else "BUY"
+                evict_order: dict[str, Any] = {
+                    "symbol": evict_sym,
+                    "action": evict_action,
+                    "qty": evict_qty,
+                    "price": approved.get("price", 0.0),
+                    "cell_name": evict_cell,
+                }
+                try:
+                    evict_result = await self.execution_broker.submit_order(evict_order)
+                    if evict_result and evict_result.get("status") in ("filled", "complete", "closed"):
+                        logger.info(
+                            "EVICT: {} {} {} qty={} para hacer espacio a {}",
+                            evict_action, evict_sym, evict_cell, evict_qty, cell_name,
+                        )
+                        if self.journal is not None:
+                            await self.journal.position_closed(
+                                evict_sym, 0.0,
+                                self.risk_manager.portfolio.capital,
+                                direction=evict_dir,
+                                trade_id=_trade_id,
+                            )
+                except Exception:
+                    logger.exception("Error al cerrar posicion evictada")
+
             # Risk check passed — update cell state based on action.
             # BUY after risk approval: normally a long entry, BUT if the
             # signal came from an IN_SHORT exit, it's a BUY-to-close and

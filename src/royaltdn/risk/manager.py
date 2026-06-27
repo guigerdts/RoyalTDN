@@ -6,6 +6,8 @@ conditions before allowing execution.
 
 from __future__ import annotations
 
+from typing import Any
+
 from loguru import logger
 
 
@@ -30,6 +32,8 @@ class RiskManager:
         max_positions: int = 5,
         max_drawdown: float = 0.03,
         config_path: str | Path | None = None,
+        trade_tracker: Any = None,
+        max_per_symbol: int = 3,
     ) -> None:
         """Initialise the risk manager.
 
@@ -40,6 +44,12 @@ class RiskManager:
             config_path: Path to ``config.yaml``. When set, ``max_positions``
                 is re-read from the file periodically so that live changes
                 take effect without restarting the bot.
+            trade_tracker: Optional TradeTracker for per-cell performance
+                metrics. When provided and ``max_positions`` is reached,
+                cells with higher win rate can evict lower-performing ones.
+            max_per_symbol: Maximum concurrent positions per symbol across
+                all cells (default 3). Prevents a single symbol from hogging
+                all slots.
         """
         from pathlib import Path
 
@@ -49,6 +59,8 @@ class RiskManager:
         self._config_path: Path | None = Path(config_path) if config_path else None
         self._last_config_reload: float = 0.0
         self._config_reload_interval: float = 60.0  # seconds
+        self._trade_tracker = trade_tracker
+        self.max_per_symbol = max_per_symbol
 
         # Track active entries by (symbol, cell_name, direction) — 3-tuples.
         # Direction is "long" or "short" (lowercase). SHORT and BUY entries
@@ -59,6 +71,102 @@ class RiskManager:
         # own portion when multiple cells share the same symbol.
         # Key: (symbol, cell_name, direction) -> qty assigned at entry time.
         self._entry_qty: dict[tuple[str, str, str], float] = {}
+
+    def _positions_for_symbol(self, symbol: str, direction: str | None = None) -> list[tuple[str, str, str]]:
+        """Return active entries for *symbol*, optionally filtered by direction."""
+        return [
+            e for e in self._active_entries
+            if e[0] == symbol and (direction is None or e[2] == direction)
+        ]
+
+    def _find_worst_cell(self) -> tuple[str, str, str] | None:
+        """Find the active entry with the lowest win rate for eviction.
+
+        Returns the entry tuple ``(symbol, cell_name, direction)`` of the
+        worst-performing cell, or ``None`` if no performance data exists.
+        """
+        if self._trade_tracker is None:
+            return None
+        stats = self._trade_tracker.per_cell_stats()
+
+        best_evict: tuple[str, str, str] | None = None
+        worst_win_rate = float("inf")  # lower is worse → we look for minimum
+
+        for entry in self._active_entries:
+            _sym, cell_name, _dir = entry
+            cell_stats = stats.get(cell_name, {})
+            wr = cell_stats.get("win_rate", 0.5)  # default 0.5 if no trades
+            if wr < worst_win_rate:
+                worst_win_rate = wr
+                best_evict = entry
+
+        return best_evict
+
+    def _try_evict(
+        self,
+        incoming_cell: str,
+        symbol: str,
+        qty: float,
+        signal: dict[str, Any],
+        direction: str = "long",
+    ) -> dict[str, Any] | None:
+        """Try to evict the worst-performing cell to make room for *incoming_cell*.
+
+        Returns an approved signal dict with an ``"evicted"`` field when
+        eviction succeeds, or ``None`` when the incoming cell does not
+        outperform the worst active cell.
+        """
+        if self._trade_tracker is None:
+            return None
+
+        stats = self._trade_tracker.per_cell_stats()
+        incoming_wr = stats.get(incoming_cell, {}).get("win_rate", 0.5)
+
+        # Find the worst active cell among cells WITH at least one trade
+        worst_entry: tuple[str, str, str] | None = None
+        worst_wr = float("inf")
+
+        for entry in self._active_entries:
+            _sym, _cell, _dir = entry
+            wr = stats.get(_cell, {}).get("win_rate", None)
+            if wr is not None and wr < worst_wr:
+                worst_wr = wr
+                worst_entry = entry
+
+        # If no active cells have trade data yet, don't evict
+        if worst_entry is None:
+            return None
+
+        # Only evict if incoming cell is performing better
+        if incoming_wr <= worst_wr:
+            return None
+
+        # ── Evict the worst cell ──────────────────────────────────────
+        evict_sym, evict_cell, evict_dir = worst_entry
+        evict_qty = self._entry_qty.pop(worst_entry, 0.0)
+        self._active_entries.discard(worst_entry)
+
+        logger.info(
+            "RISK EVICT: {} cell={} (win_rate={:.1%}) -> {} cell={} (win_rate={:.1%})",
+            evict_cell, evict_sym, worst_wr,
+            incoming_cell, symbol, incoming_wr,
+        )
+
+        # Register incoming entry
+        self._active_entries.add((symbol, incoming_cell, direction))
+        self._entry_qty[(symbol, incoming_cell, direction)] = qty
+
+        return {
+            "approved": True,
+            **signal,
+            "qty": qty,
+            "evicted": {
+                "symbol": evict_sym,
+                "cell_name": evict_cell,
+                "direction": evict_dir,
+                "qty": evict_qty,
+            },
+        }
 
     def _reload_config_if_needed(self) -> None:
         """Re-read ``max_positions`` from ``config.yaml`` if enough time has
@@ -131,13 +239,43 @@ class RiskManager:
                 )
                 return {"approved": True, **signal}
 
-            # Normal BUY entry — position limit check
+            # ── Capital + qty calculation (needed before limits for eviction) ──
+            capital = self.portfolio.capital
+            if capital <= 0 or price <= 0:
+                logger.warning(
+                    "RISK REJECT: invalid capital/price (capital={}, price={}) — {} cell={}",
+                    capital, price, symbol, cell_name,
+                )
+                return {"approved": False, "reason": "invalid_params",
+                        "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
+
+            raw_qty = (capital * sizing) / price
+            min_qty = (capital * 0.001) / price if price > 0 else 0.0
+            qty = max(min_qty, raw_qty)
+            signal["qty"] = qty
+
+            # ── Per-symbol position limit ──────────────────────────────
+            symbol_positions = len(self._positions_for_symbol(symbol))
+            if symbol_positions >= self.max_per_symbol:
+                logger.warning(
+                    "RISK REJECT: max_per_symbol reached ({}/{}) — {} cell={}",
+                    symbol_positions, self.max_per_symbol, symbol, cell_name,
+                )
+                return {"approved": False, "reason": "max_per_symbol",
+                        "detail": f"Límite de {self.max_per_symbol} posiciones por símbolo alcanzado ({symbol}, cell={cell_name})"}
+
+            # ── Position limit with cell performance eviction ──────────
             current_positions = len(self._active_entries)
             logger.info(
                 "RiskManager: checking signal — positions={}/{} (symbol={}, cell={})",
                 current_positions, self.max_positions, symbol, cell_name,
             )
             if current_positions >= self.max_positions:
+                # Try evicting the worst-performing cell's position
+                evict = self._try_evict(cell_name, symbol, qty, signal)
+                if evict is not None:
+                    return evict
+
                 logger.warning(
                     "RISK REJECT: max_positions reached ({}/{}) — {} cell={}",
                     current_positions, self.max_positions, symbol, cell_name,
@@ -155,21 +293,6 @@ class RiskManager:
                 return {"approved": False, "reason": "drawdown",
                         "detail": f"Drawdown {drawdown:.2%} supera límite {self.max_drawdown:.2%}"}
 
-            # Calculate qty from capital * sizing / price
-            capital = self.portfolio.capital
-            if capital <= 0 or price <= 0:
-                logger.warning(
-                    "RISK REJECT: invalid capital/price (capital={}, price={}) — {} cell={}",
-                    capital, price, symbol, cell_name,
-                )
-                return {"approved": False, "reason": "invalid_params",
-                        "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
-
-            raw_qty = (capital * sizing) / price
-            min_qty = (capital * 0.001) / price if price > 0 else 0.0
-            qty = max(min_qty, raw_qty)
-            signal["qty"] = qty
-
             # Register with direction="long"
             self._active_entries.add((symbol, cell_name, "long"))
             self._entry_qty[(symbol, cell_name, "long")] = qty
@@ -181,24 +304,7 @@ class RiskManager:
 
         # ── SHORT entry ─────────────────────────────────────────────────
         elif action == "SHORT":
-            current_positions = len(self._active_entries)
-            if current_positions >= self.max_positions:
-                logger.warning(
-                    "RISK REJECT (SHORT): max_positions reached ({}/{}) — {} cell={}",
-                    current_positions, self.max_positions, symbol, cell_name,
-                )
-                return {"approved": False, "reason": "max_positions",
-                        "detail": f"Límite de {self.max_positions} posiciones alcanzado ({symbol}, cell={cell_name})"}
-
-            drawdown = self.portfolio.get_drawdown()
-            if drawdown >= self.max_drawdown:
-                logger.warning(
-                    "RISK REJECT (SHORT): drawdown limit exceeded ({:.2%} >= {:.2%}) — {} cell={}",
-                    drawdown, self.max_drawdown, symbol, cell_name,
-                )
-                return {"approved": False, "reason": "drawdown",
-                        "detail": f"Drawdown {drawdown:.2%} supera límite {self.max_drawdown:.2%}"}
-
+            # Capital + qty calculation
             capital = self.portfolio.capital
             if capital <= 0 or price <= 0:
                 return {"approved": False, "reason": "invalid_params",
@@ -208,6 +314,40 @@ class RiskManager:
             min_qty = (capital * 0.001) / price if price > 0 else 0.0
             qty = max(min_qty, raw_qty)
             signal["qty"] = qty
+
+            # Per-symbol position limit (all directions)
+            symbol_positions = len(self._positions_for_symbol(symbol))
+            if symbol_positions >= self.max_per_symbol:
+                logger.warning(
+                    "RISK REJECT (SHORT): max_per_symbol reached ({}/{}) — {} cell={}",
+                    symbol_positions, self.max_per_symbol, symbol, cell_name,
+                )
+                return {"approved": False, "reason": "max_per_symbol",
+                        "detail": f"Límite de {self.max_per_symbol} posiciones short por símbolo ({symbol}, cell={cell_name})"}
+
+            # Position limit with eviction
+            current_positions = len(self._active_entries)
+            if current_positions >= self.max_positions:
+                evict = self._try_evict(cell_name, symbol, qty, signal, direction="short")
+                if evict is not None:
+                    return evict
+
+                logger.warning(
+                    "RISK REJECT (SHORT): max_positions reached ({}/{}) — {} cell={}",
+                    current_positions, self.max_positions, symbol, cell_name,
+                )
+                return {"approved": False, "reason": "max_positions",
+                        "detail": f"Límite de {self.max_positions} posiciones alcanzado ({symbol}, cell={cell_name})"}
+
+            # Drawdown check
+            drawdown = self.portfolio.get_drawdown()
+            if drawdown >= self.max_drawdown:
+                logger.warning(
+                    "RISK REJECT (SHORT): drawdown limit exceeded ({:.2%} >= {:.2%}) — {} cell={}",
+                    drawdown, self.max_drawdown, symbol, cell_name,
+                )
+                return {"approved": False, "reason": "drawdown",
+                        "detail": f"Drawdown {drawdown:.2%} supera límite {self.max_drawdown:.2%}"}
 
             self._active_entries.add((symbol, cell_name, "short"))
             self._entry_qty[(symbol, cell_name, "short")] = qty

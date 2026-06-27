@@ -191,3 +191,26 @@ class TradeTracker:
         if not durations:
             return 0.0
         return mean(durations)
+
+    def per_cell_stats(self) -> dict[str, dict[str, float]]:
+        """Per-cell performance summary for cell prioritisation.
+
+        Returns a dict keyed by ``strategy_name`` with:
+        ``win_rate``, ``total_trades``, ``total_pnl``, ``avg_pnl``.
+        """
+        from collections import defaultdict
+        by_cell: dict[str, list[Trade]] = defaultdict(list)
+        for t in self._trades:
+            by_cell[t.strategy_name].append(t)
+
+        result: dict[str, dict[str, float]] = {}
+        for cell, trades in by_cell.items():
+            wins = sum(1 for t in trades if t.pnl > 0.0)
+            pnls = [t.pnl for t in trades]
+            result[cell] = {
+                "win_rate": wins / len(trades) if trades else 0.0,
+                "total_trades": float(len(trades)),
+                "total_pnl": sum(pnls),
+                "avg_pnl": mean(pnls) if pnls else 0.0,
+            }
+        return result
