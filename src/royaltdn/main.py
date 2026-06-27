@@ -14,20 +14,19 @@ from loguru import logger
 
 load_dotenv()
 
-# Asegurar que el directorio raiz esta en sys.path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from core.bus import EventBus
-from core.clock import RealClock
-from core.engine import EventEngine
-from core.journal import Journal
-from core.registry import CellRegistry
-from inference.engine import InferenceEngine
-from cells.loader import load_cells
-from cells.base import Cell
-from risk.portfolio import Portfolio
-from risk.manager import RiskManager
-from execution.paper_broker import PaperBroker
+from royaltdn.core.bus import EventBus
+from royaltdn.core.clock import RealClock
+from royaltdn.core.engine import EventEngine
+from royaltdn.core.journal import Journal
+from royaltdn.core.registry import CellRegistry
+from royaltdn.core.trade_tracker import TradeTracker
+from royaltdn.inference.engine import InferenceEngine
+from royaltdn.cells.loader import load_cells
+from royaltdn.cells.base import Cell
+from royaltdn.risk.portfolio import Portfolio
+from royaltdn.risk.manager import RiskManager
+from royaltdn.execution.paper_broker import PaperBroker
+from royaltdn.db import init_pool
 
 
 def parse_args() -> argparse.Namespace:
@@ -122,23 +121,35 @@ async def main():
     broker_type = config.get("broker", "paper")
     if broker_type == "binance":
         try:
-            from execution.binance_broker import BinanceBroker
+            from royaltdn.execution.binance_broker import BinanceBroker
             api_key = os.getenv("BINANCE_API_KEY", "")
             api_secret = os.getenv("BINANCE_SECRET_KEY", "")
             broker = BinanceBroker(api_key, api_secret, testnet=config.get("testnet", True))
         except Exception as e:
             logger.warning("Binance broker no disponible ({}), usando paper", e)
-            broker = PaperBroker(initial_capital=config["initial_capital"])
+            broker = PaperBroker(initial_capital=config["initial_capital"], portfolio=portfolio)
     else:
-        broker = PaperBroker(initial_capital=config["initial_capital"])
+        broker = PaperBroker(initial_capital=config["initial_capital"], portfolio=portfolio)
     
     broker.set_bus(bus)
+
+    # ── TimescaleDB persistence ──────────────────────────────────────────────
+    logger.info("Inicializando conexion a TimescaleDB...")
+    repo = await init_pool()
+    if repo.is_connected:
+        logger.info("TimescaleDB conectado — persistencia activa")
+    else:
+        logger.warning(
+            "TimescaleDB no disponible — persistencia desactivada. "
+            "El bot seguira funcionando normalmente."
+        )
 
     # Journal estructurado
     journal = Journal(log_path="logs/trading.log", bus=bus)
 
     # Engine
-    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal)
+    trade_tracker = TradeTracker()
+    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal, trade_tracker=trade_tracker)
 
     # Cargar celulas desde YAML
     strategies_dir = Path(__file__).parent / config["strategies_dir"]
@@ -151,36 +162,40 @@ async def main():
     logger.info("CellMesh iniciado — {} celulas, {} simbolos, broker={}",
                 len(cells), len(config["symbols"]), broker_type)
 
+    # ── Background task registry (track all tasks for cleanup) ──────────
+    _background_tasks: list[asyncio.Task] = []
+
     # Iniciar hot-reload watcher (siempre activo)
-    from core.hot_reload import HotReloader
+    from royaltdn.core.hot_reload import HotReloader
     reloader = HotReloader(
         strategies_dir=str(strategies_dir),
         engine=engine,
         inference_engine=inference_engine,
         poll_interval=60,
     )
-    asyncio.create_task(reloader.watch())
+    _background_tasks.append(asyncio.create_task(reloader.watch()))
 
     # Iniciar feed de datos
-    from data.binance_feed import BinanceFeed
+    from royaltdn.data.binance_feed import BinanceFeed
     feed = BinanceFeed(config["symbols"], bus)
-    asyncio.create_task(feed.start())
+    _background_tasks.append(asyncio.create_task(feed.start()))
 
     # Iniciar dashboard
-    from monitoring.dashboard import Dashboard
-    dashboard = Dashboard(bus, portfolio)
-    asyncio.create_task(dashboard.run())
+    from royaltdn.monitoring.dashboard import Dashboard
+    dashboard = Dashboard(portfolio, trade_tracker, engine)
+    _background_tasks.append(asyncio.create_task(dashboard.run()))
 
     # Iniciar alertas Telegram (si configuradas)
+    telegram_alerts = None
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if telegram_token and telegram_chat_id:
-        from monitoring.telegram_alerts import TelegramAlerts
+        from royaltdn.monitoring.telegram_alerts import TelegramAlerts
         telegram_alerts = TelegramAlerts(
             bus, telegram_token, telegram_chat_id,
             portfolio=portfolio,
         )
-        asyncio.create_task(telegram_alerts.start())
+        _background_tasks.append(asyncio.create_task(telegram_alerts.start()))
     else:
         logger.warning(
             "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID no configurados "
@@ -196,11 +211,11 @@ async def main():
 
         logger.info("Optimizacion periodica activada — cada {} dia(s), metrica={}",
                      interval_days, opt_metric)
-        asyncio.create_task(_optimization_scheduler(
+        _background_tasks.append(asyncio.create_task(_optimization_scheduler(
             interval_days=interval_days,
             metric=opt_metric,
             trials=opt_trials,
-        ))
+        )))
     else:
         logger.debug("Optimizacion periodica desactivada (usar --optimize para activar)")
 
@@ -213,6 +228,13 @@ async def main():
         pass
     finally:
         engine.stop()
+        # Cancel all background tasks (B6)
+        for task in _background_tasks:
+            task.cancel()
+        if _background_tasks:
+            await asyncio.gather(*_background_tasks, return_exceptions=True)
+        if telegram_alerts:
+            await telegram_alerts.stop()
         logger.info("CellMesh detenido.")
 
 

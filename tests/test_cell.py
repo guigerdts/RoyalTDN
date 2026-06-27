@@ -93,7 +93,7 @@ class TestCell(unittest.TestCase):
         self.graph_mock.evaluate.return_value = False
 
         with patch("inference.graph.build_graph", return_value=self.graph_mock):
-            from cells.base import Cell
+            from royaltdn.cells.base import Cell
             self.cell = Cell(self.config, inference_engine=self.mock_engine)
 
     def tearDown(self):
@@ -113,7 +113,7 @@ class TestCell(unittest.TestCase):
     def test_init_defaults(self):
         """Cell should use sensible defaults for missing config keys."""
         with patch("inference.graph.build_graph", return_value=self.graph_mock):
-            from cells.base import Cell
+            from royaltdn.cells.base import Cell
             minimal = Cell({"name": "minimal", "symbol": "ETHUSDT"})
         self.assertEqual(minimal.name, "minimal")
         self.assertEqual(minimal.symbol, "ETHUSDT")
@@ -192,7 +192,7 @@ class TestCell(unittest.TestCase):
     def test_entry_no_inference_engine(self):
         """Cell without inference engine should never generate signals."""
         with patch("inference.graph.build_graph"):
-            from cells.base import Cell
+            from royaltdn.cells.base import Cell
             no_engine_cell = Cell(self.config, inference_engine=None)
 
         no_engine_cell.bars = _make_bars(25)

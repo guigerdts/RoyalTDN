@@ -22,7 +22,7 @@ import pytest
 @pytest.fixture
 def tracker() -> "TradeTracker":
     """Return a fresh TradeTracker with default capacity (100)."""
-    from core.trade_tracker import TradeTracker
+    from royaltdn.core.trade_tracker import TradeTracker
     return TradeTracker()
 
 
@@ -31,7 +31,7 @@ def tracker() -> "TradeTracker":
 
 def test_trade_dataclass_defaults() -> None:
     """Trade fields should have sensible defaults."""
-    from core.trade_tracker import Trade
+    from royaltdn.core.trade_tracker import Trade
 
     t = Trade(symbol="BTCUSDT")
     assert t.symbol == "BTCUSDT"
@@ -95,14 +95,14 @@ def test_record_trade_zero_cost_basis(tracker: "TradeTracker") -> None:
 
 def test_capacity_max_trades_100() -> None:
     """Default max_trades should be 100."""
-    from core.trade_tracker import TradeTracker
+    from royaltdn.core.trade_tracker import TradeTracker
     tt = TradeTracker()
     assert tt.max_trades == 100
 
 
 def test_custom_max_trades() -> None:
     """Should accept custom max_trades."""
-    from core.trade_tracker import TradeTracker
+    from royaltdn.core.trade_tracker import TradeTracker
     tt = TradeTracker(max_trades=5)
     assert tt.max_trades == 5
 

@@ -4,7 +4,9 @@ Acumula eventos de trading (signal → approved → executed → position)
 agrupados por ``trade_id`` y envía un único mensaje por operación
 con el detalle completo y el estado actual del portfolio.
 
-Los eventos ``rejected`` se envían inmediatamente (el ciclo termina ahí).
+Los eventos ``rejected`` y ``position.closed`` se agrupan en un buffer
+interno y se envían cada 60s como mensajes resumidos para evitar
+límites de tasa (429) de la API de Telegram.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ class TelegramAlerts:
         bot_token: str,
         chat_id: str,
         portfolio: Any = None,
+        batch_interval: int = 60,
     ) -> None:
         """Initialise the Telegram alert system.
 
@@ -40,6 +43,7 @@ class TelegramAlerts:
             bot_token: Telegram Bot API token.
             chat_id: Numeric chat or channel ID.
             portfolio: Optional Portfolio instance for live metrics.
+            batch_interval: Seconds between batched message flushes (default 60).
         """
         self._token = bot_token
         self._chat_id = chat_id
@@ -51,6 +55,11 @@ class TelegramAlerts:
         self._pending: dict[str, dict[str, Any]] = {}
         self._last_trade_ts: float = 0.0
 
+        # Batch buffer
+        self._pending_events: list[dict] = []
+        self._batch_interval = batch_interval
+        self._flush_task: asyncio.Task | None = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -60,25 +69,36 @@ class TelegramAlerts:
         import httpx
 
         self._running = True
+        self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info(
             "TelegramAlerts iniciado — chat_id={}",
             self._chat_id,
         )
 
-        async with httpx.AsyncClient() as client:
-            while self._running:
-                try:
-                    event = await asyncio.wait_for(
-                        self._queue.get(), timeout=1.0,
-                    )
-                except asyncio.TimeoutError:
-                    continue
+        try:
+            async with httpx.AsyncClient() as client:
+                while self._running:
+                    try:
+                        event = await asyncio.wait_for(
+                            self._queue.get(), timeout=1.0,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
 
-                await self._handle_event(client, event)
+                    await self._handle_event(client, event)
+        finally:
+            if self._flush_task and not self._flush_task.done():
+                self._flush_task.cancel()
 
-    def stop(self) -> None:
-        """Gracefully stop the alert loop."""
+    async def stop(self) -> None:
+        """Gracefully stop the alert loop — flush remaining events first."""
         self._running = False
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            await self._flush(client)
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
         logger.info("TelegramAlerts detenido")
 
     # ------------------------------------------------------------------
@@ -86,14 +106,14 @@ class TelegramAlerts:
     # ------------------------------------------------------------------
 
     async def _handle_event(self, client: Any, event: dict[str, Any]) -> None:
-        """Route a single event to the accumulation or send logic."""
+        """Route a single event — qualifying types append to batch buffer."""
         etype = event.get("type", "")
         trade_id: str = event.get("trade_id", "") or ""
 
         if etype not in ("signal", "approved", "rejected", "executed", "position"):
             return
 
-        # ── Signal (inicia acumulación) ──────────────────────────────
+        # ── Signal — store context, no message ───────────────────────
         if etype == "signal":
             if trade_id:
                 self._pending[trade_id] = {
@@ -102,12 +122,10 @@ class TelegramAlerts:
                     "price": event.get("price", 0.0),
                     "strategy": event.get("strategy", "?"),
                 }
-            else:
-                # Sin trade_id (legacy) — mensaje individual
-                await self._send(client, self._fmt_single(event))
+            # No trade_id: silently ignored (legacy, not batch-qualifying)
             return
 
-        # ── Approved ─────────────────────────────────────────────────
+        # ── Approved — update context, no message ────────────────────
         if etype == "approved":
             if trade_id and trade_id in self._pending:
                 self._pending[trade_id].update({
@@ -116,14 +134,14 @@ class TelegramAlerts:
                 })
             return
 
-        # ── Rejected (cierre inmediato) ──────────────────────────────
+        # ── Rejected — cleanup pending, buffer for batch ─────────────
         if etype == "rejected":
-            pending = self._pending.pop(trade_id, {}) if trade_id else {}
-            msg = self._fmt_rejected(event, pending)
-            await self._send(client, msg)
+            if trade_id:
+                self._pending.pop(trade_id, None)
+            self._pending_events.append(event)
             return
 
-        # ── Executed ─────────────────────────────────────────────────
+        # ── Executed — update context, buffer for batch ──────────────
         if etype == "executed":
             if trade_id and trade_id in self._pending:
                 self._pending[trade_id].update({
@@ -131,28 +149,48 @@ class TelegramAlerts:
                     "qty": event.get("qty", 0),
                     "exec_price": event.get("price", 0.0),
                 })
+            self._pending_events.append(event)
             return
 
-        # ── Position (cierre del ciclo) ──────────────────────────────
+        # ── Position — buffer closed, silently cleanup opened ────────
         if etype == "position":
             status = event.get("status", "")
 
-            if not trade_id:
-                await self._send(client, self._fmt_single(event))
+            if status == "opened":
+                # Cleanup pending context, no message sent
+                if trade_id:
+                    self._pending.pop(trade_id, None)
                 return
 
-            if status == "opened":
-                pending = self._pending.pop(trade_id, {})
-                if pending:
-                    pending["capital"] = event.get("capital", 0.0)
-                    self._last_trade_ts = time.time()
-                    msg = self._fmt_trade(pending)
-                    await self._send(client, msg)
-
-            elif status == "closed":
+            if status == "closed":
                 self._last_trade_ts = time.time()
-                msg = self._fmt_close(event)
-                await self._send(client, msg)
+                self._pending_events.append(event)
+                return
+
+    # ------------------------------------------------------------------
+    # Batch flush
+    # ------------------------------------------------------------------
+
+    async def _flush_loop(self) -> None:
+        """Background task: drain _pending_events every batch_interval."""
+        import httpx
+
+        while self._running:
+            await asyncio.sleep(self._batch_interval)
+            if not self._pending_events:
+                continue
+            async with httpx.AsyncClient() as client:
+                await self._flush(client)
+
+    async def _flush(self, client: Any) -> None:
+        """Drain the buffer, build grouped message, and send."""
+        if not self._pending_events:
+            return
+        message = self._build_batch_message()
+        self._pending_events.clear()
+        chunks = self._split_message(message)
+        for chunk in chunks:
+            await self._send(client, chunk)
 
     # ------------------------------------------------------------------
     # Message builders
@@ -287,6 +325,182 @@ class TelegramAlerts:
                     f" — Capital: <b>${capital:,.2f}</b>"
                 )
         return None
+
+    # ------------------------------------------------------------------
+    # Batch message builder
+    # ------------------------------------------------------------------
+
+    def _build_batch_message(self) -> str:
+        """Build a grouped summary from _pending_events.
+
+        Groups events by (type, symbol), builds per-type sections
+        (Ejecuciones / Rechazos / Cierres), and appends bot stats footer.
+
+        Returns:
+            Formatted HTML message string, or empty string if no events.
+        """
+        events = self._pending_events
+        if not events:
+            return ""
+
+        total = len(events)
+
+        # Categorise events
+        executed: list[dict] = []
+        rejected_groups: dict[tuple[str, str], list[dict]] = {}
+        closed: list[dict] = []
+
+        for ev in events:
+            etype = ev.get("type", "")
+            symbol = ev.get("symbol", "?")
+
+            if etype == "executed":
+                executed.append(ev)
+            elif etype == "rejected":
+                reason = ev.get("reason", "risk_rejected")
+                key = (symbol, reason)
+                if key not in rejected_groups:
+                    rejected_groups[key] = []
+                rejected_groups[key].append(ev)
+            elif etype == "position" and ev.get("status") == "closed":
+                closed.append(ev)
+
+        # Single-event: shorter format without section headers
+        if total == 1:
+            return self._single_event_line(
+                executed, rejected_groups, closed,
+            )
+
+        # ── Multi-event: full grouped message ───────────────────────
+        lines = ["<b>\U0001f4ca RESUMEN DEL \u00daLTIMO MINUTO</b>"]
+
+        if executed:
+            lines.append("")
+            lines.append("<b>\u2705 Ejecuciones:</b>")
+            for ev in executed:
+                action = ev.get("action", "")
+                symbol = ev.get("symbol", "?")
+                qty = float(ev.get("qty", 0))
+                qty_s = f"{qty:,.4f}" if qty < 1 else f"{qty:,.2f}"
+                lines.append(
+                    f'<b>{action}</b> {qty_s} <code>{symbol}</code>'
+                    f' @ <b>${ev.get("price", 0):,.2f}</b>'
+                )
+
+        if rejected_groups:
+            lines.append("")
+            lines.append("<b>\u274c Rechazos:</b>")
+            for (symbol, reason), evs in rejected_groups.items():
+                count = len(evs)
+                if count > 1:
+                    lines.append(
+                        f'{count}x <code>{symbol}</code>'
+                        f' \u2014 {reason}'
+                    )
+                else:
+                    action = evs[0].get("action", "")
+                    lines.append(
+                        f'<b>{action}</b> <code>{symbol}</code>'
+                        f' \u2014 {reason}'
+                    )
+
+        if closed:
+            lines.append("")
+            lines.append("<b>\U0001f534 Cierres:</b>")
+            for ev in closed:
+                symbol = ev.get("symbol", "?")
+                pnl = ev.get("pnl", 0.0)
+                sign = "+" if pnl >= 0 else ""
+                lines.append(
+                    f'<code>{symbol}</code> \u2014 PnL:'
+                    f' <b>{sign}${pnl:,.2f}</b>'
+                )
+
+        # Footer
+        lines.append("")
+        lines.append("\u2014\u2014\u2014")
+        lines.extend(self._bot_stats_lines())
+
+        return "\n".join(lines)
+
+    def _single_event_line(
+        self,
+        executed: list[dict],
+        rejected_groups: dict[tuple[str, str], list[dict]],
+        closed: list[dict],
+    ) -> str:
+        """Format a single event message (no grouping needed)."""
+        lines: list[str] = []
+
+        if executed:
+            ev = executed[0]
+            action = ev.get("action", "")
+            symbol = ev.get("symbol", "?")
+            qty = float(ev.get("qty", 0))
+            qty_s = f"{qty:,.4f}" if qty < 1 else f"{qty:,.2f}"
+            lines.append(
+                f'<b>{action}</b> {qty_s} <code>{symbol}</code>'
+                f' @ <b>${ev.get("price", 0):,.2f}</b>'
+            )
+        elif rejected_groups:
+            (symbol, reason), evs = next(iter(rejected_groups.items()))
+            action = evs[0].get("action", "")
+            lines.append(
+                f'<b>{action}</b> <code>{symbol}</code>'
+                f' \u2014 {reason}'
+            )
+        elif closed:
+            ev = closed[0]
+            symbol = ev.get("symbol", "?")
+            pnl = ev.get("pnl", 0.0)
+            sign = "+" if pnl >= 0 else ""
+            lines.append(
+                f'<code>{symbol}</code> \u2014 PnL:'
+                f' <b>{sign}${pnl:,.2f}</b>'
+            )
+
+        # Footer
+        lines.append("")
+        lines.append("\u2014\u2014\u2014")
+        lines.extend(self._bot_stats_lines())
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _split_message(text: str, max_len: int = 4000) -> list[str]:
+        """Split a message into chunks <= max_len at newline boundaries.
+
+        Args:
+            text: The message to split.
+            max_len: Maximum length per chunk (default 4000).
+
+        Returns:
+            List of message chunks, each <= max_len chars.
+        """
+        if not text or len(text) <= max_len:
+            return [text] if text else []
+
+        lines = text.split("\n")
+        chunks: list[str] = []
+        start = 0
+        current_len = 0
+
+        for i, line in enumerate(lines):
+            line_len = len(line)
+            # +1 for the newline separator if not first line in chunk
+            sep = 1 if i > start else 0
+
+            if current_len + sep + line_len > max_len and i > start:
+                chunks.append("\n".join(lines[start:i]))
+                start = i
+                current_len = line_len
+            else:
+                current_len += sep + line_len
+
+        if start < len(lines):
+            chunks.append("\n".join(lines[start:]))
+
+        return chunks
 
     # ------------------------------------------------------------------
     # Bot metrics
