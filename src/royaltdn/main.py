@@ -14,9 +14,6 @@ from loguru import logger
 
 load_dotenv()
 
-# Add src/ to sys.path for development runs
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from royaltdn.core.bus import EventBus
 from royaltdn.core.clock import RealClock
 from royaltdn.core.engine import EventEngine
@@ -196,9 +193,9 @@ async def main():
         from royaltdn.monitoring.telegram_alerts import TelegramAlerts
         telegram_alerts = TelegramAlerts(
             bus, telegram_token, telegram_chat_id,
-            portfolio=portfolio, batch_interval=60,
+            portfolio=portfolio,
         )
-        asyncio.create_task(telegram_alerts.start())
+        _background_tasks.append(asyncio.create_task(telegram_alerts.start()))
     else:
         logger.warning(
             "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID no configurados "
@@ -214,11 +211,11 @@ async def main():
 
         logger.info("Optimizacion periodica activada — cada {} dia(s), metrica={}",
                      interval_days, opt_metric)
-        asyncio.create_task(_optimization_scheduler(
+        _background_tasks.append(asyncio.create_task(_optimization_scheduler(
             interval_days=interval_days,
             metric=opt_metric,
             trials=opt_trials,
-        ))
+        )))
     else:
         logger.debug("Optimizacion periodica desactivada (usar --optimize para activar)")
 
@@ -231,8 +228,13 @@ async def main():
         pass
     finally:
         engine.stop()
+        # Cancel all background tasks (B6)
+        for task in _background_tasks:
+            task.cancel()
+        if _background_tasks:
+            await asyncio.gather(*_background_tasks, return_exceptions=True)
         if telegram_alerts:
-            telegram_alerts.stop()
+            await telegram_alerts.stop()
         logger.info("CellMesh detenido.")
 
 
