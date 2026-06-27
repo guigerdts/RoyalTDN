@@ -369,6 +369,30 @@ class EventEngine:
         except Exception:
             logger.exception("Error al actualizar precio en portfolio")
 
+    def run_batch(self, events: list[dict]) -> None:
+        """Process a batch of events synchronously (backtesting mode).
+
+        For each event, creates a fresh event loop with ``asyncio.run()``
+        so that all async processing (risk approval, broker submission,
+        journal writes) completes before returning.
+
+        Skips non-dict entries silently.
+
+        This method was specified in the M4 backtester tasks but never
+        implemented on ``EventEngine`` — the tests were written expecting
+        it. Added retroactively on 2026-06-27 during branch restructuring
+        (see architecture/merged-m1-m4-m5-telegram-chain-to-main).
+        """
+        import asyncio
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            try:
+                asyncio.run(self._process_event(event))
+            except Exception:
+                logger.exception("Error en run_batch para evento: {}", event)
+
     def stop(self) -> None:
         """Gracefully stop the event processing loop."""
         self._running = False
