@@ -7,6 +7,7 @@ signals when conditions are met.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from loguru import logger
@@ -48,6 +49,9 @@ class Cell:
         self.sizing: float = float(risk_cfg.get("sizing", 0.01))
         self.max_positions: int = int(risk_cfg.get("max_positions", 5))
 
+        # ── Position timeout (max_hold_hours) ──────────────────────────
+        self.max_hold_hours: float = float(config.get("max_hold_hours", 0))
+
         # ── Inference engine + pre-built graphs ────────────────────────
         self.config: dict[str, Any] = config
         self.inference_engine: Any = inference_engine
@@ -80,6 +84,7 @@ class Cell:
         self.bars: list[dict[str, float]] = []
         self.max_bars: int = 500
         self.entry_price: float = 0.0
+        self.entry_time: float | None = None  # time.time() when position opened
         self.position_qty: float = 0.0
         self._trailing_high: float = 0.0
         self._trailing_low: float = 0.0
@@ -91,6 +96,7 @@ class Cell:
         self.state = "IDLE"
         self.bars = []
         self.entry_price = 0.0
+        self.entry_time = None
         self.position_qty = 0.0
         self._trailing_high = 0.0
         self._trailing_low = 0.0
@@ -185,6 +191,7 @@ class Cell:
         """
         self.state = "IN_SHORT" if direction == "short" else "IN_POSITION"
         self.entry_price = price
+        self.entry_time = time.time()
         self._trailing_high = 0.0
         self._trailing_low = 0.0
         logger.info(
@@ -275,8 +282,15 @@ class Cell:
     # ── Exit logic ────────────────────────────────────────────────────
 
     def _check_exit(self, current_price: float) -> dict[str, Any] | None:
-        """Evaluate exit conditions (ATR-based stop-loss, take-profit,
-        trailing stop, or z-score).
+        """Evaluate exit conditions and position timeout.
+
+        Supports two families of exit:
+
+        * **Fixed-percentage** (``pct``) — evaluated unconditionally,
+          no ATR required. Fixes bug where ATR = 0 blocked all exits.
+        * **ATR-based** (``atr_multiplier``) — evaluated only when ATR
+          is available and non-zero.
+        * **Timeout** (``max_hold_hours``) — evaluated unconditionally.
 
         Thresholds are inverted when ``self.state == "IN_SHORT"`` so that
         take-profit triggers when the price falls and stop-loss when it
@@ -293,13 +307,22 @@ class Cell:
             return None
 
         atr = self._calc_atr()
-        if atr is None or atr == 0.0:
-            return None
-
-        atr_pct = atr / self.entry_price if self.entry_price > 0 else 0.0
+        atr_pct = (atr / self.entry_price) if (atr and self.entry_price > 0) else 0.0
+        has_atr = atr is not None and atr != 0.0
         is_short = self.state == "IN_SHORT"
 
-        # Stop-loss (supports pct and ATR modes)
+        # ── Timeout: unconditional check ───────────────────────────────
+        if self.max_hold_hours > 0 and self.entry_time is not None:
+            elapsed_hours = (time.time() - self.entry_time) / 3600.0
+            if elapsed_hours >= self.max_hold_hours:
+                logger.info(
+                    "{} {} TIMEOUT @ ${:.2f} ({:.1f}h >= {}h max)",
+                    self.symbol, self.name, current_price,
+                    elapsed_hours, self.max_hold_hours,
+                )
+                return self._exit_signal(current_price)
+
+        # ── Stop-loss (pct mode — no ATR required) ─────────────────────
         if self.exit_stop_loss_pct is not None:
             if is_short:
                 stop_price = self.entry_price * (1.0 + self.exit_stop_loss_pct)
@@ -319,7 +342,9 @@ class Cell:
                         self.exit_stop_loss_pct * 100, self.entry_price,
                     )
                     return self._exit_signal(current_price)
-        elif self.exit_stop_loss is not None:
+
+        # ── Stop-loss (ATR mode) ───────────────────────────────────────
+        elif self.exit_stop_loss is not None and has_atr:
             if is_short:
                 stop_price = self.entry_price * (1.0 + self.exit_stop_loss * atr_pct)
                 if current_price >= stop_price:
@@ -337,7 +362,7 @@ class Cell:
                     )
                     return self._exit_signal(current_price)
 
-        # Take-profit (supports pct and ATR modes)
+        # ── Take-profit (pct mode — no ATR required) ───────────────────
         if self.exit_take_profit_pct is not None:
             if is_short:
                 take_price = self.entry_price * (1.0 - self.exit_take_profit_pct)
@@ -357,7 +382,9 @@ class Cell:
                         self.exit_take_profit_pct * 100, self.entry_price,
                     )
                     return self._exit_signal(current_price)
-        elif self.exit_take_profit is not None:
+
+        # ── Take-profit (ATR mode) ─────────────────────────────────────
+        elif self.exit_take_profit is not None and has_atr:
             if is_short:
                 take_price = self.entry_price * (1.0 - self.exit_take_profit * atr_pct)
                 if current_price <= take_price:
@@ -375,7 +402,7 @@ class Cell:
                     )
                     return self._exit_signal(current_price)
 
-        # Trailing stop (supports pct and ATR modes) — direction-aware
+        # ── Trailing stop (pct mode — no ATR required) ─────────────────
         if self.exit_trailing_stop_pct is not None:
             trail_distance = self.exit_trailing_stop_pct * self.entry_price
             if is_short:
@@ -402,7 +429,9 @@ class Cell:
                     )
                     self._trailing_high = 0.0
                     return self._exit_signal(current_price)
-        elif self.exit_trailing_stop is not None:
+
+        # ── Trailing stop (ATR mode) ───────────────────────────────────
+        elif self.exit_trailing_stop is not None and has_atr:
             trail_distance = self.exit_trailing_stop * atr
             if is_short:
                 if self._trailing_low == 0.0:

@@ -7,6 +7,7 @@ symbols:
 - LINKUSDT
 symbol: BTCUSDT
 timeframe: 1m
+max_hold_hours: 4
 entry:
   logic: AND
   conditions:
@@ -43,6 +44,7 @@ risk:
 name: scalping_breakout
 symbol: SOLUSDT
 timeframe: 1m
+max_hold_hours: 4
 entry:
   logic: AND
   conditions:
@@ -71,7 +73,7 @@ exit:
     atr_multiplier: 1.1
 - type: take_profit
   params:
-    atr_multiplier: 5.1000000000000005
+    atr_multiplier: 5.1
 risk:
   sizing: 0.005
   max_positions: 3
@@ -79,6 +81,7 @@ risk:
 name: scalping_reversion
 symbol: ETHUSDT
 timeframe: 1m
+max_hold_hours: 4
 entry:
   logic: AND
   conditions:
@@ -106,6 +109,7 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - ADAUSDT
+max_hold_hours: 4
 entry:
   logic: AND
   conditions:
@@ -126,7 +130,7 @@ exit:
     atr_multiplier: 4.5
 - type: take_profit
   params:
-    atr_multiplier: 3.8000000000000003
+    atr_multiplier: 3.8
 risk:
   sizing: 0.005
   max_positions: 3
@@ -134,6 +138,7 @@ risk:
 name: scalping_spread
 symbol: LINKUSDT
 timeframe: 1m
+max_hold_hours: 4
 entry:
   logic: AND
   conditions:

@@ -3,6 +3,7 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - LINKUSDT
+max_hold_hours: 48
 entry:
   logic: AND
   conditions:
@@ -38,6 +39,7 @@ risk:
 name: swing_trend_following
 symbol: BTCUSDT
 timeframe: 1d
+max_hold_hours: 72
 entry:
   logic: AND
   conditions:
@@ -70,6 +72,7 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - SOLUSDT
+max_hold_hours: 48
 entry:
   logic: AND
   conditions:
@@ -108,6 +111,7 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - SOLUSDT
+max_hold_hours: 48
 entry:
   logic: AND
   conditions:
@@ -147,6 +151,7 @@ symbols:
 - ADAUSDT
 symbol: ADAUSDT
 timeframe: 1d
+max_hold_hours: 72
 entry:
   logic: AND
   conditions:

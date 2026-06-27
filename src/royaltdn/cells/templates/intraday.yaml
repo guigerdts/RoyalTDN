@@ -5,6 +5,7 @@ symbols:
 - SOLUSDT
 symbol: ETHUSDT
 timeframe: 5m
+max_hold_hours: 8
 entry:
   logic: AND
   conditions:
@@ -36,6 +37,7 @@ risk:
 name: intraday_vwap
 symbol: BTCUSDT
 timeframe: 30m
+max_hold_hours: 8
 entry:
   logic: AND
   conditions:
@@ -59,6 +61,7 @@ risk:
 name: intraday_volume_breakout
 symbol: SOLUSDT
 timeframe: 30m
+max_hold_hours: 8
 entry:
   logic: AND
   conditions:
@@ -95,6 +98,7 @@ risk:
 name: intraday_support_resistance
 symbol: LINKUSDT
 timeframe: 30m
+max_hold_hours: 8
 entry:
   logic: AND
   conditions:
@@ -122,6 +126,7 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - ADAUSDT
+max_hold_hours: 8
 entry:
   logic: AND
   conditions:
