@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 # ── numpy compatibility shim ──────────────────────────────────────────
 # inference.graph → inference.conditions → numpy (broken in some envs).
-# Pre-seed sys.modules so that patch("inference.graph.build_graph") and
+# Pre-seed sys.modules so that patch("royaltdn.inference.graph.build_graph") and
 # the lazy import inside Cell.__init__ both resolve without hitting the
 # numpy dependency chain.
 if "royaltdn.inference.graph" not in sys.modules:
@@ -92,7 +92,7 @@ class TestCell(unittest.TestCase):
         self.graph_mock = MagicMock()
         self.graph_mock.evaluate.return_value = False
 
-        with patch("inference.graph.build_graph", return_value=self.graph_mock):
+        with patch("royaltdn.inference.graph.build_graph", return_value=self.graph_mock):
             from royaltdn.cells.base import Cell
             self.cell = Cell(self.config, inference_engine=self.mock_engine)
 
@@ -112,7 +112,7 @@ class TestCell(unittest.TestCase):
 
     def test_init_defaults(self):
         """Cell should use sensible defaults for missing config keys."""
-        with patch("inference.graph.build_graph", return_value=self.graph_mock):
+        with patch("royaltdn.inference.graph.build_graph", return_value=self.graph_mock):
             from royaltdn.cells.base import Cell
             minimal = Cell({"name": "minimal", "symbol": "ETHUSDT"})
         self.assertEqual(minimal.name, "minimal")
@@ -191,7 +191,7 @@ class TestCell(unittest.TestCase):
 
     def test_entry_no_inference_engine(self):
         """Cell without inference engine should never generate signals."""
-        with patch("inference.graph.build_graph"):
+        with patch("royaltdn.inference.graph.build_graph"):
             from royaltdn.cells.base import Cell
             no_engine_cell = Cell(self.config, inference_engine=None)
 
