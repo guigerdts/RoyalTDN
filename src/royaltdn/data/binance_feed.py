@@ -47,14 +47,18 @@ class BinanceFeed:
     def _build_url(self) -> str:
         """Build the combined WebSocket stream URL.
 
+        Binance testnet does NOT support the combined ``/stream`` endpoint,
+        only single-stream ``/ws``. Since the bot runs in paper mode with
+        no real orders, we always use mainnet for market data — it's read-
+        only and more reliable. The ``testnet`` flag controls the *broker*
+        endpoint, not the data feed.
+
         Returns:
             Full WebSocket URL for the configured symbols.
         """
         streams = "/".join(
             f"{s.lower().replace('/', '')}@ticker" for s in self.symbols
         )
-        if self.testnet:
-            return f"wss://testnet.binance.vision/stream?streams={streams}"
         return f"wss://stream.binance.com:9443/stream?streams={streams}"
 
     async def start(self) -> None:

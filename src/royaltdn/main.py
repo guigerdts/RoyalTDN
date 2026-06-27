@@ -182,7 +182,7 @@ async def main():
 
     # Iniciar feed de datos
     from royaltdn.data.binance_feed import BinanceFeed
-    feed = BinanceFeed(cfg.symbols, bus)
+    feed = BinanceFeed(cfg.symbols, bus, testnet=cfg.testnet)
     _background_tasks.append(asyncio.create_task(feed.start()))
 
     # Iniciar dashboard
