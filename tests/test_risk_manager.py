@@ -27,7 +27,7 @@ def portfolio():
 @pytest.fixture
 def rm(portfolio):
     """Return a RiskManager with max 5 positions, 3% max drawdown."""
-    from risk.manager import RiskManager
+    from royaltdn.risk.manager import RiskManager
     return RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
 
 

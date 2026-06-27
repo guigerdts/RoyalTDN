@@ -42,12 +42,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_full_pipeline(self):
         """Full event -> cell -> risk -> broker flow produces a trade."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()
@@ -90,12 +90,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_full_pipeline_trade_updates_portfolio(self):
         """After trade execution, broker and risk portfolios should reflect it."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()
@@ -144,12 +144,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_multiple_cells_different_symbols(self):
         """Multiple cells should each process their own events."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()
@@ -196,12 +196,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_multiple_cells_both_generate_signals(self):
         """Two cells generating signals should both produce trades."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()
@@ -263,12 +263,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_risk_rejects_signal_when_max_positions_reached(self):
         """Risk manager should reject when max positions are filled."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()
@@ -323,12 +323,12 @@ class TestIntegration(unittest.TestCase):
 
     def test_risk_rejects_signal_when_drawdown_exceeded(self):
         """Risk manager should reject when max drawdown is breached."""
-        from core.bus import EventBus
-        from core.clock import RealClock
-        from core.engine import EventEngine
-        from risk.portfolio import Portfolio
-        from risk.manager import RiskManager
-        from execution.paper_broker import PaperBroker
+        from royaltdn.core.bus import EventBus
+        from royaltdn.core.clock import RealClock
+        from royaltdn.core.engine import EventEngine
+        from royaltdn.risk.portfolio import Portfolio
+        from royaltdn.risk.manager import RiskManager
+        from royaltdn.execution.paper_broker import PaperBroker
 
         bus = EventBus()
         clock = RealClock()

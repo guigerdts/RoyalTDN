@@ -14,20 +14,21 @@ from loguru import logger
 
 load_dotenv()
 
-# Asegurar que el directorio raiz esta en sys.path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add src/ to sys.path for development runs
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.bus import EventBus
-from core.clock import RealClock
-from core.engine import EventEngine
-from core.journal import Journal
-from core.registry import CellRegistry
-from inference.engine import InferenceEngine
-from cells.loader import load_cells
-from cells.base import Cell
-from risk.portfolio import Portfolio
-from risk.manager import RiskManager
-from execution.paper_broker import PaperBroker
+from royaltdn.core.bus import EventBus
+from royaltdn.core.clock import RealClock
+from royaltdn.core.engine import EventEngine
+from royaltdn.core.journal import Journal
+from royaltdn.core.registry import CellRegistry
+from royaltdn.core.trade_tracker import TradeTracker
+from royaltdn.inference.engine import InferenceEngine
+from royaltdn.cells.loader import load_cells
+from royaltdn.cells.base import Cell
+from royaltdn.risk.portfolio import Portfolio
+from royaltdn.risk.manager import RiskManager
+from royaltdn.execution.paper_broker import PaperBroker
 
 
 def parse_args() -> argparse.Namespace:
@@ -138,7 +139,8 @@ async def main():
     journal = Journal(log_path="logs/trading.log", bus=bus)
 
     # Engine
-    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal)
+    trade_tracker = TradeTracker()
+    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal, trade_tracker=trade_tracker)
 
     # Cargar celulas desde YAML
     strategies_dir = Path(__file__).parent / config["strategies_dir"]
@@ -167,18 +169,19 @@ async def main():
     asyncio.create_task(feed.start())
 
     # Iniciar dashboard
-    from monitoring.dashboard import Dashboard
-    dashboard = Dashboard(bus, portfolio)
+    from royaltdn.monitoring.dashboard import Dashboard
+    dashboard = Dashboard(portfolio, trade_tracker, engine)
     asyncio.create_task(dashboard.run())
 
     # Iniciar alertas Telegram (si configuradas)
+    telegram_alerts = None
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
     if telegram_token and telegram_chat_id:
-        from monitoring.telegram_alerts import TelegramAlerts
+        from royaltdn.monitoring.telegram_alerts import TelegramAlerts
         telegram_alerts = TelegramAlerts(
             bus, telegram_token, telegram_chat_id,
-            portfolio=portfolio,
+            portfolio=portfolio, batch_interval=60,
         )
         asyncio.create_task(telegram_alerts.start())
     else:
@@ -213,6 +216,8 @@ async def main():
         pass
     finally:
         engine.stop()
+        if telegram_alerts:
+            telegram_alerts.stop()
         logger.info("CellMesh detenido.")
 
 

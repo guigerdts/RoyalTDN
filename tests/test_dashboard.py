@@ -65,7 +65,7 @@ def mock_trade_tracker() -> MagicMock:
     tt.best_trade = best
     tt.worst_trade = worst
 
-    from core.trade_tracker import Trade
+    from royaltdn.core.trade_tracker import Trade
 
     tt.trades = [
         Trade(
@@ -114,7 +114,7 @@ def dashboard(
     mock_engine: MagicMock,
 ) -> "Dashboard":
     """Return a Dashboard wired to mocked data sources."""
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
     return Dashboard(mock_portfolio, mock_trade_tracker, mock_engine)
 
 
@@ -125,7 +125,7 @@ def empty_dashboard(
     mock_engine: MagicMock,
 ) -> "Dashboard":
     """Return a Dashboard with no open positions."""
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
     return Dashboard(mock_empty_portfolio, mock_trade_tracker, mock_engine)
 
 
@@ -135,7 +135,7 @@ def dashboard_no_trades(
     mock_engine: MagicMock,
 ) -> "Dashboard":
     """Return a Dashboard with no TradeTracker data."""
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
     tt = MagicMock()
     tt.total_trades = 0
     tt.trades = []
@@ -274,7 +274,7 @@ def test_engine_without_mode_starttime(dashboard_no_trades: "Dashboard") -> None
 
     # Create a dashboard with an engine that lacks mode/start_time
     from unittest.mock import MagicMock
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
 
     engine = MagicMock(spec=["bus", "_running", "cells"])
     engine.bus = MagicMock()
@@ -318,7 +318,7 @@ def test_event_panel_with_events(dashboard: "Dashboard") -> None:
 
 def test_fmt_duration() -> None:
     """_fmt_duration should format seconds correctly."""
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
 
     assert Dashboard._fmt_duration(0.0) == "-"
     assert Dashboard._fmt_duration(30.0) == "30s"
@@ -330,7 +330,7 @@ def test_fmt_duration() -> None:
 
 def test_fmt_event_detail() -> None:
     """_fmt_event_detail should format by event type."""
-    from monitoring.dashboard import Dashboard
+    from royaltdn.monitoring.dashboard import Dashboard
 
     assert Dashboard._fmt_event_detail({"price": 30000.0}, "tick") == "$30000.00"
     assert Dashboard._fmt_event_detail({"action": "BUY", "price": 30000.0}, "signal") == "BUY @ $30000.00"
