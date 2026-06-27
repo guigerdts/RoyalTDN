@@ -58,7 +58,7 @@ class TestEventEngine(unittest.TestCase):
             return_value={"status": "filled", "order_id": "mock_1"}
         )
 
-        from core.engine import EventEngine
+        from royaltdn.core.engine import EventEngine
 
         self.engine = EventEngine(self.clock, self.bus, self.risk_manager, self.broker)
 
@@ -272,7 +272,7 @@ class TestEventEngine(unittest.TestCase):
 
     def test_short_pipeline_broker_and_portfolio(self):
         """SHORT signal should update broker portfolio and risk portfolio."""
-        from risk.portfolio import Portfolio
+        from royaltdn.risk.portfolio import Portfolio
 
         # Create real portfolio
         portfolio = Portfolio(initial_capital=100_000.0)

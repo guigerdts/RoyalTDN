@@ -14,7 +14,7 @@ import pytest
 @pytest.fixture
 def telegram():
     """Return a TelegramAlerts instance with minimal setup."""
-    from monitoring.telegram_alerts import TelegramAlerts
+    from royaltdn.monitoring.telegram_alerts import TelegramAlerts
 
     bus = type("FakeBus", (), {"subscribe": lambda self: __import__("asyncio").Queue()})()
     return TelegramAlerts(bus, bot_token="test", chat_id="test")

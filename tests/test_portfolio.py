@@ -16,7 +16,7 @@ import pytest
 @pytest.fixture
 def portfolio():
     """Return a fresh Portfolio with 100k initial capital."""
-    from risk.portfolio import Portfolio
+    from royaltdn.risk.portfolio import Portfolio
     return Portfolio(initial_capital=100_000.0)
 
 

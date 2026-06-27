@@ -43,12 +43,12 @@ def _run_async(coro: asyncio.coroutines.Coroutine[Any, Any, Any]) -> Any:
 def test_33_cells_reach_10_positions_on_5_symbols() -> None:
     """33 cells on 5 symbols MUST open 10 positions (max_positions=10)
     without the duplicate check blocking."""
-    from core.bus import EventBus
-    from core.clock import RealClock
-    from core.engine import EventEngine
-    from risk.portfolio import Portfolio
-    from risk.manager import RiskManager
-    from execution.paper_broker import PaperBroker
+    from royaltdn.core.bus import EventBus
+    from royaltdn.core.clock import RealClock
+    from royaltdn.core.engine import EventEngine
+    from royaltdn.risk.portfolio import Portfolio
+    from royaltdn.risk.manager import RiskManager
+    from royaltdn.execution.paper_broker import PaperBroker
 
     async def _simulate() -> dict[str, Any]:
         bus = EventBus()
@@ -110,8 +110,8 @@ def test_33_cells_reach_10_positions_on_5_symbols() -> None:
 def test_risk_manager_allows_multiple_entries_same_symbol() -> None:
     """RiskManager MUST allow different cells to enter the same symbol,
     up to max_positions."""
-    from risk.portfolio import Portfolio
-    from risk.manager import RiskManager
+    from royaltdn.risk.portfolio import Portfolio
+    from royaltdn.risk.manager import RiskManager
 
     portfolio = Portfolio(initial_capital=100_000.0)
     rm = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
@@ -163,8 +163,8 @@ def test_risk_manager_allows_multiple_entries_same_symbol() -> None:
 
 def test_max_positions_still_enforced() -> None:
     """max_positions=10 MUST reject the 11th entry."""
-    from risk.portfolio import Portfolio
-    from risk.manager import RiskManager
+    from royaltdn.risk.portfolio import Portfolio
+    from royaltdn.risk.manager import RiskManager
 
     portfolio = Portfolio(initial_capital=100_000.0)
     rm = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
@@ -206,7 +206,7 @@ def test_max_positions_still_enforced() -> None:
 
 def test_cell_stays_idle_after_risk_rejection() -> None:
     """When RiskManager rejects, the cell MUST stay in IDLE."""
-    from cells.base import Cell
+    from royaltdn.cells.base import Cell
 
     cell = Cell({
         "name": "test_cell",
@@ -236,8 +236,8 @@ def test_cell_stays_idle_after_risk_rejection() -> None:
 
 def test_sell_frees_slot_for_new_entry() -> None:
     """After a SELL, the slot must be freed for new entries."""
-    from risk.portfolio import Portfolio
-    from risk.manager import RiskManager
+    from royaltdn.risk.portfolio import Portfolio
+    from royaltdn.risk.manager import RiskManager
 
     portfolio = Portfolio(initial_capital=100_000.0)
     rm = RiskManager(portfolio, max_positions=2, max_drawdown=0.03)
