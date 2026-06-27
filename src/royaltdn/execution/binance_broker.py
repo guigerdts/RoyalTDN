@@ -10,8 +10,8 @@ from typing import Any
 
 from loguru import logger
 
-from core.bus import EventBus
-from execution.paper_broker import PaperBroker
+from royaltdn.core.bus import EventBus
+from royaltdn.execution.paper_broker import PaperBroker
 
 try:
     from binance.client import Client

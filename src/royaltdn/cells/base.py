@@ -56,7 +56,7 @@ class Cell:
         # Pre‑build the entry condition graph ONCE (Bug 6)
         self._entry_graph: Any = None
         if self.entry_config and self.inference_engine:
-            from inference.graph import build_graph
+            from royaltdn.inference.graph import build_graph
             try:
                 self._entry_graph = build_graph(self.entry_config)
             except Exception:
@@ -65,7 +65,7 @@ class Cell:
         # Pre‑build the short entry condition graph ONCE
         self._short_entry_graph: Any = None
         if self.short_entry_config and self.inference_engine:
-            from inference.graph import build_graph
+            from royaltdn.inference.graph import build_graph
             try:
                 self._short_entry_graph = build_graph(self.short_entry_config)
             except Exception:
@@ -349,7 +349,7 @@ class Cell:
         if self.exit_zscore_threshold is not None:
             market_data = self._build_data()
             if market_data:
-                from inference.conditions import evaluate
+                from royaltdn.inference.conditions import evaluate
                 try:
                     should_exit = evaluate(
                         "zscore", {"period": 20}, "> {}", market_data

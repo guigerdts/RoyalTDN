@@ -74,7 +74,7 @@ class HotReloader:
 
     async def _poll(self) -> None:
         """Check each YAML file for mtime changes.  Full reload on any change."""
-        from cells.loader import load_cells
+        from royaltdn.cells.loader import load_cells
 
         any_change = False
         for yaml_path in sorted(self._strategies_dir.glob("*.yaml")):

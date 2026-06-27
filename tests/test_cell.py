@@ -16,11 +16,11 @@ from unittest.mock import MagicMock, patch
 # Pre-seed sys.modules so that patch("inference.graph.build_graph") and
 # the lazy import inside Cell.__init__ both resolve without hitting the
 # numpy dependency chain.
-if "inference.graph" not in sys.modules:
+if "royaltdn.inference.graph" not in sys.modules:
     import types  # noqa: E402 (imported after sys guard)
-    _inf_graph = types.ModuleType("inference.graph")
+    _inf_graph = types.ModuleType("royaltdn.inference.graph")
     _inf_graph.build_graph = MagicMock()
-    sys.modules["inference.graph"] = _inf_graph
+    sys.modules["royaltdn.inference.graph"] = _inf_graph
 
 
 def _make_bars(count: int, base_price: float = 50000.0, volatility: float = 200.0) -> list[dict]:

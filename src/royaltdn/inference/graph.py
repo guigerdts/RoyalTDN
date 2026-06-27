@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from inference.conditions import evaluate as eval_condition
+from royaltdn.inference.conditions import evaluate as eval_condition
 
 
 class ConditionNode:

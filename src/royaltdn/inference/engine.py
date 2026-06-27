@@ -10,7 +10,7 @@ from typing import Any
 
 from loguru import logger
 
-from inference.graph import build_graph
+from royaltdn.inference.graph import build_graph
 
 
 class InferenceEngine:

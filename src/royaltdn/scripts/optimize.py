@@ -98,12 +98,12 @@ except ImportError:
     _HAS_RICH = False
 
 # Lazy imports (used inside functions)
-#   from cells.base import Cell
-#   from inference.engine import InferenceEngine
-#   from risk.portfolio import Portfolio
-#   from risk.manager import RiskManager
-#   from data.historical import download_2y_ohlcv, read_cache, write_cache
-#   from scripts.backtest import compute_metrics
+#   from royaltdn.cells.base import Cell
+#   from royaltdn.inference.engine import InferenceEngine
+#   from royaltdn.risk.portfolio import Portfolio
+#   from royaltdn.risk.manager import RiskManager
+#   from royaltdn.data.historical import download_2y_ohlcv, read_cache, write_cache
+#   from royaltdn.scripts.backtest import compute_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ def get_ohlcv(
     Returns:
         DataFrame with standard OHLCV columns.
     """
-    from data.historical import download_2y_ohlcv, read_cache, write_cache
+    from royaltdn.data.historical import download_2y_ohlcv, read_cache, write_cache
 
     df = None
     if not force_download:
@@ -490,10 +490,10 @@ async def simulate(
         List of closed trade dicts, each with ``symbol``, ``action``,
         ``entry_price``, ``exit_price``, ``qty``, ``pnl``, ``capital``.
     """
-    from cells.base import Cell
-    from inference.engine import InferenceEngine
-    from risk.portfolio import Portfolio
-    from risk.manager import RiskManager
+    from royaltdn.cells.base import Cell
+    from royaltdn.inference.engine import InferenceEngine
+    from royaltdn.risk.portfolio import Portfolio
+    from royaltdn.risk.manager import RiskManager
 
     cell = Cell(strategy_config, inference_engine=InferenceEngine())
     portfolio = Portfolio(initial_capital=initial_capital)
@@ -571,7 +571,7 @@ def compute_objective(trades: list[dict], metric: str = "sharpe") -> float:
     if not trades:
         return -999.0
 
-    from scripts.backtest import compute_metrics
+    from royaltdn.scripts.backtest import compute_metrics
 
     metrics = compute_metrics(trades)
 
@@ -660,7 +660,7 @@ def optimize_strategy(
 
         # Store all metrics for reporting
         if trades:
-            from scripts.backtest import compute_metrics
+            from royaltdn.scripts.backtest import compute_metrics
             full_metrics = compute_metrics(trades)
             # Map compute_metrics keys to schema keys
             metric_map = {
@@ -1034,7 +1034,7 @@ def walk_forward_validate(
         val_objective = compute_objective(val_trades, metric)
         val_metrics_raw: dict = {}
         if val_trades:
-            from scripts.backtest import compute_metrics
+            from royaltdn.scripts.backtest import compute_metrics
             val_metrics_raw = compute_metrics(val_trades)
 
         val_metrics: dict[str, Any] = {}

@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 from loguru import logger
 
-from cells.base import Cell
+from royaltdn.cells.base import Cell
 
 
 def _get_available_symbols() -> list[str]:

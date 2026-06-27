@@ -14,7 +14,7 @@ from typing import Any
 import websockets
 from loguru import logger
 
-from core.bus import EventBus
+from royaltdn.core.bus import EventBus
 
 
 class BinanceFeed:
