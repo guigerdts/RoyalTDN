@@ -200,6 +200,9 @@ async def main():
         telegram_alerts = TelegramAlerts(
             bus, telegram_token, telegram_chat_id,
             portfolio=portfolio,
+            level=cfg.telegram_level,
+            equity_threshold_pct=cfg.telegram_equity_threshold,
+            summary_interval=cfg.telegram_summary_interval * 60,
         )
         _background_tasks.append(asyncio.create_task(telegram_alerts.start()))
     else:

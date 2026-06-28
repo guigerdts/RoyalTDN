@@ -1,12 +1,14 @@
-"""Telegram alerts — consolidados por trade + métricas del bot.
+"""Telegram alerts — niveles de verbosidad, umbrales, event-driven + batch.
 
-Acumula eventos de trading (signal → approved → executed → position)
-agrupados por ``trade_id`` y envía un único mensaje por operación
-con el detalle completo y el estado actual del portfolio.
+Comportamiento por nivel:
 
-Los eventos ``rejected`` y ``position.closed`` se agrupan en un buffer
-interno y se envían cada 60s como mensajes resumidos para evitar
-límites de tasa (429) de la API de Telegram.
+- **silent**: Solo errores críticos. Sin notificaciones de trading.
+- **normal**: Entry/exit al instante + resumen horario (si cambió equity > X%).
+- **verbose**: Entry/exit al instante + resumen cada 15 min (si cambió equity > X%).
+- **debug**: Todo lo anterior + eventos de señal/rechazo en tiempo real.
+
+El resumen periódico usa threshold gating: si equity no varió más del umbral
+configurado y no hubo eventos nuevos, se salta el envío (sin ruido repetitivo).
 """
 
 from __future__ import annotations
@@ -17,15 +19,34 @@ from typing import Any
 
 from loguru import logger
 
+# ── Niveles de verbosidad ──────────────────────────────────────────────────
+LEVEL_SILENT = "silent"
+LEVEL_NORMAL = "normal"
+LEVEL_VERBOSE = "verbose"
+LEVEL_DEBUG = "debug"
+VALID_LEVELS = (LEVEL_SILENT, LEVEL_NORMAL, LEVEL_VERBOSE, LEVEL_DEBUG)
+
+# Intervalos de resumen por nivel (segundos)
+SUMMARY_INTERVAL: dict[str, int] = {
+    LEVEL_SILENT: 0,       # sin resumen periódico
+    LEVEL_NORMAL: 3600,    # 1 hora
+    LEVEL_VERBOSE: 900,    # 15 min
+    LEVEL_DEBUG: 300,      # 5 min
+}
+
 
 class TelegramAlerts:
-    """Telegram notifier con mensajes consolidados por trade.
+    """Telegram notifier con niveles, umbrales y buffer batch.
 
-    Suscribe al EventBus, agrupa eventos por ``trade_id``, y al
-    completarse el ciclo (posición abierta) envía un solo HTML con:
-
-    - Señal, aprobación, ejecución, posición
-    - Capital, posiciones abiertas, drawdown, última operación
+    Args:
+        bus: EventBus para suscribirse.
+        bot_token: Token de la API de Telegram.
+        chat_id: Chat ID numérico.
+        portfolio: Portfolio opcional para métricas.
+        batch_interval: Segundos entre flushes batch (default 60, legacy).
+        level: Nivel de verbosidad (silent|normal|verbose|debug).
+        equity_threshold_pct: % mínimo de cambio en equity para enviar resumen.
+        summary_interval: Segundos entre resúmenes periódicos (0 = default por nivel).
     """
 
     def __init__(
@@ -35,27 +56,36 @@ class TelegramAlerts:
         chat_id: str,
         portfolio: Any = None,
         batch_interval: int = 60,
+        level: str = LEVEL_NORMAL,
+        equity_threshold_pct: float = 1.0,
+        summary_interval: int = 0,
     ) -> None:
-        """Initialise the Telegram alert system.
-
-        Args:
-            bus: EventBus instance to subscribe to.
-            bot_token: Telegram Bot API token.
-            chat_id: Numeric chat or channel ID.
-            portfolio: Optional Portfolio instance for live metrics.
-            batch_interval: Seconds between batched message flushes (default 60).
-        """
         self._token = bot_token
         self._chat_id = chat_id
         self._portfolio = portfolio
         self._queue = bus.subscribe()
         self._running = False
 
-        # Acumulador: trade_id → dict con partes del mensaje
+        # ── Nivel de verbosidad ───────────────────────────────────────
+        self._level = level if level in VALID_LEVELS else LEVEL_NORMAL
+
+        # ── Threshold gating ──────────────────────────────────────────
+        self._equity_threshold_pct = max(equity_threshold_pct, 0.0)
+        self._last_summary_equity: float = 0.0
+        self._last_summary_ts: float = 0.0
+        self._events_since_last_summary: int = 0
+
+        # ── Intervalo de resumen ──────────────────────────────────────
+        self._summary_interval = (
+            summary_interval if summary_interval > 0
+            else SUMMARY_INTERVAL.get(self._level, 900)
+        )
+
+        # ── Acumuladores (contexto de trade) ──────────────────────────
         self._pending: dict[str, dict[str, Any]] = {}
         self._last_trade_ts: float = 0.0
 
-        # Batch buffer
+        # ── Batch buffer ──────────────────────────────────────────────
         self._pending_events: list[dict] = []
         self._batch_interval = batch_interval
         self._flush_task: asyncio.Task | None = None
@@ -71,8 +101,8 @@ class TelegramAlerts:
         self._running = True
         self._flush_task = asyncio.create_task(self._flush_loop())
         logger.info(
-            "TelegramAlerts iniciado — chat_id={}",
-            self._chat_id,
+            "TelegramAlerts iniciado — nivel={}, chat_id={}",
+            self._level, self._chat_id,
         )
 
         try:
@@ -91,7 +121,7 @@ class TelegramAlerts:
                 self._flush_task.cancel()
 
     async def stop(self) -> None:
-        """Gracefully stop the alert loop — flush remaining events first."""
+        """Gracefully stop — flush remaining events first."""
         self._running = False
         import httpx
 
@@ -102,18 +132,18 @@ class TelegramAlerts:
         logger.info("TelegramAlerts detenido")
 
     # ------------------------------------------------------------------
-    # Event router
+    # Event router (con niveles + envío inmediato)
     # ------------------------------------------------------------------
 
     async def _handle_event(self, client: Any, event: dict[str, Any]) -> None:
-        """Route a single event — qualifying types append to batch buffer."""
+        """Route event según nivel: inmediato o buffer."""
         etype = event.get("type", "")
         trade_id: str = event.get("trade_id", "") or ""
 
         if etype not in ("signal", "approved", "rejected", "executed", "position"):
             return
 
-        # ── Signal — store context, no message ───────────────────────
+        # ── Signal — store context (nunca se envía) ───────────────────
         if etype == "signal":
             if trade_id:
                 self._pending[trade_id] = {
@@ -122,10 +152,9 @@ class TelegramAlerts:
                     "price": event.get("price", 0.0),
                     "strategy": event.get("strategy", "?"),
                 }
-            # No trade_id: silently ignored (legacy, not batch-qualifying)
             return
 
-        # ── Approved — update context, no message ────────────────────
+        # ── Approved — update context (nunca se envía) ────────────────
         if etype == "approved":
             if trade_id and trade_id in self._pending:
                 self._pending[trade_id].update({
@@ -134,14 +163,20 @@ class TelegramAlerts:
                 })
             return
 
-        # ── Rejected — cleanup pending, buffer for batch ─────────────
+        # ── Rejected — buffer (en debug se envía también inmediato) ──
         if etype == "rejected":
             if trade_id:
                 self._pending.pop(trade_id, None)
             self._pending_events.append(event)
+            self._events_since_last_summary += 1
+
+            if self._level == LEVEL_DEBUG:
+                msg = self._fmt_single(event)
+                if msg:
+                    await self._send(client, msg)
             return
 
-        # ── Executed — update context, buffer for batch ──────────────
+        # ── Executed — ENVÍO INMEDIATO (excepto silent) ──────────────
         if etype == "executed":
             if trade_id and trade_id in self._pending:
                 self._pending[trade_id].update({
@@ -150,14 +185,18 @@ class TelegramAlerts:
                     "exec_price": event.get("price", 0.0),
                 })
             self._pending_events.append(event)
+            self._events_since_last_summary += 1
+
+            if self._level not in (LEVEL_SILENT,):
+                msg = self._fmt_entry_immediate(event)
+                await self._send(client, msg)
             return
 
-        # ── Position — buffer closed, silently cleanup opened ────────
+        # ── Position — ENVÍO INMEDIATO en closed (excepto silent) ────
         if etype == "position":
             status = event.get("status", "")
 
             if status == "opened":
-                # Cleanup pending context, no message sent
                 if trade_id:
                     self._pending.pop(trade_id, None)
                 return
@@ -165,25 +204,62 @@ class TelegramAlerts:
             if status == "closed":
                 self._last_trade_ts = time.time()
                 self._pending_events.append(event)
+                self._events_since_last_summary += 1
+
+                if self._level not in (LEVEL_SILENT,):
+                    msg = self._fmt_exit_immediate(event)
+                    await self._send(client, msg)
                 return
 
     # ------------------------------------------------------------------
-    # Batch flush
+    # Periodic flush (con threshold gating)
     # ------------------------------------------------------------------
 
     async def _flush_loop(self) -> None:
-        """Background task: drain _pending_events every batch_interval."""
+        """Background task: periodic summary with threshold gating."""
         import httpx
 
         while self._running:
-            await asyncio.sleep(self._batch_interval)
-            if not self._pending_events:
+            interval = self._summary_interval
+            if interval <= 0:
+                await asyncio.sleep(60)
                 continue
+
+            await asyncio.sleep(interval)
+            if self._level == LEVEL_SILENT:
+                continue
+
+            # ── Threshold gating ─────────────────────────────────────
+            threshold = self._equity_threshold_pct
+            equity = self._get_equity()
+            equity_change_pct = 0.0
+            if self._last_summary_equity > 0 and equity > 0:
+                equity_change_pct = abs(equity - self._last_summary_equity) / self._last_summary_equity * 100
+
+            has_events = self._events_since_last_summary > 0
+            equity_moved = equity_change_pct >= threshold
+
+            if not has_events and not equity_moved:
+                continue  # threshold gate: nada cambió, no enviamos
+
+            # ── Build and send summary ───────────────────────────────
             async with httpx.AsyncClient() as client:
-                await self._flush(client)
+                msg = self._build_summary_message()
+                if msg:
+                    chunks = self._split_message(msg)
+                    for chunk in chunks:
+                        await self._send(client, chunk)
+
+                # Flush pending events + reset counter
+                self._pending_events.clear()
+                self._events_since_last_summary = 0
+
+            if equity > 0:
+                self._last_summary_equity = equity
+            self._last_summary_ts = time.time()
 
     async def _flush(self, client: Any) -> None:
-        """Drain the buffer, build grouped message, and send."""
+        """Legacy flush — drain buffer and send (used at shutdown)."""
         if not self._pending_events:
             return
         message = self._build_batch_message()
@@ -193,28 +269,142 @@ class TelegramAlerts:
             await self._send(client, chunk)
 
     # ------------------------------------------------------------------
-    # Message builders
+    # Immediate formatters (event-driven)
+    # ------------------------------------------------------------------
+
+    def _fmt_entry_immediate(self, event: dict[str, Any]) -> str:
+        """Mensaje inmediato para nueva operación ejecutada."""
+        symbol = event.get("symbol", "?")
+        action = event.get("action", "")
+        qty = float(event.get("qty", 0))
+        price = float(event.get("price", 0))
+        qty_s = f"{qty:,.4f}" if qty < 1 else f"{qty:,.2f}"
+
+        lines = [
+            f"<b>\U0001f7e2 ENTRADA: {action}</b> {qty_s} <code>{symbol}</code>",
+            f"Precio: <b>${price:,.2f}</b>",
+        ]
+        lines.extend(self._bot_stats_lines())
+        return "\n".join(lines)
+
+    def _fmt_exit_immediate(self, event: dict[str, Any]) -> str:
+        """Mensaje inmediato para cierre de posición."""
+        symbol = event.get("symbol", "?")
+        pnl = event.get("pnl", 0.0)
+        capital = event.get("capital", 0.0)
+        sign = "+" if pnl >= 0 else ""
+
+        lines = [
+            f"<b>\U0001f534 SALIDA: <code>{symbol}</code></b>",
+            f"PnL: <b>{sign}${pnl:,.2f}</b>  |  Capital: <b>${capital:,.2f}</b>",
+        ]
+        lines.extend(self._bot_stats_lines())
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Periodic summary builder (con threshold gating)
+    # ------------------------------------------------------------------
+
+    def _build_summary_message(self) -> str:
+        """Build a periodic status summary from pending events + bot stats.
+
+        Returns:
+            Formatted HTML message, or empty if nothing to report.
+        """
+        events = self._pending_events
+        equity = self._get_equity()
+        equity_change = ""
+        if self._last_summary_equity > 0 and equity > 0:
+            pct = (equity - self._last_summary_equity) / self._last_summary_equity * 100
+            sign = "+" if pct >= 0 else ""
+            equity_change = f" ({sign}{pct:.2f}%)"
+
+        # Build header
+        elapsed = ""
+        if self._last_summary_ts > 0:
+            ago = time.time() - self._last_summary_ts
+            elapsed = f" ({self._fmt_ago(ago)})"
+
+        label = self._summary_label()
+        lines = [f"<b>\U0001f4ca {label}{elapsed}</b>"]
+
+        if equity > 0:
+            lines.append(f"<b>Capital:</b> ${equity:,.2f}{equity_change}")
+
+        if self._portfolio:
+            positions = len(self._portfolio.positions)
+            drawdown = self._portfolio.get_drawdown()
+            lines.append(f"<b>Posiciones:</b> {positions}  |  "
+                         f"<b>Drawdown:</b> {drawdown:.2%}")
+
+        # ── Agrupar eventos del período ──────────────────────────────
+        rejected_groups: dict[tuple[str, str], list[dict]] = {}
+        closed_count = 0
+
+        for ev in events:
+            etype = ev.get("type", "")
+            symbol = ev.get("symbol", "?")
+
+            if etype == "rejected":
+                reason = ev.get("reason", "risk_rejected")
+                key = (symbol, reason)
+                if key not in rejected_groups:
+                    rejected_groups[key] = []
+                rejected_groups[key].append(ev)
+            elif etype == "position" and ev.get("status") == "closed":
+                closed_count += 1
+
+        if rejected_groups:
+            lines.append("")
+            lines.append(f"<b>\u274c Rechazos ({sum(len(v) for v in rejected_groups.values())}):</b>")
+            for (symbol, reason), evs in rejected_groups.items():
+                count = len(evs)
+                prefix = f"{count}x " if count > 1 else ""
+                lines.append(f" {prefix}<code>{symbol}</code> \u2014 {reason}")
+
+        if closed_count > 0:
+            lines.append("")
+            lines.append(f"<b>\U0001f534 Salidas:</b> {closed_count} posiciones cerradas")
+
+        # Footer stats
+        lines.append("")
+        lines.append("\u2014\u2014\u2014")
+        lines.extend(self._bot_stats_lines())
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _summary_label() -> str:
+        """Human label for the summary period (refreshed each call)."""
+        hour = time.localtime().tm_hour
+        if hour < 6:
+            return "Resumen nocturno"
+        if hour < 12:
+            return "Resumen matutino"
+        if hour < 18:
+            return "Resumen vespertino"
+        return "Resumen nocturno"
+
+    # ------------------------------------------------------------------
+    # Legacy message builders (mantenidos para tests compat)
     # ------------------------------------------------------------------
 
     def _fmt_trade(self, pending: dict[str, Any]) -> str:
         """Mensaje consolidado de una operación completa (abierta)."""
         lines = ["<b>\U0001f514 NUEVA OPERACIÓN</b>"]
 
-        # Señal
         lines.append(
             f'<b>Señal:</b> {pending["action"]} '
             f'{pending["symbol"]} @ <b>${pending["price"]:,.2f}</b>'
             f' — {pending["strategy"]}'
         )
 
-        # Aprobación
         if pending.get("approved"):
             lines.append(
                 f'<b>Aprobación:</b> \u2705 '
                 f'{pending.get("reason", "risk_check_passed")}'
             )
 
-        # Ejecución
         if pending.get("executed"):
             qty = float(pending["qty"])
             qty_s = f"{qty:,.4f}" if qty < 1 else f"{qty:,.2f}"
@@ -224,15 +414,12 @@ class TelegramAlerts:
                 f'@ <b>${pending["exec_price"]:,.2f}</b>'
             )
 
-        # Posición
         lines.append(
             f'<b>Posición:</b> ABIERTA'
             f' — Capital: <b>${pending.get("capital", 0):,.2f}</b>'
         )
 
-        # ── Estado del Bot ──────────────────────────────────────────
         lines.extend(self._bot_stats_lines())
-
         return "\n".join(lines)
 
     def _fmt_rejected(
@@ -327,17 +514,13 @@ class TelegramAlerts:
         return None
 
     # ------------------------------------------------------------------
-    # Batch message builder
+    # Legacy batch message builder (mantenido para tests compat)
     # ------------------------------------------------------------------
 
     def _build_batch_message(self) -> str:
-        """Build a grouped summary from _pending_events.
+        """Build a grouped summary from _pending_events (legacy).
 
-        Groups events by (type, symbol), builds per-type sections
-        (Ejecuciones / Rechazos / Cierres), and appends bot stats footer.
-
-        Returns:
-            Formatted HTML message string, or empty string if no events.
+        Mantenido para compatibilidad con tests existentes.
         """
         events = self._pending_events
         if not events:
@@ -345,7 +528,6 @@ class TelegramAlerts:
 
         total = len(events)
 
-        # Categorise events
         executed: list[dict] = []
         rejected_groups: dict[tuple[str, str], list[dict]] = {}
         closed: list[dict] = []
@@ -365,13 +547,11 @@ class TelegramAlerts:
             elif etype == "position" and ev.get("status") == "closed":
                 closed.append(ev)
 
-        # Single-event: shorter format without section headers
         if total == 1:
             return self._single_event_line(
                 executed, rejected_groups, closed,
             )
 
-        # ── Multi-event: full grouped message ───────────────────────
         lines = ["<b>\U0001f4ca RESUMEN DEL \u00daLTIMO MINUTO</b>"]
 
         if executed:
@@ -416,7 +596,6 @@ class TelegramAlerts:
                     f' <b>{sign}${pnl:,.2f}</b>'
                 )
 
-        # Footer
         lines.append("")
         lines.append("\u2014\u2014\u2014")
         lines.extend(self._bot_stats_lines())
@@ -459,7 +638,6 @@ class TelegramAlerts:
                 f' <b>{sign}${pnl:,.2f}</b>'
             )
 
-        # Footer
         lines.append("")
         lines.append("\u2014\u2014\u2014")
         lines.extend(self._bot_stats_lines())
@@ -487,7 +665,6 @@ class TelegramAlerts:
 
         for i, line in enumerate(lines):
             line_len = len(line)
-            # +1 for the newline separator if not first line in chunk
             sep = 1 if i > start else 0
 
             if current_len + sep + line_len > max_len and i > start:
@@ -529,6 +706,15 @@ class TelegramAlerts:
             lines.append("<b>Última operación:</b> —")
 
         return lines
+
+    def _get_equity(self) -> float:
+        """Get current equity from portfolio, or 0 if unavailable."""
+        if self._portfolio:
+            try:
+                return self._portfolio.capital
+            except Exception:
+                return 0.0
+        return 0.0
 
     @staticmethod
     def _fmt_ago(seconds: float) -> str:
