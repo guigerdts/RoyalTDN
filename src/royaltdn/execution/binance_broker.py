@@ -1,13 +1,14 @@
 """Live Binance broker for the CellMesh architecture.
 
-Executes market orders directly on Binance via the python-binance
-client. Falls back to PaperBroker if the client library is unavailable.
+Executes market orders directly on Binance via the binance-connector
+Spot client. Falls back to PaperBroker if the client library is
+unavailable.
 
 Rate limiting (M7)
 ------------------
 REST calls are gated by an :class:`asyncio.Semaphore` (max concurrent)
-*and* a weight-based throttle that tracks the ``x-mbx-used-weight-1m``
-response header to stay under Binance's 1200 weight/min limit.
+*and* a conservative 10 req/s throttle based on a rolling timestamp
+window (since binance-connector does not expose response headers).
 """
 
 from __future__ import annotations
@@ -22,32 +23,30 @@ from royaltdn.core.bus import EventBus
 from royaltdn.execution.paper_broker import PaperBroker
 
 try:
-    from binance.client import Client
-    from binance.enums import Side, OrderType
+    from binance.error import ClientError
+    from binance.spot import Spot as _Spot
 
     _BINANCE_AVAILABLE = True
 except ImportError:
     _BINANCE_AVAILABLE = False
+    ClientError = Exception  # type: ignore[assignment]
     logger.warning(
-        "python-binance not installed. BinanceBroker will emit "
+        "binance-connector not installed. BinanceBroker will emit "
         "a critical warning and return an error."
     )
-
-
-_WEIGHT_LIMIT: int = 1200
-"""Binance standard account weight limit per rolling 1-minute window."""
 
 
 class BinanceBroker:
     """Live broker that submits market orders to Binance.
 
-    Wraps python-binance's ``Client`` for authenticated order execution.
-    Supports both mainnet and testnet environments.
+    Wraps binance-connector's ``Spot`` client for authenticated order
+    execution. Supports both Ed25519 and HMAC authentication, as well
+    as testnet and mainnet environments.
 
     Rate limiting is two-tier:
     * An ``asyncio.Semaphore`` limits concurrent in-flight requests.
-    * A weight-based throttle delays calls when ``x-mbx-used-weight-1m``
-      exceeds 80 % of ``_WEIGHT_LIMIT``.
+    * A conservative 10 req/s throttle based on a rolling timestamp
+      window (since binance-connector does not expose response headers).
 
     The broker should be attached to an EventBus via :meth:`set_bus` to
     optionally emit execution events.
@@ -56,7 +55,8 @@ class BinanceBroker:
     def __init__(
         self,
         api_key: str,
-        api_secret: str,
+        api_secret: str = "",
+        private_key: str | None = None,
         testnet: bool = True,
         max_concurrent: int = 10,
         order_manager: Any = None,
@@ -65,33 +65,55 @@ class BinanceBroker:
 
         Args:
             api_key: Binance API key.
-            api_secret: Binance API secret.
+            api_secret: Binance API secret (for HMAC auth — kept for
+                backward compatibility).
+            private_key: Ed25519 private key in PEM format (for
+                Ed25519 auth — preferred for new keys).
             testnet: If True (default), connect to Binance testnet.
             max_concurrent: Max concurrent REST requests (default 10).
-                Binance standard accounts allow ~1200 weight/min; each
-                call typically costs 1–10 weight.
             order_manager: Optional :class:`OrderManager` for lifecycle
                 tracking.
         """
         self.api_key = api_key
         self.api_secret = api_secret
+        self.private_key = private_key
         self.testnet = testnet
         self.order_manager = order_manager
         self._bus: EventBus | None = None
         self._rate_limiter: asyncio.Semaphore = asyncio.Semaphore(max_concurrent)
 
-        # Weight-based rate tracking
-        self._weight_used: int = 0
-        self._last_weight_reset: float = time.monotonic()
+        # Simple rate limiting: rolling window of request timestamps
+        self._request_timestamps: list[float] = []
 
         if _BINANCE_AVAILABLE:
-            self._client = Client(api_key, api_secret, testnet=testnet)
-            logger.info("BinanceBroker initialised (testnet={})", testnet)
+            base_url = (
+                "https://testnet.binance.vision"
+                if testnet
+                else "https://api.binance.com"
+            )
+            if private_key:
+                self._client = _Spot(
+                    api_key=api_key,
+                    private_key=private_key,
+                    base_url=base_url,
+                )
+                logger.info(
+                    "BinanceBroker initialised (Ed25519, testnet={})", testnet
+                )
+            else:
+                self._client = _Spot(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    base_url=base_url,
+                )
+                logger.info(
+                    "BinanceBroker initialised (HMAC, testnet={})", testnet
+                )
         else:
             self._client = None
             logger.critical(
-                "python-binance is not installed. Install it with: "
-                "pip install python-binance"
+                "binance-connector is not installed. Install it with: "
+                "pip install binance-connector"
             )
 
     def set_bus(self, bus: EventBus) -> None:
@@ -105,49 +127,25 @@ class BinanceBroker:
     # ── Weight management ─────────────────────────────────────────────
 
     async def _manage_weight(self) -> None:
-        """Check weight usage from the last API response and back off.
+        """Simple rate limiting: max 10 requests per second (conservative).
 
-        Reads the ``x-mbx-used-weight-1m`` header that ``python-binance``
-        stores on ``self._client.response`` after every call.  When usage
-        exceeds 80 % of the limit, sleeps for a delay proportional to how
-        close we are to the ceiling.
+        Binance allows ~1200 weight/min. Without header access from
+        binance-connector, use a conservative 10 req/s throttle based
+        on a rolling timestamp window.
         """
         if not _BINANCE_AVAILABLE or self._client is None:
             return
 
-        response = getattr(self._client, "response", None)
-        if response is None:
-            return
-
-        weight_str: str | None = response.headers.get("x-mbx-used-weight-1m")
-        if weight_str is None:
-            weight_str = response.headers.get("x-mbx-used-weight")
-
-        if not weight_str:
-            return
-
-        try:
-            self._weight_used = int(weight_str)
-        except (ValueError, TypeError):
-            return
-
-        usage_ratio: float = self._weight_used / _WEIGHT_LIMIT
-        if usage_ratio <= 0.8:
-            return
-
-        # Proportional backoff: the closer to the limit, the longer we wait.
-        # At 80 % → 0.5 s, at 95 % → 2.0 s, at 100 % → 5.0 s.
-        extra: float = (usage_ratio - 0.8) / 0.2  # 0.0 at 80 %, 1.0 at 100 %
-        delay: float = min(5.0, 0.5 + extra * 4.5)
-
-        logger.warning(
-            "Binance weight {}% usado ({} / {}), esperando {:.1f}s",
-            round(usage_ratio * 100, 1),
-            self._weight_used,
-            _WEIGHT_LIMIT,
-            delay,
-        )
-        await asyncio.sleep(delay)
+        now = time.monotonic()
+        # Prune timestamps older than 1 second
+        self._request_timestamps = [
+            t for t in self._request_timestamps if now - t < 1.0
+        ]
+        if len(self._request_timestamps) >= 10:
+            delay = 1.0 - (now - self._request_timestamps[0])
+            if delay > 0:
+                await asyncio.sleep(delay)
+        self._request_timestamps.append(time.monotonic())
 
     # ── Order execution ───────────────────────────────────────────────
 
@@ -167,10 +165,10 @@ class BinanceBroker:
             RuntimeError: If python-binance is not installed.
         """
         if not _BINANCE_AVAILABLE or self._client is None:
-            logger.critical("python-binance unavailable — cannot execute live order")
+            logger.critical("binance-connector no disponible — no se puede ejecutar orden")
             return {
                 "status": "error",
-                "reason": "python-binance not installed. Use PaperBroker or install python-binance.",
+                "reason": "binance-connector not installed. Use PaperBroker or install binance-connector.",
             }
 
         symbol: str = signal["symbol"]
@@ -178,11 +176,11 @@ class BinanceBroker:
         price: float = signal["price"]
         sizing: float = signal.get("sizing", 0.01)
 
-        # Map action to Binance enum
+        # Map action to Binance side string
         if action == "BUY":
-            side = Side.BUY
+            side = "BUY"
         elif action in ("SELL", "SHORT"):
-            side = Side.SELL
+            side = "SELL"
         else:
             logger.warning("Unknown action '{}' in signal", action)
             return {"status": "error", "reason": f"Unknown action: {action}"}
@@ -215,12 +213,20 @@ class BinanceBroker:
                 kwargs: dict[str, Any] = {
                     "symbol": symbol,
                     "side": side,
-                    "type": OrderType.MARKET,
+                    "type": "MARKET",
                     "quantity": qty,
                 }
                 if _om_client_id is not None:
                     kwargs["newClientOrderId"] = _om_client_id
-                result = self._client.create_order(**kwargs)
+                result = self._client.new_order(
+                        symbol=kwargs["symbol"],
+                        side=kwargs["side"],
+                        type=kwargs["type"],
+                        quantity=kwargs.get("quantity"),
+                        price=kwargs.get("price"),
+                        timeInForce=kwargs.get("timeInForce"),
+                        newClientOrderId=kwargs.get("newClientOrderId"),
+                    )
                 await self._manage_weight()
 
             exchange_order_id: str = str(result.get("orderId", "unknown"))
@@ -259,7 +265,7 @@ class BinanceBroker:
                 "pnl": 0.0,
             }
 
-        except Exception as exc:
+        except ClientError as exc:
             # Mark order as rejected in order manager
             if self.order_manager is not None and _om_client_id is not None:
                 self.order_manager.on_reject(_om_client_id, str(exc))
@@ -399,7 +405,7 @@ class BinanceBroker:
     async def _estimate_qty(
         self,
         symbol: str,
-        side: Any,
+        side: str,
         sizing: float,
         price: float,
     ) -> float:
@@ -419,19 +425,29 @@ class BinanceBroker:
         """
         try:
             base_asset, quote_asset = self._parse_symbol(symbol)
-            if side == Side.BUY:
+            if side == "BUY":
                 # Use quote asset balance (e.g. USDT)
                 async with self._rate_limiter:
-                    balance = self._client.get_asset_balance(asset=quote_asset)
+                    account_info = self._client.account()
                     await self._manage_weight()
-                available = float(balance["free"]) if balance else 0.0
+                balances = account_info.get("balances", [])
+                asset_bal = next(
+                    (b for b in balances if b["asset"] == quote_asset),
+                    {"free": "0", "locked": "0"},
+                )
+                available = float(asset_bal["free"])
                 qty = (available * sizing) / price
             else:
                 # Use base asset balance (e.g. BTC)
                 async with self._rate_limiter:
-                    balance = self._client.get_asset_balance(asset=base_asset)
+                    account_info = self._client.account()
                     await self._manage_weight()
-                available = float(balance["free"]) if balance else 0.0
+                balances = account_info.get("balances", [])
+                asset_bal = next(
+                    (b for b in balances if b["asset"] == base_asset),
+                    {"free": "0", "locked": "0"},
+                )
+                available = float(asset_bal["free"])
                 qty = available * sizing
 
             # Round down to avoid insufficient balance errors

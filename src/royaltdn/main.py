@@ -133,8 +133,11 @@ async def main():
             from royaltdn.execution.binance_broker import BinanceBroker
             api_key = os.getenv("BINANCE_API_KEY", "")
             api_secret = os.getenv("BINANCE_SECRET_KEY", "")
+            private_key = os.getenv("BINANCE_PRIVATE_KEY", None)
             broker = BinanceBroker(
-                api_key, api_secret, testnet=cfg.testnet,
+                api_key, api_secret=api_secret,
+                private_key=private_key,
+                testnet=cfg.testnet,
                 order_manager=order_manager,
             )
         except Exception as e:
