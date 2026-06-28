@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from pandas import DataFrame
+# DataFrame is imported lazily inside __init__ (pandas depends on numpy,
+# which may be broken on some platforms like Termux).
 
 
 class Replayer:

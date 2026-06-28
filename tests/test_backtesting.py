@@ -12,9 +12,23 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-import numpy as np
-import pandas as pd
 import pytest
+
+# pandas is imported lazily inside tests that need it (it depends on
+# numpy, which may be broken on some platforms).
+
+# Detect whether numpy is usable at runtime.  The C extensions may be
+# broken on Termux / Android, preventing even a simple ``import numpy``.
+# Tests that call numpy-dependent code are skipped when it's broken.
+_HAS_NUMPY: bool = False
+try:
+    import numpy as _np  # noqa: F401
+
+    _HAS_NUMPY = True
+except Exception:
+    _HAS_NUMPY = False
+
+NUMPY_SKIP_REASON = "numpy C extensions unavailable on this system"
 
 
 # ========================================================================
@@ -292,12 +306,14 @@ class TestEngineRunBatch:
 # ========================================================================
 
 
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
 class TestReplayer:
     """Royaltdn.backtesting.replayer.Replayer behaviour."""
 
     @pytest.fixture
     def sample_ohlcv(self) -> pd.DataFrame:
         """5-row OHLCV DataFrame with 5-minute intervals."""
+        import pandas as pd
         from datetime import datetime
 
         base = datetime(2025, 1, 1, 10, 0)
@@ -381,6 +397,7 @@ class TestReplayer:
 # ========================================================================
 
 
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
 class TestMetrics:
     """royaltdn.backtesting.metrics.compute_metrics behaviour."""
 
@@ -447,6 +464,8 @@ class TestMetrics:
 
     def test_metrics_two_trades_sharpe_nonzero(self):
         """With ≥2 trades and equity curve, Sharpe is computed."""
+        import numpy as np
+
         from royaltdn.backtesting.metrics import compute_metrics
 
         trades = [{"pnl": 100}, {"pnl": 50}]
@@ -559,6 +578,7 @@ def _trending_ohlcv(
     symbol: str = "TEST/USDT",
 ) -> pd.DataFrame:
     """Build an OHLCV DataFrame with a linear price trend."""
+    import pandas as pd
     from datetime import datetime
 
     base_ts = datetime(2025, 1, 1, 10, 0)
@@ -573,6 +593,7 @@ def _trending_ohlcv(
     })
 
 
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
 class TestBacktesterOrchestration:
     """Integration tests for the backtester orchestrator (PR 2)."""
 
@@ -580,6 +601,8 @@ class TestBacktesterOrchestration:
 
     def test_empty_ohlcv_returns_zero_metrics(self):
         """``run()`` with empty DataFrame → zero metrics, no crash."""
+        import pandas as pd
+
         from royaltdn.backtesting import run
 
         result = asyncio.run(run(
@@ -712,3 +735,345 @@ class TestBacktesterOrchestration:
         )
         # Equity should end higher than it started (trending up, buy+hold)
         assert equity_curve[-1] > equity_curve[0]
+
+
+# ========================================================================
+# Benchmark comparison
+# ========================================================================
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
+class TestBenchmarkComparison:
+    """bt_metrics.compute_benchmark behaviour."""
+
+    def test_benchmark_outperforms_when_strategy_wins(self):
+        """Strategy with higher return → outperformed=True."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        # Strategy goes up 20 %, benchmark goes up 10 %
+        strategy = [100.0, 120.0]
+        benchmark = [100.0, 110.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        assert result["strategy_outperformed"] is True
+        assert result["strategy_return"] == pytest.approx(0.20, rel=1e-3)
+        assert result["benchmark_return"] == pytest.approx(0.10, rel=1e-3)
+
+    def test_benchmark_underperforms_when_benchmark_wins(self):
+        """Benchmark with higher return → outperformed=False."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        strategy = [100.0, 105.0]
+        benchmark = [100.0, 120.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        assert result["strategy_outperformed"] is False
+
+    def test_benchmark_empty_equity(self):
+        """Empty/single-point equity curves → zero result."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        result = compute_benchmark([], [])
+        assert result["alpha"] == 0.0
+        assert result["strategy_outperformed"] is False
+
+        result = compute_benchmark([100.0], [100.0])
+        assert result["alpha"] == 0.0
+
+    def test_benchmark_beta_computed(self):
+        """Beta is a finite float when both curves have movement."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        strategy = [100.0, 101.0, 102.0, 103.0, 104.0]
+        benchmark = [100.0, 100.5, 101.0, 101.5, 102.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        assert isinstance(result["beta"], float)
+        assert result["beta"] != 0.0
+
+    def test_benchmark_alpha_direction(self):
+        """Alpha is positive when strategy beats benchmark."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        # Strategy: flat
+        # Benchmark: down
+        strategy = [100.0, 100.0, 100.0]
+        benchmark = [100.0, 95.0, 90.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        assert result["alpha"] > 0
+
+    def test_benchmark_negative_alpha(self):
+        """Alpha is negative when strategy lags benchmark."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        # Strategy: down
+        # Benchmark: flat
+        strategy = [100.0, 95.0, 90.0]
+        benchmark = [100.0, 100.0, 100.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        assert result["alpha"] < 0
+
+    def test_benchmark_mismatched_lengths_truncated(self):
+        """Unequal lengths → truncated to shortest."""
+        from royaltdn.backtesting.metrics import compute_benchmark
+
+        strategy = [100.0, 110.0, 120.0]
+        benchmark = [100.0, 105.0]
+
+        result = compute_benchmark(strategy, benchmark)
+        # Only first 2 points of strategy used → 10 % return, benchmark 5 %
+        assert result["strategy_return"] == pytest.approx(0.10, rel=1e-3)
+        assert result["benchmark_return"] == pytest.approx(0.05, rel=1e-3)
+        assert result["strategy_outperformed"] is True
+
+
+# ========================================================================
+# Overfitting detection (Monte Carlo)
+# ========================================================================
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
+class TestOverfittingDetection:
+    """bt_metrics.detect_overfitting behaviour."""
+
+    def test_overfitting_few_trades_returns_empty(self):
+        """< 3 trades → empty result, no crash."""
+        from royaltdn.backtesting.metrics import detect_overfitting
+
+        result = detect_overfitting([100.0], n_shuffles=10)
+        assert result["overfit_flag"] is False
+        assert result["actual_sharpe"] == 0.0
+
+        result = detect_overfitting([], n_shuffles=10)
+        assert result["overfit_flag"] is False
+
+    def test_overfitting_returns_expected_keys(self):
+        """detect_overfitting returns all expected keys."""
+        from royaltdn.backtesting.metrics import detect_overfitting
+
+        pnls = [100.0, -20.0, 50.0, -10.0, 30.0]
+        result = detect_overfitting(pnls, n_shuffles=50, seed=42)
+
+        expected_keys = {
+            "actual_sharpe", "shuffled_mean_sharpe", "shuffled_std_sharpe",
+            "shuffled_p50", "shuffled_p95", "actual_percentile",
+            "overfit_flag",
+        }
+        assert set(result.keys()) == expected_keys
+
+    def test_overfitting_actual_sharpe_finite(self):
+        """Actual Sharpe is a finite float."""
+        from royaltdn.backtesting.metrics import detect_overfitting
+
+        pnls = [100.0, -20.0, 50.0, -10.0, 30.0, 25.0]
+        result = detect_overfitting(pnls, n_shuffles=50, seed=42)
+        assert isinstance(result["actual_sharpe"], float)
+
+    def test_overfitting_percentile_in_range(self):
+        """Percentile is between 0 and 100."""
+        import numpy as np
+
+        from royaltdn.backtesting.metrics import detect_overfitting
+
+        pnls = [100.0, -20.0, 50.0, -10.0, 30.0, 25.0, -5.0, 15.0]
+        result = detect_overfitting(pnls, n_shuffles=50, seed=42)
+        assert 0 <= result["actual_percentile"] <= 100
+
+    def test_overfitting_seed_determinism(self):
+        """Same seed → same result."""
+        from royaltdn.backtesting.metrics import detect_overfitting
+
+        pnls = [100.0, -20.0, 50.0, -10.0, 30.0]
+        r1 = detect_overfitting(pnls, n_shuffles=50, seed=42)
+        r2 = detect_overfitting(pnls, n_shuffles=50, seed=42)
+        assert r1["actual_percentile"] == r2["actual_percentile"]
+        assert r1["shuffled_mean_sharpe"] == r2["shuffled_mean_sharpe"]
+
+
+# ========================================================================
+# Survivorship bias
+# ========================================================================
+
+
+class TestSurvivorshipBias:
+    """bt_metrics.check_survivorship_bias behaviour."""
+
+    def test_known_symbol_after_listing_no_warning(self):
+        """Symbol with data after listing date → no warnings."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["SOLUSDT"], "2022-01-01")
+        assert len(warnings) == 0
+
+    def test_known_symbol_before_listing_warning(self):
+        """Symbol with data before listing date → warning."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["SOLUSDT"], "2019-06-01")
+        assert len(warnings) == 1
+        assert "SOLUSDT" in warnings[0]
+        assert "before listing" in warnings[0].lower()
+
+    def test_unknown_symbol_no_warning(self):
+        """Unknown symbol (not in registry) → no warning."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["XXXUSDT"], "2018-01-01")
+        assert len(warnings) == 0
+
+    def test_multiple_symbols_one_warning(self):
+        """Multiple symbols where only one is pre-listing."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["BTCUSDT", "ARBUSDT"], "2022-01-01")
+        assert len(warnings) == 1
+        assert "ARBUSDT" in warnings[0]
+
+    def test_clean_symbol_with_slash(self):
+        """Symbol with '/' separator is cleaned before checking."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["SOL/USDT"], "2019-06-01")
+        assert len(warnings) == 1
+        assert "SOLUSDT" in warnings[0]
+
+    def test_invalid_date_returns_warning(self):
+        """Unparseable date → error warning."""
+        from royaltdn.backtesting.metrics import check_survivorship_bias
+
+        warnings = check_survivorship_bias(["BTCUSDT"], "not-a-date")
+        assert len(warnings) == 1
+
+
+# ========================================================================
+# BacktestResult new fields
+# ========================================================================
+
+
+class TestBacktestResultEnhanced:
+    """BacktestResult dataclass with new benchmark/overfitting fields."""
+
+    def test_backtest_result_defaults(self):
+        """New fields default to zero/false/empty."""
+        from royaltdn.backtesting.backtester import BacktestResult
+
+        result = BacktestResult(
+            trades=[],
+            equity_curve=[100_000.0],
+            metrics={},
+        )
+
+        assert result.benchmark_alpha == 0.0
+        assert result.benchmark_beta == 0.0
+        assert result.benchmark_return == 0.0
+        assert result.strategy_return == 0.0
+        assert result.strategy_outperformed is False
+        assert result.overfitting_sharpe_percentile == 0.0
+        assert result.overfitting_flag is False
+        assert result.survivorship_warnings == []
+
+    def test_backtest_result_custom_values(self):
+        """New fields store custom values correctly."""
+        from royaltdn.backtesting.backtester import BacktestResult
+
+        result = BacktestResult(
+            trades=[],
+            equity_curve=[100_000.0],
+            metrics={},
+            benchmark_alpha=0.05,
+            benchmark_beta=0.8,
+            benchmark_return=0.10,
+            strategy_return=0.15,
+            strategy_outperformed=True,
+            overfitting_sharpe_percentile=95.0,
+            overfitting_flag=True,
+            survivorship_warnings=["SOLUSDT pre-listing data"],
+        )
+
+        assert result.benchmark_alpha == 0.05
+        assert result.benchmark_beta == 0.8
+        assert result.strategy_outperformed is True
+        assert result.overfitting_flag is True
+        assert len(result.survivorship_warnings) == 1
+
+
+# ========================================================================
+# Benchmark equity curve helper
+# ========================================================================
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason=NUMPY_SKIP_REASON)
+class TestBenchmarkEquity:
+    """_compute_benchmark_equity helper behaviour."""
+
+    def test_benchmark_equity_simple(self):
+        """Buy-and-hold at first close → proportional equity."""
+        import pandas as pd
+
+        from royaltdn.backtesting.backtester import _compute_benchmark_equity
+
+        df = pd.DataFrame({"close": [100.0, 110.0, 121.0]})
+        curve = _compute_benchmark_equity(df, initial_capital=1000.0)
+
+        assert curve[0] == 1000.0
+        # qty = 1000 / 100 = 10
+        # bar1: 10 * 110 = 1100
+        # bar2: 10 * 121 = 1210
+        assert curve[1] == pytest.approx(1100.0, rel=1e-9)
+        assert curve[2] == pytest.approx(1210.0, rel=1e-9)
+
+    def test_benchmark_equity_empty(self):
+        """Empty DataFrame → just initial capital."""
+        import pandas as pd
+
+        from royaltdn.backtesting.backtester import _compute_benchmark_equity
+
+        df = pd.DataFrame({"close": []})
+        curve = _compute_benchmark_equity(df, initial_capital=1000.0)
+        assert curve == [1000.0]
+
+    def test_benchmark_equity_zero_entry_price(self):
+        """Entry price of 0 → flat equity curve."""
+        import pandas as pd
+
+        from royaltdn.backtesting.backtester import _compute_benchmark_equity
+
+        df = pd.DataFrame({"close": [0.0, 10.0]})
+        curve = _compute_benchmark_equity(df, initial_capital=1000.0)
+        # All entries should be initial_capital
+        assert all(v == 1000.0 for v in curve)
+
+
+# ========================================================================
+# Bars per year mapping
+# ========================================================================
+
+
+class TestBarsPerYear:
+    """bt_metrics.bars_per_year behaviour."""
+
+    def test_bars_per_year_default(self):
+        """Default timeframe '1d' → 365 bars/year (crypto 24/7)."""
+        from royaltdn.backtesting.metrics import bars_per_year
+
+        assert bars_per_year() == 365
+
+    def test_bars_per_year_hourly(self):
+        """1h → 8760."""
+        from royaltdn.backtesting.metrics import bars_per_year
+
+        assert bars_per_year("1h") == 8760
+
+    def test_bars_per_year_30m(self):
+        """30m → 17520."""
+        from royaltdn.backtesting.metrics import bars_per_year
+
+        assert bars_per_year("30m") == 17520
+
+    def test_bars_per_year_unknown_timeframe(self):
+        """Unknown timeframe → falls back to 365."""
+        from royaltdn.backtesting.metrics import bars_per_year
+
+        assert bars_per_year("unknown") == 365
