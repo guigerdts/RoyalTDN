@@ -442,6 +442,7 @@ def support_resistance(
     data: Any,
     lookback: int = 100,
     touch_count: int = 2,
+    side: str = "both",
 ) -> bool:
     """Check if price is near a significant support or resistance level.
 
@@ -454,6 +455,8 @@ def support_resistance(
         data: Dict with ``high``, ``low``, ``close`` lists.
         lookback: Number of bars to scan.
         touch_count: Minimum touches for a level to be significant.
+        side: Which levels to check — ``"support"``, ``"resistance"``,
+            or ``"both"`` (default).
 
     Returns:
         True if price is near a valid support or resistance level.
@@ -476,36 +479,39 @@ def support_resistance(
         if high.iloc[i] == high.iloc[i - window : i + window + 1].max():
             resistances.append(float(high.iloc[i]))
 
-    # Cluster nearby levels (within 0.5 %)
-    def _cluster(levels: list[float], tolerance: float = 0.005) -> list[float]:
+    # Cluster nearby levels (within 0.5 %), returning (level, count) tuples
+    def _cluster(levels: list[float], tolerance: float = 0.005) -> list[tuple[float, int]]:
         if not levels:
             return []
         levels.sort()
-        clustered: list[float] = []
+        clustered: list[tuple[float, int]] = []
         group: list[float] = [levels[0]]
         for lvl in levels[1:]:
             if abs(lvl - group[-1]) / max(abs(group[-1]), 1.0) <= tolerance:
                 group.append(lvl)
             else:
-                clustered.append(sum(group) / len(group))
+                clustered.append((sum(group) / len(group), len(group)))
                 group = [lvl]
         if group:
-            clustered.append(sum(group) / len(group))
+            clustered.append((sum(group) / len(group), len(group)))
         return clustered
 
-    clustered_support = _cluster(supports)
-    clustered_resistance = _cluster(resistances)
+    # Filter clusters by minimum touch count
+    clustered_support = [(lvl, cnt) for lvl, cnt in _cluster(supports) if cnt >= touch_count]
+    clustered_resistance = [(lvl, cnt) for lvl, cnt in _cluster(resistances) if cnt >= touch_count]
 
     current_close = float(close.iloc[-1])
     proximity = 0.005  # 0.5 %
 
-    for level in clustered_support:
-        if abs(current_close - level) / max(level, 1.0) <= proximity:
-            return True
+    if side in ("both", "support"):
+        for level, _count in clustered_support:
+            if abs(current_close - level) / max(level, 1.0) <= proximity:
+                return True
 
-    for level in clustered_resistance:
-        if abs(current_close - level) / max(level, 1.0) <= proximity:
-            return True
+    if side in ("both", "resistance"):
+        for level, _count in clustered_resistance:
+            if abs(current_close - level) / max(level, 1.0) <= proximity:
+                return True
 
     return False
 

@@ -68,6 +68,7 @@ class TestCell(unittest.TestCase):
         self.config = {
             "name": "ema_cross",
             "symbol": "BTCUSDT",
+            "reentry_cooldown": 0,  # unit test: no artificial delay
             "risk": {
                 "sizing": 0.01,
                 "max_positions": 3,

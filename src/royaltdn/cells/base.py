@@ -76,6 +76,9 @@ class Cell:
             except Exception:
                 logger.exception("Error construyendo grafo de entrada short para {}", self.name)
 
+        # ── Exit threshold scaling (test mode) — MUST be before _parse_exit_rules
+        self.exit_pct_scale: float = float(config.get("exit_pct_scale", 1.0))
+
         # ── Parse exit list (YAML: list of {type, params}) ─────────────
         self.exit_list: list[dict[str, Any]] = config.get("exit", [])
         self._parse_exit_rules()
@@ -89,10 +92,32 @@ class Cell:
         self._trailing_high: float = 0.0
         self._trailing_low: float = 0.0
 
+        # ── Signal cooldown ─────────────────────────────────────────
+        self.min_signal_interval: float = float(config.get("min_signal_interval", 0))
+        self._last_signal_time: float = 0.0
+        self._last_signal_price: float = 0.0
+
+        # ── Min movement filter ────────────────────────────────────────
+        self.min_signal_move_pct: float = float(config.get("min_signal_move_pct", 0))
+
+        # ── Efficiency counters ─────────────────────────────────────
+        self._signals_generated: int = 0
+        self._signals_approved: int = 0
+        self._signals_rejected: int = 0
+
+        # ── Periodic efficiency log ──────────────────────────────────
+        self._log_every_n_signals: int = int(config.get("log_every_n_signals", 20))
+        self._signals_since_last_log: int = 0
+
+        # ── Re-entry cooldown (prevents rapid flip-flop after exit) ──
+        self.reentry_cooldown: float = float(config.get("reentry_cooldown", 60))
+        self._last_exit_time: float = 0.0
+
     # ── State management ─────────────────────────────────────────────
 
     def reset_state(self) -> None:
         """Reset cell to initial IDLE state with empty state."""
+        self.log_efficiency()
         self.state = "IDLE"
         self.bars = []
         self.entry_price = 0.0
@@ -109,7 +134,12 @@ class Cell:
         Supports two parameter modes:
         - ``atr_multiplier`` (float): exit distance = multiplier × ATR %
         - ``pct`` (float): exit distance = fixed percentage of entry price
+
+        When ``exit_pct_scale != 1.0`` (test mode), all ``pct`` values
+        are multiplied by the scale factor.  ATR-based exits are not
+        affected so they remain adaptive to market volatility.
         """
+        scale = getattr(self, "exit_pct_scale", 1.0)
         self.exit_stop_loss: float | None = None      # ATR multiplier
         self.exit_stop_loss_pct: float | None = None   # fixed % (0.062 = 6.2%)
         self.exit_take_profit: float | None = None     # ATR multiplier
@@ -123,17 +153,32 @@ class Cell:
             params = rule.get("params", {})
             if rule_type == "stop_loss":
                 if "pct" in params:
-                    self.exit_stop_loss_pct = float(params["pct"]) / 100.0
+                    pct_val = float(params["pct"]) * scale
+                    logger.debug(
+                        "{} STOP-LOSS pct: {:.2f}% (base={}%, scale={})",
+                        self.name, pct_val, params["pct"], scale,
+                    )
+                    self.exit_stop_loss_pct = pct_val / 100.0
                 else:
                     self.exit_stop_loss = float(params.get("atr_multiplier", 1.5))
             elif rule_type == "take_profit":
                 if "pct" in params:
-                    self.exit_take_profit_pct = float(params["pct"]) / 100.0
+                    pct_val = float(params["pct"]) * scale
+                    logger.debug(
+                        "{} TAKE-PROFIT pct: {:.2f}% (base={}%, scale={})",
+                        self.name, pct_val, params["pct"], scale,
+                    )
+                    self.exit_take_profit_pct = pct_val / 100.0
                 else:
                     self.exit_take_profit = float(params.get("atr_multiplier", 3.0))
             elif rule_type == "trailing_stop":
                 if "pct" in params:
-                    self.exit_trailing_stop_pct = float(params["pct"]) / 100.0
+                    pct_val = float(params["pct"]) * scale
+                    logger.debug(
+                        "{} TRAILING-STOP pct: {:.2f}% (base={}%, scale={})",
+                        self.name, pct_val, params["pct"], scale,
+                    )
+                    self.exit_trailing_stop_pct = pct_val / 100.0
                 else:
                     self.exit_trailing_stop = float(params.get("atr_multiplier", 2.0))
             elif rule_type == "zscore":
@@ -222,6 +267,24 @@ class Cell:
         if not market_data:
             return None
 
+        # Signal cooldown
+        if self.min_signal_interval > 0 and self._last_signal_time > 0:
+            elapsed = time.time() - self._last_signal_time
+            if elapsed < self.min_signal_interval:
+                return None
+
+        # Min movement filter
+        if self.min_signal_move_pct > 0 and self._last_signal_price > 0:
+            move_pct = abs(current_price - self._last_signal_price) / self._last_signal_price * 100
+            if move_pct < self.min_signal_move_pct:
+                return None
+
+        # Re-entry cooldown: prevent rapid re-entry after an exit
+        if self.reentry_cooldown > 0 and self._last_exit_time > 0:
+            elapsed = time.time() - self._last_exit_time
+            if elapsed < self.reentry_cooldown:
+                return None
+
         try:
             should_enter = self._entry_graph.evaluate(market_data)
         except Exception:
@@ -230,6 +293,17 @@ class Cell:
 
         if not should_enter:
             return None
+
+        # Track signal generation and update cooldown state
+        self._signals_generated += 1
+        self._signals_since_last_log += 1
+        self._last_signal_time = time.time()
+        self._last_signal_price = current_price
+
+        # Periodic efficiency log
+        if self._log_every_n_signals > 0 and self._signals_since_last_log >= self._log_every_n_signals:
+            self.log_efficiency()
+            self._signals_since_last_log = 0
 
         # Risk approval is pending — do NOT change state here.
         # Engine will call enter_position() after approval.
@@ -262,6 +336,24 @@ class Cell:
         if not market_data:
             return None
 
+        # Signal cooldown
+        if self.min_signal_interval > 0 and self._last_signal_time > 0:
+            elapsed = time.time() - self._last_signal_time
+            if elapsed < self.min_signal_interval:
+                return None
+
+        # Min movement filter
+        if self.min_signal_move_pct > 0 and self._last_signal_price > 0:
+            move_pct = abs(current_price - self._last_signal_price) / self._last_signal_price * 100
+            if move_pct < self.min_signal_move_pct:
+                return None
+
+        # Re-entry cooldown: prevent rapid re-entry after an exit
+        if self.reentry_cooldown > 0 and self._last_exit_time > 0:
+            elapsed = time.time() - self._last_exit_time
+            if elapsed < self.reentry_cooldown:
+                return None
+
         try:
             should_enter = self._short_entry_graph.evaluate(market_data)
         except Exception:
@@ -270,6 +362,17 @@ class Cell:
 
         if not should_enter:
             return None
+
+        # Track signal generation and update cooldown state
+        self._signals_generated += 1
+        self._signals_since_last_log += 1
+        self._last_signal_time = time.time()
+        self._last_signal_price = current_price
+
+        # Periodic efficiency log
+        if self._log_every_n_signals > 0 and self._signals_since_last_log >= self._log_every_n_signals:
+            self.log_efficiency()
+            self._signals_since_last_log = 0
 
         return {
             "action": "SHORT",
@@ -506,11 +609,43 @@ class Cell:
         Called by the EventEngine AFTER the RiskManager approves and
         the broker executes the exit trade.  This is the mirror of
         ``enter_position()`` — state changes only after confirmation.
+
+        Also records ``_last_exit_time`` to enforce the re-entry
+        cooldown and prevent rapid flip-flop (Bug: re-entry after
+        stop-loss).
         """
         self.state = "IDLE"
         self.entry_price = 0.0
         self._trailing_high = 0.0
         self._trailing_low = 0.0
+        self._last_exit_time = time.time()
+        logger.debug(
+            "{} {} exit_position() — reentry cooldown {}s",
+            self.symbol, self.name, self.reentry_cooldown,
+        )
+
+    # ── Efficiency tracking ───────────────────────────────────────────
+
+    def record_approval(self) -> None:
+        """Called by engine when risk manager approves this cell's signal."""
+        self._signals_approved += 1
+
+    def record_rejection(self) -> None:
+        """Called by engine when risk manager rejects this cell's signal."""
+        self._signals_rejected += 1
+
+    def log_efficiency(self) -> None:
+        """Log signal generation efficiency metrics."""
+        total = self._signals_generated
+        approved = self._signals_approved
+        rejected = self._signals_rejected
+        if total > 0:
+            approval_rate = approved / total * 100
+            logger.info(
+                "{} ({}) — Senales: {} gen, {} aprob ({:.1f}%), {} rej",
+                self.name, self.symbol,
+                total, approved, approval_rate, rejected,
+            )
 
     # ── Data helpers ──────────────────────────────────────────────────
 

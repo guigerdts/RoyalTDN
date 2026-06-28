@@ -172,6 +172,7 @@ class EventEngine:
                 # This is crucial: previously the cell set state=
                 # IN_POSITION BEFORE risk approval, so a rejection
                 # would trap the cell permanently.
+                cell.record_rejection()
                 continue
 
             # ── Eviction handling ──────────────────────────────────────────
@@ -209,6 +210,9 @@ class EventEngine:
                             )
                 except Exception:
                     logger.exception("Error al cerrar posicion evictada")
+
+            # Record approval for cell efficiency metrics
+            cell.record_approval()
 
             # Risk check passed — update cell state based on action.
             # BUY after risk approval: normally a long entry, BUT if the

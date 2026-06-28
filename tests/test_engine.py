@@ -39,6 +39,15 @@ class MockCell:
         self.name = name
         self.symbol = symbol
         self.handle = AsyncMock(return_value=None)
+        self._signals_generated = 0
+        self._signals_approved = 0
+        self._signals_rejected = 0
+
+    def record_approval(self) -> None:
+        self._signals_approved += 1
+
+    def record_rejection(self) -> None:
+        self._signals_rejected += 1
 
 
 class TestEventEngine(unittest.TestCase):

@@ -29,6 +29,9 @@ short_entry:
       period: 48
     operator: '> 68.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 1.0
 - type: take_profit
   params:
     pct: 3.0
@@ -60,6 +63,9 @@ short_entry:
       period: 50
     operator: '> 25.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 1.0
 - type: trailing_stop
   params:
     pct: 4.0
@@ -137,6 +143,9 @@ short_entry:
       period: 35
     operator: '> 63.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 0.80
 - type: take_profit
   params:
     pct: 2.0
@@ -175,6 +184,9 @@ short_entry:
       period: 50
     operator: '> 37.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 1.0
 - type: trailing_stop
   params:
     pct: 3.0

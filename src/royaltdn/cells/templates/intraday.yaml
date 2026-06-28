@@ -27,6 +27,9 @@ short_entry:
       period: 15
       factor: 2.2
 exit:
+- type: stop_loss
+  params:
+    pct: 0.50
 - type: trailing_stop
   params:
     pct: 1.5
@@ -51,6 +54,9 @@ short_entry:
     params:
       factor: 2.7
 exit:
+- type: stop_loss
+  params:
+    pct: 0.50
 - type: take_profit
   params:
     pct: 6.2
@@ -99,6 +105,9 @@ name: intraday_support_resistance
 symbol: LINKUSDT
 timeframe: 30m
 max_hold_hours: 8
+min_signal_interval: 120
+min_signal_move_pct: 0.05
+exit_pct_scale: 0.25    # test mode: 0.60% SL → 0.15%, 6.9% TP → 1.72%
 entry:
   logic: AND
   conditions:
@@ -106,6 +115,7 @@ entry:
     params:
       lookback: 93
       touch_count: 4
+      side: support
 short_entry:
   logic: AND
   conditions:
@@ -113,7 +123,11 @@ short_entry:
     params:
       lookback: 93
       touch_count: 4
+      side: resistance
 exit:
+- type: stop_loss
+  params:
+    pct: 0.60
 - type: take_profit
   params:
     pct: 6.9
@@ -149,6 +163,9 @@ exit:
 - type: stop_loss
   params:
     pct: 0.60
+- type: take_profit
+  params:
+    pct: 0.80
 risk:
   sizing: 0.005
   max_positions: 5

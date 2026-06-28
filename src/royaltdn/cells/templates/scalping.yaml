@@ -97,6 +97,9 @@ short_entry:
       period: 7
     operator: '> 75.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 0.25
 - type: take_profit
   params:
     pct: 0.40
@@ -160,9 +163,12 @@ short_entry:
       period: 18
       max_pct: 8.7
 exit:
+- type: stop_loss
+  params:
+    pct: 0.30
 - type: take_profit
   params:
-    pct: 4.9
+    pct: 0.50
 risk:
   sizing: 0.005
   max_positions: 3
