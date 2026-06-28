@@ -123,18 +123,31 @@ async def main():
         config_path=config_path,
     )
 
+    # ── OrderManager — shared across brokers ──────────────────────────────────
+    from royaltdn.execution.order_manager import OrderManager
+    order_manager = OrderManager()
+
     # Broker
     if cfg.broker == "binance":
         try:
             from royaltdn.execution.binance_broker import BinanceBroker
             api_key = os.getenv("BINANCE_API_KEY", "")
             api_secret = os.getenv("BINANCE_SECRET_KEY", "")
-            broker = BinanceBroker(api_key, api_secret, testnet=cfg.testnet)
+            broker = BinanceBroker(
+                api_key, api_secret, testnet=cfg.testnet,
+                order_manager=order_manager,
+            )
         except Exception as e:
             logger.warning("Binance broker no disponible ({}), usando paper", e)
-            broker = PaperBroker(initial_capital=cfg.initial_capital, portfolio=portfolio)
+            broker = PaperBroker(
+                initial_capital=cfg.initial_capital, portfolio=portfolio,
+                order_manager=order_manager,
+            )
     else:
-        broker = PaperBroker(initial_capital=cfg.initial_capital, portfolio=portfolio)
+        broker = PaperBroker(
+            initial_capital=cfg.initial_capital, portfolio=portfolio,
+            order_manager=order_manager,
+        )
 
     broker.set_bus(bus)
 
@@ -155,7 +168,33 @@ async def main():
     # Engine
     trade_tracker = TradeTracker()
     risk_manager._trade_tracker = trade_tracker  # enable cell performance eviction
-    engine = EventEngine(clock, bus, risk_manager, broker, journal=journal, trade_tracker=trade_tracker)
+
+    # ── KillSwitch — emergency stop ──────────────────────────────────────────
+    from royaltdn.execution.kill_switch import KillSwitch
+    kill_switch = KillSwitch(
+        portfolio=portfolio,
+        binance_broker=broker if cfg.broker == "binance" else None,
+        paper_broker=broker if cfg.broker == "paper" else None,
+    )
+    # Register auto-trigger at configured drawdown threshold
+    kill_switch.register_auto_trigger(
+        condition=lambda: portfolio.get_drawdown() >= cfg.kill_switch_drawdown,
+        reason=f"drawdown_exceeded_{cfg.kill_switch_drawdown:.0%}",
+    )
+
+    engine = EventEngine(
+        clock, bus, risk_manager, broker,
+        journal=journal, trade_tracker=trade_tracker,
+        kill_switch=kill_switch,
+    )
+
+    # ── Reconcile open orders on startup (Binance live only) ────────────────
+    if cfg.broker == "binance" and hasattr(broker, 'reconcile_orders'):
+        logger.info("Reconciliando ordenes abiertas con Binance...")
+        try:
+            broker.reconcile_orders()
+        except Exception as exc:
+            logger.warning("Reconciliacion inicial fallo (no critico): {}", exc)
 
     # Cargar celulas desde YAML
     strategies_dir = cfg.strategies_path
@@ -241,6 +280,8 @@ async def main():
             await asyncio.gather(*_background_tasks, return_exceptions=True)
         if telegram_alerts:
             await telegram_alerts.stop()
+        if kill_switch is not None:
+            kill_switch.release()
         logger.info("CellMesh detenido.")
 
 

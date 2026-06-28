@@ -65,6 +65,7 @@ class BotConfig:
     telegram_level: str = "normal"
     telegram_equity_threshold: float = 1.0
     telegram_summary_interval: int = 15
+    kill_switch_drawdown: float = 0.30
     optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
 
     # Derived
@@ -103,6 +104,7 @@ class BotConfig:
                 telegram_level=_as_str(data, "telegram_level", "normal"),
                 telegram_equity_threshold=_as_float(data, "telegram_equity_threshold", 1.0, ge=0),
                 telegram_summary_interval=_as_int(data, "telegram_summary_interval", 15, ge=1),
+                kill_switch_drawdown=_as_float(data, "kill_switch_drawdown", 0.30, ge=0.0, le=1.0),
                 optimization=OptimizationConfig.from_dict(
                     _as_dict(data, "optimization", {})
                 ),
@@ -130,6 +132,7 @@ class BotConfig:
             "telegram_level": self.telegram_level,
             "telegram_equity_threshold": self.telegram_equity_threshold,
             "telegram_summary_interval": self.telegram_summary_interval,
+            "kill_switch_drawdown": self.kill_switch_drawdown,
             "optimization": {
                 "interval_days": self.optimization.interval_days,
                 "metric": self.optimization.metric,

@@ -35,6 +35,7 @@ class EventEngine:
         execution_broker: Any,
         journal: Any = None,
         trade_tracker: Any = None,
+        kill_switch: Any = None,
     ) -> None:
         """Initialise the event engine.
 
@@ -47,6 +48,7 @@ class EventEngine:
             journal: Optional Journal instance for structured trade logging.
             trade_tracker: Optional TradeTracker instance for closed-trade
                 recording and metrics.
+            kill_switch: Optional KillSwitch for emergency trading halt.
         """
         self.clock = clock
         self.bus = bus
@@ -54,6 +56,7 @@ class EventEngine:
         self.execution_broker = execution_broker
         self.journal = journal
         self.trade_tracker = trade_tracker
+        self.kill_switch = kill_switch
         self.cells: list[Any] = []
         self._running = False
 
@@ -100,6 +103,10 @@ class EventEngine:
 
             await self._process_event(event)
 
+            # Check auto-trigger conditions after each event
+            if self.kill_switch is not None:
+                self.kill_switch.check_auto_triggers()
+
         logger.info("EventEngine detenido")
 
     async def _process_event(self, event: dict[str, Any]) -> None:
@@ -108,6 +115,14 @@ class EventEngine:
         Args:
             event: The event dict to process.
         """
+        # KillSwitch check — skip all processing when active
+        if self.kill_switch is not None and self.kill_switch.is_active:
+            logger.warning(
+                "KillSwitch activo — saltando evento {}",
+                event.get("type", ""),
+            )
+            return
+
         for cell in self.cells:
             try:
                 signal = await cell.handle(event)
@@ -258,12 +273,18 @@ class EventEngine:
                 continue
 
             if result and result.get("status") in ("filled", "complete", "closed"):
+                # Use the broker's fill_price (slippage-adjusted) for
+                # reporting, and the effective price (includes commission)
+                # for portfolio cost-basis tracking.
+                fill_price: float = result.get("fill_price", approved.get("price", 0.0))
+                effective_price: float = result.get("price", approved.get("price", 0.0))
+
                 trade_event: dict[str, Any] = {
                     "type": "trade",
                     "symbol": approved.get("symbol", ""),
                     "action": approved.get("action", ""),
                     "qty": approved.get("qty", 0),
-                    "price": approved.get("price", 0.0),
+                    "price": fill_price,
                     "order_id": result.get("order_id", ""),
                     "status": result.get("status", "filled"),
                 }
@@ -277,14 +298,18 @@ class EventEngine:
                         symbol=approved.get("symbol", ""),
                         action=approved.get("action", ""),
                         qty=approved.get("qty", 0),
-                        price=approved.get("price", 0.0),
+                        price=fill_price,
                         trade_id=_trade_id,
                     )
 
                 # Update RiskManager's Portfolio (single source of truth —
                 # M2: all state goes through Portfolio, not the broker).
+                # Use the effective price (includes commission) for correct
+                # cost basis in the portfolio.
                 try:
-                    self.risk_manager.portfolio.update(trade_event)
+                    portfolio_event: dict[str, Any] = dict(trade_event)
+                    portfolio_event["price"] = effective_price
+                    self.risk_manager.portfolio.update(portfolio_event)
                 except Exception:
                     logger.exception(
                         "Error al actualizar portfolio del risk manager"
@@ -382,11 +407,12 @@ class EventEngine:
                             )
 
                 logger.info(
-                    "Trade ejecutado: {} {} {} @ ${:.2f} (orden: {})",
+                    "Trade ejecutado: {} {} {} @ ${:.2f} (fill ${:.2f}, orden: {})",
                     approved.get("symbol", ""),
                     approved.get("action", ""),
                     approved.get("qty", 0),
-                    approved.get("price", 0.0),
+                    effective_price,
+                    fill_price,
                     result.get("order_id", ""),
                 )
 
@@ -416,6 +442,11 @@ class EventEngine:
 
         for event in events:
             if not isinstance(event, dict):
+                continue
+            # Only market-data events should reach cells (same filter as
+            # the async `run()` loop at lines 97-99).
+            etype = event.get("type", "")
+            if etype not in ("tick",):
                 continue
             try:
                 asyncio.run(self._process_event(event))

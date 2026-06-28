@@ -53,7 +53,12 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
+        broker = PaperBroker(
+            initial_capital=100_000.0,
+            portfolio=portfolio,
+            commission_pct=0.0,
+            slippage_pct=0.0,
+        )
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         # Mock cell that always returns a BUY signal (using sizing fraction)
@@ -101,7 +106,12 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=5, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
+        broker = PaperBroker(
+            initial_capital=100_000.0,
+            portfolio=portfolio,
+            commission_pct=0.0,
+            slippage_pct=0.0,
+        )
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         cell = MagicMock()
@@ -155,7 +165,12 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
+        broker = PaperBroker(
+            initial_capital=100_000.0,
+            portfolio=portfolio,
+            commission_pct=0.0,
+            slippage_pct=0.0,
+        )
         engine = EventEngine(clock, bus, risk_manager, broker)
 
         # BTC cell — generates signal
@@ -207,9 +222,15 @@ class TestIntegration(unittest.TestCase):
         clock = RealClock()
         portfolio = Portfolio(initial_capital=100_000.0)
         risk_manager = RiskManager(portfolio, max_positions=10, max_drawdown=0.03)
-        broker = PaperBroker(initial_capital=100_000.0, portfolio=portfolio)
+        broker = PaperBroker(
+            initial_capital=100_000.0,
+            portfolio=portfolio,
+            commission_pct=0.0,
+            slippage_pct=0.0,
+        )
         engine = EventEngine(clock, bus, risk_manager, broker)
 
+        # BTC cell — generates signal
         btc_cell = MagicMock()
         btc_cell.name = "btc_cell"
         btc_cell.handle = AsyncMock(

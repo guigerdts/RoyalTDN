@@ -15,6 +15,7 @@ telegram_chat_id: ""
 telegram_level: "normal"
 telegram_equity_threshold: 1.0
 telegram_summary_interval: 15
+kill_switch_drawdown: 0.30
 
 # Periodic optimization (used when run.py --optimize is active)
 optimization:

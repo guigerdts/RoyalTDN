@@ -67,20 +67,30 @@ class BinanceFeed:
         Runs an infinite receive loop, parsing messages and emitting
         events onto the bus. Reconnects with exponential backoff on
         disconnection. Handles KeyboardInterrupt gracefully.
+
+        Backoff starts at 1 s, doubles each attempt up to 60 s max.
+        After 5 consecutive attempts at max backoff, logs CRITICAL
+        and propagates the exception so the caller can react.
         """
         self._running = True
-        retry_delays = [3, 10, 30]
-        attempt = 0
+
+        base_delay: float = 1.0
+        max_delay: float = 60.0
+        multiplier: float = 2.0
+        attempt: int = 0
+        max_retries: int = 5
 
         url = self._build_url()
-        logger.info("Connecting to Binance WebSocket: {}", url)
+        logger.info("Conectando a Binance WebSocket: {}", url)
 
         while self._running:
             try:
                 async with websockets.connect(url, ping_interval=20) as ws:
                     self._ws = ws
                     attempt = 0  # reset on successful connection
-                    logger.info("WebSocket connected for symbols: {}", self.symbols)
+                    logger.info(
+                        "WebSocket conectado para simbolos: {}", self.symbols,
+                    )
 
                     async for raw in ws:
                         if not self._running:
@@ -88,24 +98,39 @@ class BinanceFeed:
                         await self._handle_message(raw)
 
             except asyncio.CancelledError:
-                logger.info("WebSocket task cancelled")
+                logger.info("Tarea WebSocket cancelada")
                 break
             except KeyboardInterrupt:
-                logger.info("KeyboardInterrupt received, stopping feed")
+                logger.info("KeyboardInterrupt recibido, deteniendo feed")
                 self._running = False
                 break
             except websockets.ConnectionClosed:
-                logger.warning("WebSocket connection closed")
+                logger.warning("Conexion WebSocket cerrada")
             except Exception:
-                logger.exception("Unexpected WebSocket error")
+                logger.exception("Error inesperado en WebSocket")
 
             if not self._running:
                 break
 
-            delay = retry_delays[min(attempt, len(retry_delays) - 1)]
-            logger.info("Reconnecting in {}s (attempt {})", delay, attempt + 1)
-            await asyncio.sleep(delay)
+            # Exponential backoff
+            delay: float = min(base_delay * (multiplier**attempt), max_delay)
             attempt += 1
+
+            logger.info(
+                "Reconectando en {:.1f}s (intento {})", delay, attempt,
+            )
+
+            # Permanent failure: 5+ consecutive attempts at max delay
+            if attempt >= max_retries and delay >= max_delay:
+                logger.critical(
+                    "WebSocket sin conexion tras {} intentos — abortando",
+                    attempt,
+                )
+                raise ConnectionError(
+                    f"BinanceFeed no pudo reconectarse tras {attempt} intentos"
+                )
+
+            await asyncio.sleep(delay)
 
     async def _handle_message(self, raw: str) -> None:
         """Parse a raw WS message and emit a tick event to the bus.
