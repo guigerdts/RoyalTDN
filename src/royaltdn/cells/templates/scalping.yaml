@@ -38,6 +38,12 @@ short_entry:
       period: 7
     operator: '> 60.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 0.6
+- type: take_profit
+  params:
+    pct: 1.2
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -90,6 +96,15 @@ short_entry:
       period: 9
     operator: price < ema
 exit:
+- type: stop_loss
+  params:
+    pct: 0.8
+- type: take_profit
+  params:
+    pct: 1.5
+- type: trailing_stop
+  params:
+    pct: 0.5
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -142,6 +157,15 @@ short_entry:
       period: 20
       factor: 2.0
 exit:
+- type: stop_loss
+  params:
+    pct: 0.8
+- type: take_profit
+  params:
+    pct: 1.5
+- type: trailing_stop
+  params:
+    pct: 0.5
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -194,6 +218,12 @@ short_entry:
       period: 7
     operator: '> 70.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 0.6
+- type: take_profit
+  params:
+    pct: 1.2
 - type: trailing_stop
   params:
     atr_multiplier: 2.0

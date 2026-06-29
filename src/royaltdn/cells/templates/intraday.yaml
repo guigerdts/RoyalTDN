@@ -38,6 +38,15 @@ short_entry:
       period: 14
     operator: '> 20.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 1.5
+- type: take_profit
+  params:
+    pct: 2.5
+- type: trailing_stop
+  params:
+    pct: 1.0
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -91,6 +100,12 @@ short_entry:
       std: 2.0
     operator: price > bollinger_upper
 exit:
+- type: stop_loss
+  params:
+    pct: 1.0
+- type: take_profit
+  params:
+    pct: 2.0
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -145,6 +160,15 @@ short_entry:
       period: 20
       factor: 2.0
 exit:
+- type: stop_loss
+  params:
+    pct: 1.5
+- type: take_profit
+  params:
+    pct: 2.5
+- type: trailing_stop
+  params:
+    pct: 1.0
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
@@ -190,6 +214,12 @@ short_entry:
       period: 20
     operator: '> 2.0'
 exit:
+- type: stop_loss
+  params:
+    pct: 1.0
+- type: take_profit
+  params:
+    pct: 2.0
 - type: trailing_stop
   params:
     atr_multiplier: 2.0
