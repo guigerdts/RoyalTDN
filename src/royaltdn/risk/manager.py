@@ -306,9 +306,9 @@ class RiskManager:
         elif action == "SHORT":
             # Equity + qty calculation (uses total portfolio value)
             equity = self.portfolio.get_total_value()
-            if capital <= 0 or price <= 0:
+            if equity <= 0 or price <= 0:
                 return {"approved": False, "reason": "invalid_params",
-                        "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
+                        "detail": f"Equity o precio inválido: equity={equity}, price={price}"}
 
             raw_qty = (equity * sizing) / price
             min_qty = (equity * 0.001) / price if price > 0 else 0.0
