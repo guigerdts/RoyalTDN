@@ -176,21 +176,23 @@ def load_all_strategies() -> list[dict[str, Any]]:
         Flat list of all strategy config dicts across all template files.
         Each dict is tagged with a ``_source_file`` key.
     """
-    from yaml import safe_load
+    from yaml import safe_load_all
     templates_dir = _PROJECT_ROOT / "cells" / "templates"
     strategies: list[dict[str, Any]] = []
     for yaml_path in sorted(templates_dir.glob("*.yaml")):
         try:
             with open(yaml_path) as f:
-                doc = safe_load(f)
-            if isinstance(doc, list):
-                for item in doc:
-                    if isinstance(item, dict):
-                        item["_source_file"] = str(yaml_path)
-                        strategies.append(item)
-            elif isinstance(doc, dict):
-                doc["_source_file"] = str(yaml_path)
-                strategies.append(doc)
+                docs = list(safe_load_all(f))
+            for doc in docs:
+                if isinstance(doc, dict):
+                    if doc.get("name"):
+                        doc["_source_file"] = str(yaml_path)
+                        strategies.append(doc)
+                elif isinstance(doc, list):
+                    for item in doc:
+                        if isinstance(item, dict) and item.get("name"):
+                            item["_source_file"] = str(yaml_path)
+                            strategies.append(item)
         except Exception as exc:
             logger.error("Error loading {}: {}", yaml_path, exc)
     return strategies
@@ -248,26 +250,41 @@ def get_ohlcv(
     symbol: str,
     timeframe: str,
     force_download: bool = False,
+    max_rows: int = 5_000,
 ) -> "pd.DataFrame":
     """Load OHLCV data from cache or download fresh.
+
+    Optimisation uses a generous cache TTL (72h by default) since the
+    data is only used for offline parameter search — no need to re-download
+    every 24h.
 
     Args:
         symbol: Trading pair (e.g. ``"BTCUSDT"``).
         timeframe: Kline interval.
         force_download: Ignore cache and re-download.
+        max_rows: Keep only the most recent N rows.
+            Optimization doesn't need 2 years of 1m candles (~1M rows).
+            5k rows is ~3.5 days of 1m data, enough to stress-test params.
 
     Returns:
-        DataFrame with standard OHLCV columns.
+        DataFrame with standard OHLCV columns, truncated to ``max_rows``.
     """
     from royaltdn.data.historical import download_2y_ohlcv, read_cache, write_cache
 
     df = None
     if not force_download:
-        df = read_cache(symbol, timeframe)
+        # Use 7-day cache TTL for optimisation — 24h default is too tight
+        # for multi-symbol runs that load dozens of symbols; we're doing
+        # offline parameter search, not live trading
+        df = read_cache(symbol, timeframe, max_age_hours=168)
 
     if df is None:
         df = download_2y_ohlcv(symbol, timeframe)
         write_cache(symbol, timeframe, df)
+
+    if len(df) > max_rows:
+        df = df.iloc[-max_rows:].reset_index(drop=True)
+        logger.info("Truncated {} to last {} rows", symbol, max_rows)
 
     return df
 
@@ -279,10 +296,18 @@ def get_ohlcv(
 # Default range table for parameter names
 _PARAM_RANGES: dict[str, tuple] = {
     # (type, low, high, step)  — type is "int" or "float"
+    # Entry params ────────────────────────────────────────────────
     "period": ("int", 2, 50, None),
     "factor": ("float", 0.5, 5.0, 0.1),
     "multiplier": ("float", 0.5, 5.0, 0.1),
     "atr_multiplier": ("float", 0.5, 6.0, 0.1),
+    "std": ("float", 1.0, 4.0, 0.5),
+    # Exit params use compound keys (rule_type.pname) so stop-loss
+    # and take-profit ranges can differ independently
+    "stop_loss.pct": ("float", 0.1, 1.0, 0.1),
+    "take_profit.pct": ("float", 0.1, 1.0, 0.1),
+    "trailing_stop.pct": ("float", 0.1, 2.0, 0.1),
+    # Fallback pct (used when no rule-type-specific range exists)
     "pct": ("float", 0.1, 10.0, 0.1),
     "max_pct": ("float", 0.1, 10.0, 0.1),
     "max_spread_pct": ("float", 0.01, 1.0, 0.01),
@@ -298,24 +323,46 @@ _PARAM_RANGES: dict[str, tuple] = {
     "tenkan": ("int", 5, 20, None),
     "kijun": ("int", 10, 50, None),
     "senkou_b": ("int", 20, 70, None),
+    # SMF Cloud params ───────────────────────────────────────────────
+    "flow_len": ("int", 10, 50, None),
+    "ema_period": ("int", 10, 60, None),
+    "atr_period": ("int", 7, 30, None),
+    "min_mult": ("float", 0.5, 1.5, 0.1),
+    "max_mult": ("float", 1.5, 4.0, 0.1),
     # Operator threshold extraction (e.g. "< -2.5" -> threshold -2.5)
 }
 
 # Param names that should NOT be optimized (structural, not numeric tuning)
 _EXCLUDED_PARAMS: set[str] = {"indicator", "operator", "type", "logic", "conditions"}
 
+# SMF Cloud shared params — when the same param (e.g. flow_len) appears in
+# multiple conditions, the same value MUST be used across all of them so that
+# the SMF cloud is internally consistent.
+_SMF_SHARED_PARAMS: set[str] = {"flow_len", "ema_period", "atr_period"}
 
-def _get_param_range(param_name: str) -> tuple | None:
+
+def _get_param_range(
+    param_name: str,
+    context_key: str | None = None,
+) -> tuple | None:
     """Look up the optimisation range for a parameter by name.
 
-    Falls back to a sensible default for unknown numeric params.
+    When ``context_key`` is provided (e.g. ``"stop_loss.pct"``), it is
+    tried first so that rule-type-specific ranges override the generic
+    ``pct`` fallback.
 
     Args:
         param_name: Parameter name to look up (e.g. ``"period"``).
+        context_key: Compound key ``"{rule_type}.{pname}"`` for context-aware
+            lookups (e.g. ``"stop_loss.pct"`` vs ``"take_profit.pct"``).
 
     Returns:
         Tuple of ``(type, low, high, step)`` or ``None``.
     """
+    # Try the context-aware compound key first
+    if context_key is not None and context_key in _PARAM_RANGES:
+        return _PARAM_RANGES[context_key]
+
     if param_name in _PARAM_RANGES:
         return _PARAM_RANGES[param_name]
     # Try prefix matching for compound names
@@ -351,6 +398,7 @@ def suggest_params(trial: Any, strategy_config: dict) -> dict[str, Any]:
         Flat dict mapping ``{param_key: suggested_value}``.
     """
     params: dict[str, Any] = {}
+    _smf_shared_cache: dict[str, Any] = {}  # shared param name → value across conditions
 
     # ── Entry conditions ───────────────────────────────────────────────
     entry = strategy_config.get("entry", {})
@@ -370,10 +418,21 @@ def suggest_params(trial: Any, strategy_config: dict) -> dict[str, Any]:
                 continue
             ptype, low, high, step = rng
             key = f"entry.{cond_idx}.{indicator}.{pname}"
+
+            # SMF shared params: reuse cached value when the same param
+            # name was already suggested for a previous condition
+            if pname in _SMF_SHARED_PARAMS and pname in _smf_shared_cache:
+                params[key] = _smf_shared_cache[pname]
+                continue
+
             if ptype == "int":
-                params[key] = trial.suggest_int(key, int(low), int(high))
+                val = trial.suggest_int(key, int(low), int(high))
             else:
-                params[key] = trial.suggest_float(key, low, high, step=step if step else None)
+                val = trial.suggest_float(key, low, high, step=step if step else None)
+
+            if pname in _SMF_SHARED_PARAMS:
+                _smf_shared_cache[pname] = val
+            params[key] = val
 
         # Suggest operator threshold if numeric
         op_val = _extract_operator_threshold(operator)
@@ -393,7 +452,10 @@ def suggest_params(trial: Any, strategy_config: dict) -> dict[str, Any]:
                 continue
             if not isinstance(pval, (int, float)):
                 continue
-            rng = _get_param_range(pname)
+            # Use compound key (e.g. "stop_loss.pct") so stop-loss and
+            # take-profit can have different search ranges
+            context_key = f"{rule_type}.{pname}"
+            rng = _get_param_range(pname, context_key=context_key)
             if rng is None:
                 continue
             ptype, low, high, step = rng
@@ -477,126 +539,76 @@ async def simulate(
     strategy_config: dict,
     ohlcv: "pd.DataFrame",
     initial_capital: float = 100_000.0,
-) -> list[dict[str, Any]]:
-    """Run a bar-by-bar simulation of the strategy against OHLCV data.
+) -> Any:
+    """Run a simulation through the real backtesting pipeline.
+
+    Delegates to ``backtester.run()`` which uses the full production
+    pipeline (EventEngine, SimClock, PaperBroker with fees/slippage,
+    RiskManager, Portfolio, TradeTracker).
+
+    Overrides ``max_drawdown`` to 50 % so the risk manager does not
+    truncate the equity curve during optimisation — the drawdown metric
+    is still reported in ``result.metrics["max_drawdown"]`` for the user
+    to evaluate.
 
     Args:
         strategy_config: Strategy config dict (with params applied).
-        ohlcv: DataFrame with columns ``timestamp``, ``open``, ``high``,
-            ``low``, ``close``, ``volume``.
+        ohlcv: OHLCV DataFrame.
         initial_capital: Starting capital.
 
     Returns:
-        List of closed trade dicts, each with ``symbol``, ``action``,
-        ``entry_price``, ``exit_price``, ``qty``, ``pnl``, ``capital``.
+        ``BacktestResult`` with ``.trades`` (closed trades) and ``.metrics``
+        (equity-curve-based metrics including ``sharpe``).
     """
-    from royaltdn.cells.base import Cell
-    from royaltdn.inference.engine import InferenceEngine
-    from royaltdn.risk.portfolio import Portfolio
-    from royaltdn.risk.manager import RiskManager
+    from royaltdn.backtesting.backtester import run
 
-    cell = Cell(strategy_config, inference_engine=InferenceEngine())
-    portfolio = Portfolio(initial_capital=initial_capital)
-    risk_manager = RiskManager(portfolio, max_positions=strategy_config.get("risk", {}).get("max_positions", 10))
+    # Override max_drawdown so the risk manager does not kill the run
+    cfg = dict(strategy_config)  # shallow copy to avoid mutating the original
+    if "risk" not in cfg:
+        cfg["risk"] = {}
+    cfg["risk"] = dict(cfg["risk"])
+    cfg["risk"]["max_drawdown"] = 0.5  # 50 % — drawdown is still reported in metrics
 
-    symbol = strategy_config.get("symbol", "")
-    trades: list[dict[str, Any]] = []
-    warmup_bars = 20  # minimum bars before entry evaluation
-
-    for idx, (_, bar) in enumerate(ohlcv.iterrows()):
-        close = float(bar["close"])
-        event = {
-            "symbol": symbol,
-            "type": "tick",
-            "price": close,
-            "data": {
-                "open": float(bar["open"]),
-                "high": float(bar["high"]),
-                "low": float(bar["low"]),
-                "close": close,
-                "volume": float(bar["volume"]),
-            },
-        }
-
-        # Feed bar even during warmup
-        signal = await cell.handle(event)
-
-        if signal is None:
-            continue
-
-        if signal["action"] == "BUY":
-            if idx < warmup_bars:
-                continue
-            approved = risk_manager.approve(signal)
-            if approved is not None:
-                portfolio.update(approved)
-
-        elif signal["action"] == "SELL":
-            # Route through risk_manager to get proper qty
-            approved = risk_manager.approve(signal)
-            if approved is not None:
-                qty = approved.get("qty", 0.0)
-                entry_price = float(signal.get("entry_price", 0) or 0)
-                pnl = (close - entry_price) * qty if qty > 0 else 0.0
-                portfolio.update(approved)
-                trades.append({
-                    "symbol": symbol,
-                    "action": "SELL",
-                    "entry_price": entry_price,
-                    "exit_price": close,
-                    "qty": qty,
-                    "pnl": round(pnl, 2),
-                    "capital": round(portfolio.capital, 2),
-                })
-
-    return trades
+    result = await run(
+        strategy_config=cfg,
+        ohlcv=ohlcv,
+        initial_capital=initial_capital,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Metrics integration  (Task 2.4)
 # ---------------------------------------------------------------------------
 
-def compute_objective(trades: list[dict], metric: str = "sharpe") -> float:
-    """Compute the objective value from a list of closed trades.
+def compute_objective(result: Any, metric: str = "sharpe") -> float:
+    """Compute the objective value from a backtest result.
+
+    Uses the equity-curve-based Sharpe (``result.metrics["sharpe"]``)
+    from the production backtester, not a trade-level approximation.
 
     Args:
-        trades: List of trade dicts from ``simulate()``.
+        result: ``BacktestResult`` from ``simulate()``.
         metric: Which metric to extract (``"sharpe"``, ``"sortino"``,
             ``"profit_factor"``).
 
     Returns:
-        Scalar value for Optuna to maximize. Returns ``-999.0`` when there
-        are no trades.
+        Scalar value for Optuna to maximize. Returns ``-999.0`` when the
+        metric cannot be computed (no trades, flat equity curve, or NaN).
     """
-    if not trades:
+    # No trades or no equity curve → no meaningful metric
+    if not result.trades or not result.equity_curve or len(result.equity_curve) < 2:
         return -999.0
 
-    from royaltdn.scripts.backtest import compute_metrics
-
-    metrics = compute_metrics(trades)
-
-    metric_key_map = {
-        "sharpe": "sharpe_ratio",
-        "sortino": "sortino_ratio",
-        "profit_factor": "profit_factor",
-    }
-    key = metric_key_map.get(metric, "sharpe_ratio")
-    result = metrics.get(key)
-
-    if result is None:
+    raw = result.metrics.get(metric)
+    if raw is None:
         return -999.0
 
-    # compute_metrics returns tuples (value, is_good)
-    if isinstance(result, (list, tuple)):
-        value = result[0]
-    else:
-        value = result
-
-    # Handle non-numeric values
-    if not isinstance(value, (int, float)) or math.isinf(value) or math.isnan(value):
+    # Handle non-numeric or degenerate values
+    if not isinstance(raw, (int, float)) or math.isinf(raw) or math.isnan(raw):
         return -999.0
 
-    return value
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -606,25 +618,75 @@ def compute_objective(trades: list[dict], metric: str = "sharpe") -> float:
 def optimize_strategy(
     strategy_name: str,
     strategy_config: dict,
-    ohlcv: "pd.DataFrame",
+    ohlcv: "pd.DataFrame | None" = None,
     n_trials: int = 100,
     metric: str = "sharpe",
     console: Any = None,
+    force_download: bool = False,
 ) -> dict[str, Any]:
-    """Run an Optuna study for a single strategy.
+    """Run an Optuna study for a single strategy, with optional multi-symbol averaging.
+
+    When the strategy config defines a ``symbols`` list with multiple entries,
+    data for each symbol is loaded internally and the objective averages the
+    Sharpe across all symbols in every trial — producing params that generalise
+    across the portfolio.
+
+    When only one symbol is present, the provided ``ohlcv`` is used directly
+    (backward compatible) or loaded if ``ohlcv`` is None.
 
     Args:
         strategy_name: Human-readable name for logging.
         strategy_config: Full strategy config dict.
-        ohlcv: OHLCV DataFrame for simulation.
+        ohlcv: OHLCV DataFrame for single-symbol simulation (optional when
+            ``symbols`` has >1 entry).
         n_trials: Number of Optuna trials.
         metric: Objective metric name.
         console: Rich Console instance (optional).
+        force_download: Re-download cached data (used when loading multi-symbol).
 
     Returns:
         Dict with keys ``best_params``, ``best_value``, ``best_trial``,
         ``best_metrics``.
     """
+    # ── Resolve symbols ──────────────────────────────────────────────
+    symbols: list[str] = strategy_config.get("symbols", [])
+    single_sym = strategy_config.get("symbol", "")
+    if not symbols and single_sym:
+        symbols = [single_sym]
+    if not symbols:
+        logger.error("No symbol(s) defined for strategy '{}'", strategy_name)
+        return {"best_params": {}, "best_value": -999.0, "best_trial": -1,
+                "best_metrics": {}, "worst_metrics": {}, "trials_completed": 0}
+
+    multi_symbol = len(symbols) > 1
+
+    # ── Load data (multi-symbol loads all internally) ────────────────
+    if multi_symbol:
+        symbol_data: dict[str, "pd.DataFrame"] = {}
+        tf = strategy_config.get("timeframe", "1d")
+        for sym in symbols:
+            df = get_ohlcv(sym, tf, force_download=force_download)
+            if len(df) > 20_000:
+                df = df.iloc[-20_000:].reset_index(drop=True)
+            if len(df) >= 500:
+                symbol_data[sym] = df
+            else:
+                logger.warning("Insufficient data for {} ({} bars)", sym, len(df))
+        if not symbol_data:
+            logger.error("No valid data for any symbol in '{}'", strategy_name)
+            return {"best_params": {}, "best_value": -999.0, "best_trial": -1,
+                    "best_metrics": {}, "worst_metrics": {}, "trials_completed": 0}
+        logger.info("Multi-symbol optimisation for {} — {} symbols, ~{} bars avg",
+                     strategy_name, len(symbol_data),
+                     sum(len(d) for d in symbol_data.values()) // len(symbol_data))
+    else:
+        # Single symbol — use provided ohlcv
+        if ohlcv is None or len(ohlcv) < 100:
+            logger.error("No valid OHLCV data for strategy '{}'", strategy_name)
+            return {"best_params": {}, "best_value": -999.0, "best_trial": -1,
+                    "best_metrics": {}, "worst_metrics": {}, "trials_completed": 0}
+
+    # ── Optuna study ─────────────────────────────────────────────────
     from optuna import create_study
     from optuna.pruners import MedianPruner
     from optuna.samplers import TPESampler
@@ -655,32 +717,43 @@ def optimize_strategy(
     def objective(trial: Any) -> float:
         params = suggest_params(trial, strategy_config)
         modified_config = apply_params(strategy_config, params)
-        trades = asyncio.run(simulate(modified_config, ohlcv))
-        obj_value = compute_objective(trades, metric)
 
-        # Store all metrics for reporting
-        if trades:
-            from royaltdn.scripts.backtest import compute_metrics
-            full_metrics = compute_metrics(trades)
-            # Map compute_metrics keys to schema keys
+        if multi_symbol:
+            # Average Sharpe across all symbols
+            all_sharpes: list[float] = []
+            for sym, df in symbol_data.items():
+                modified_config["symbol"] = sym
+                result = asyncio.run(simulate(modified_config, df))
+                sh = compute_objective(result, metric)
+                if sh > -990:
+                    all_sharpes.append(sh)
+            if not all_sharpes:
+                return -999.0
+            obj_value = sum(all_sharpes) / len(all_sharpes)
+            trial.set_user_attr("avg_multi_sharpe", obj_value)
+            trial.set_user_attr("n_symbols_with_trades", len(all_sharpes))
+            trial.set_user_attr("total_symbols", len(symbol_data))
+        else:
+            result = asyncio.run(simulate(modified_config, ohlcv))
+            obj_value = compute_objective(result, metric)
+
+            # Store equity-curve metrics for reporting
+            bt_metrics = result.metrics if hasattr(result, "metrics") else {}
             metric_map = {
-                "sharpe_ratio": "sharpe_ratio",
+                "sharpe": "sharpe",
+                "sortino": "sortino",
                 "profit_factor": "profit_factor",
                 "win_rate": "win_rate",
-                "max_drawdown": "max_drawdown",
-                "pnl_total": "total_pnl",
-                "total_trades": "n_trades",
             }
             for src_key, dst_key in metric_map.items():
-                if src_key in full_metrics:
-                    val, _ = (
-                        full_metrics[src_key]
-                        if isinstance(full_metrics[src_key], (list, tuple))
-                        else (full_metrics[src_key], None)
-                    )
+                val = bt_metrics.get(src_key, -999.0)
+                if isinstance(val, (int, float)) and not math.isinf(val) and not math.isnan(val):
                     trial.set_user_attr(dst_key, val)
-        else:
-            trial.set_user_attr("sharpe_ratio", -999.0)
+            # max_drawdown: bt_metrics returns fraction (0.415), display expects percentage (41.5)
+            dd_raw = bt_metrics.get("max_drawdown", -999.0)
+            if isinstance(dd_raw, (int, float)) and not math.isinf(dd_raw) and not math.isnan(dd_raw):
+                trial.set_user_attr("max_drawdown", dd_raw * 100.0)
+            trial.set_user_attr("n_trades", len(result.trades))
 
         if progress_task is not None and progress_bar is not None:
             progress_bar.update(progress_task, advance=1)
@@ -879,8 +952,8 @@ def optimize_strategy_wf_integrated(
             df = symbol_data[sym]
             modified_config["symbol"] = sym
             test_data = df.iloc[vs:ve].reset_index(drop=True)
-            trades = asyncio.run(simulate(modified_config, test_data))
-            sh = compute_objective(trades, metric)
+            result_wf = asyncio.run(simulate(modified_config, test_data))
+            sh = compute_objective(result_wf, metric)
             if sh > -990:
                 all_sharpes.append(sh)
 
@@ -1025,24 +1098,18 @@ def walk_forward_validate(
 
         # Evaluate best params on the validation period
         modified_config = apply_params(strategy_config, best_params)
-        val_trades = asyncio.run(simulate(modified_config, val_ohlcv))
+        val_result = asyncio.run(simulate(modified_config, val_ohlcv))
 
         is_best_value = opt_result.get("best_value", -999.0)
         is_metrics = opt_result.get("best_metrics", {})
 
-        # Compute validation metrics
-        val_objective = compute_objective(val_trades, metric)
-        val_metrics_raw: dict = {}
-        if val_trades:
-            from royaltdn.scripts.backtest import compute_metrics
-            val_metrics_raw = compute_metrics(val_trades)
-
+        # Compute validation metrics from equity curve
+        val_objective = compute_objective(val_result, metric)
         val_metrics: dict[str, Any] = {}
-        for k, v in val_metrics_raw.items():
-            if isinstance(v, (list, tuple)):
-                val_metrics[k] = v[0]
-            else:
-                val_metrics[k] = v
+        if hasattr(val_result, "metrics"):
+            for k, v in val_result.metrics.items():
+                if isinstance(v, (int, float)):
+                    val_metrics[k] = v
 
         window_result = {
             "window": w,
@@ -1345,7 +1412,7 @@ def _update_strategy_yaml(strategy_config: dict, best_params: dict) -> bool:
     Returns:
         True if the YAML was updated, False on error.
     """
-    from yaml import safe_load, dump
+    from yaml import safe_load_all, dump_all
     src = strategy_config.get("_source_file")
     if not src:
         logger.warning("No _source_file for strategy — cannot update YAML")
@@ -1356,16 +1423,16 @@ def _update_strategy_yaml(strategy_config: dict, best_params: dict) -> bool:
         logger.warning("YAML file not found: {}", yaml_path)
         return False
 
-    # Read the YAML file (list of strategy dicts)
+    # Read the YAML file (may be multi-document, separated by ---)
     try:
         with open(yaml_path) as f:
-            docs = safe_load(f)
+            docs = list(safe_load_all(f))
     except Exception as exc:
         logger.error("Error reading {}: {}", yaml_path, exc)
         return False
 
-    if not isinstance(docs, list):
-        logger.warning("{} is not a list — cannot update", yaml_path)
+    if not isinstance(docs, list) or not docs:
+        logger.warning("{} is empty or not a list — cannot update", yaml_path)
         return False
 
     strategy_name = strategy_config.get("name", "")
@@ -1390,10 +1457,10 @@ def _update_strategy_yaml(strategy_config: dict, best_params: dict) -> bool:
     except Exception as exc:
         logger.warning("Could not create .bak backup: {}", exc)
 
-    # Write updated YAML
+    # Write updated YAML (preserve multi-document structure)
     try:
         with open(yaml_path, "w") as f:
-            dump(docs, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            dump_all(docs, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     except Exception as exc:
         logger.error("Error writing {}: {}", yaml_path, exc)
         return False
@@ -1644,26 +1711,33 @@ def main() -> None:
                 f"Inicio: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
             )
 
-        # Data loading
-        data_start = time.time()
-        _print_header(console, f"Loading data for {symbol}...")
-        ohlcv = get_ohlcv(symbol, timeframe, force_download=args.force_download)
-        if len(ohlcv) < 100:
-            logger.warning("Insufficient data for {} — skipping", name)
-            if telegram_enabled:
-                send_telegram(
-                    f"[AVISO] OPTIMIZACION SIN DATOS\n"
-                    f"Estrategia: {name}\n"
-                    f"Error: datos insuficientes ({len(ohlcv)} velas)"
-                )
-            strategies_failed.append(name)
-            continue
+        # Data loading — for single-symbol strategies only; multi-symbol
+        # is handled internally by optimize_strategy()
+        symbols: list[str] = strategy.get("symbols", [])
+        if not symbols:
+            symbols = [strategy.get("symbol", "")] if strategy.get("symbol") else []
+        multi_symbol = len(symbols) > 1
 
-        # Reduce data size for faster optuna if very large (10k+ bars)
-        if len(ohlcv) > 20_000:
-            # Resample to a reasonable size: keep last 20k bars
-            ohlcv = ohlcv.iloc[-20_000:].reset_index(drop=True)
-            logger.info("Trimmed OHLCV to {} rows for performance", len(ohlcv))
+        ohlcv = None
+        if not multi_symbol:
+            _print_header(console, f"Loading data for {symbol}...")
+            ohlcv = get_ohlcv(symbol, timeframe, force_download=args.force_download)
+            if len(ohlcv) < 100:
+                logger.warning("Insufficient data for {} — skipping", name)
+                if telegram_enabled:
+                    send_telegram(
+                        f"[AVISO] OPTIMIZACION SIN DATOS\n"
+                        f"Estrategia: {name}\n"
+                        f"Error: datos insuficientes ({len(ohlcv)} velas)"
+                    )
+                strategies_failed.append(name)
+                continue
+
+            if len(ohlcv) > 20_000:
+                ohlcv = ohlcv.iloc[-20_000:].reset_index(drop=True)
+                logger.info("Trimmed OHLCV to {} rows for performance", len(ohlcv))
+        else:
+            _print_header(console, f"Multi-symbol optimisation: {', '.join(symbols)}")
 
         # Run optimization
         opt_start = time.time()
@@ -1686,6 +1760,7 @@ def main() -> None:
                     n_trials=n_trials,
                     metric=args.metric,
                     console=console,
+                    force_download=args.force_download,
                 )
         except KeyboardInterrupt:
             print("\nOptimization interrupted by user.")
@@ -1708,10 +1783,11 @@ def main() -> None:
         result_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "strategy": name,
-            "symbol": symbol,
+            "symbol": ",".join(symbols) if multi_symbol else symbol,
             "timeframe": timeframe,
             "trials_completed": result.get("trials_completed", n_trials),
             "best_trial_number": result.get("best_trial", -1),
+            "best_value": result.get("best_value", -999.0),
             "best_params": result.get("best_params", {}),
             "best_metrics": result.get("best_metrics", {}),
             "worst_metrics": result.get("worst_metrics", {}),

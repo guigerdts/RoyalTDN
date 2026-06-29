@@ -1,73 +1,208 @@
-name: intraday_trend
+name: intraday_smf_trend_adx
+enabled: true
+symbol: BTCUSDT
 symbols:
 - BTCUSDT
 - ETHUSDT
 - SOLUSDT
-symbol: ETHUSDT
-timeframe: 5m
-max_hold_hours: 8
+timeframe: 1h
+max_hold_hours: 24
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
-  - indicator: vwap
+  - indicator: smf_flow
     params: {}
-    operator: price > vwap
-  - indicator: volume_surge
+    operator: smf_flow > 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.4
+  - indicator: adx
     params:
-      period: 15
-      factor: 2.2
+      period: 14
+    operator: '> 20.0'
 short_entry:
   logic: AND
   conditions:
-  - indicator: vwap
+  - indicator: smf_flow
     params: {}
-    operator: price < vwap
-  - indicator: volume_surge
+    operator: smf_flow < 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.4
+  - indicator: adx
     params:
-      period: 15
-      factor: 2.2
+      period: 14
+    operator: '> 20.0'
 exit:
-- type: stop_loss
-  params:
-    pct: 0.50
 - type: trailing_stop
   params:
-    pct: 1.5
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
 risk:
-  sizing: 0.005
-  max_positions: 4
+  sizing: 0.01
+  max_positions: 3
 ---
-name: intraday_vwap
-symbol: BTCUSDT
-timeframe: 30m
-max_hold_hours: 8
+name: intraday_smf_retest_bollinger
+enabled: true
+symbol: ETHUSDT
+symbols:
+- ETHUSDT
+- BTCUSDT
+- ADAUSDT
+timeframe: 1h
+max_hold_hours: 24
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
-  - indicator: vwap_deviation
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price < smf_basis
+  - indicator: bollinger_lower
     params:
-      factor: 2.7
+      period: 20
+      std: 2.0
+    operator: price < bollinger_lower
 short_entry:
   logic: AND
   conditions:
-  - indicator: vwap_deviation
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price > smf_basis
+  - indicator: bollinger_upper
     params:
-      factor: 2.7
+      period: 20
+      std: 2.0
+    operator: price > bollinger_upper
 exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
 - type: stop_loss
   params:
-    pct: 0.50
-- type: take_profit
-  params:
-    pct: 6.2
+    atr_multiplier: 3.0
 risk:
-  sizing: 0.005
-  max_positions: 4
+  sizing: 0.01
+  max_positions: 3
+---
+name: intraday_smf_momentum_volume
+enabled: true
+symbol: SOLUSDT
+symbols:
+- SOLUSDT
+- BTCUSDT
+- ETHUSDT
+timeframe: 1h
+max_hold_hours: 24
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: momentum
+    params:
+      period: 3
+    operator: '> 0.0'
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 2.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: momentum
+    params:
+      period: 3
+    operator: '< 0.0'
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 2.0
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
+---
+name: intraday_smf_zscore_reversion
+enabled: true
+symbol: ADAUSDT
+symbols:
+- ADAUSDT
+- ETHUSDT
+- SOLUSDT
+timeframe: 1h
+max_hold_hours: 24
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.3
+  - indicator: zscore
+    params:
+      period: 20
+    operator: '< -2.0'
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > -0.3
+  - indicator: zscore
+    params:
+      period: 20
+    operator: '> 2.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
 ---
 name: intraday_volume_breakout
+enabled: true
 symbol: SOLUSDT
 timeframe: 30m
 max_hold_hours: 8
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
@@ -97,75 +232,6 @@ exit:
 - type: take_profit
   params:
     pct: 1.50
-risk:
-  sizing: 0.005
-  max_positions: 5
----
-name: intraday_support_resistance
-symbol: LINKUSDT
-timeframe: 30m
-max_hold_hours: 8
-min_signal_interval: 120
-min_signal_move_pct: 0.05
-exit_pct_scale: 0.25    # test mode: 0.60% SL → 0.15%, 6.9% TP → 1.72%
-entry:
-  logic: AND
-  conditions:
-  - indicator: support_resistance
-    params:
-      lookback: 93
-      touch_count: 4
-      side: support
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: support_resistance
-    params:
-      lookback: 93
-      touch_count: 4
-      side: resistance
-exit:
-- type: stop_loss
-  params:
-    pct: 0.60
-- type: take_profit
-  params:
-    pct: 6.9
-risk:
-  sizing: 0.005
-  max_positions: 4
----
-name: intraday_macd_divergence
-symbols:
-- BTCUSDT
-- ETHUSDT
-- ADAUSDT
-max_hold_hours: 8
-entry:
-  logic: AND
-  conditions:
-  - indicator: macd_divergence
-    params:
-      fast: 20
-      slow: 16
-      signal: 11
-      lookback: 42
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: macd_divergence
-    params:
-      fast: 20
-      slow: 16
-      signal: 11
-      lookback: 42
-exit:
-- type: stop_loss
-  params:
-    pct: 0.60
-- type: take_profit
-  params:
-    pct: 0.80
 risk:
   sizing: 0.005
   max_positions: 5
