@@ -120,6 +120,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--force-download", action="store_true",
         help="Force re-download of historical data (ignore cache)",
     )
+    parser.add_argument(
+        "--max-drawdown", type=float, default=0.5,
+        help="Maximum drawdown fraction for risk manager (default: 0.5 = 50%%)",
+    )
     return parser.parse_args(argv)
 
 
@@ -144,6 +148,8 @@ def _download_ohlcv_range(
     Returns:
         OHLCV DataFrame with standard columns.
     """
+    import pandas as pd
+
     from royaltdn.data.historical import download_2y_ohlcv, read_cache, write_cache
 
     df = None
@@ -177,18 +183,17 @@ def _load_strategy_config(strategy_name: str, symbol: str) -> dict[str, Any] | N
         Strategy config dict with ``symbol`` set to *symbol*, or None
         if not found.
     """
-    from yaml import safe_load
+    from yaml import safe_load_all
 
     templates_dir = _PROJECT_ROOT / "cells" / "templates"
     for yaml_path in sorted(templates_dir.glob("*.yaml")):
         try:
             with open(yaml_path) as f:
-                docs = safe_load(f)
+                docs = list(safe_load_all(f))
         except Exception:
             continue
 
-        items = docs if isinstance(docs, list) else [docs]
-        for item in items:
+        for item in docs:
             if isinstance(item, dict) and item.get("name") == strategy_name:
                 config = dict(item)
                 config["symbol"] = symbol
@@ -466,6 +471,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     strategy_config["timeframe"] = args.timeframe
+    # Override risk manager drawdown limit for backtesting
+    if "risk" not in strategy_config:
+        strategy_config["risk"] = {}
+    strategy_config["risk"]["max_drawdown"] = args.max_drawdown
     if console:
         console.print(f"  Strategy: {strategy_config.get('name', args.strategy)}")
         console.print(f"  Symbol: {strategy_config.get('symbol', args.symbol)}")

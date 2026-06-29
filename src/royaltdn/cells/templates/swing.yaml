@@ -1,9 +1,206 @@
+name: swing_smf_trend_bollinger
+enabled: true
+symbol: BTCUSDT
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+timeframe: 1d
+max_hold_hours: 72
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.3
+  - indicator: smf_basis
+    params: {}
+    operator: price > smf_basis
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.3
+  - indicator: smf_basis
+    params: {}
+    operator: price < smf_basis
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.02
+  max_positions: 2
+---
+name: swing_smf_momentum_adx
+enabled: true
+symbol: ETHUSDT
+symbols:
+- ETHUSDT
+- BTCUSDT
+- SOLUSDT
+timeframe: 1d
+max_hold_hours: 72
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.3
+  - indicator: adx
+    params:
+      period: 14
+    operator: '> 20.0'
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.3
+  - indicator: adx
+    params:
+      period: 14
+    operator: '> 20.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.02
+  max_positions: 2
+---
+name: swing_smf_reversion_zscore
+enabled: true
+symbol: SOLUSDT
+symbols:
+- SOLUSDT
+- ETHUSDT
+- BTCUSDT
+timeframe: 1d
+max_hold_hours: 72
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.2
+  - indicator: zscore
+    params:
+      period: 20
+    operator: '< -2.0'
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > -0.2
+  - indicator: zscore
+    params:
+      period: 20
+    operator: '> 2.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.02
+  max_positions: 2
+---
+name: swing_smf_retest_rsi
+enabled: true
+symbol: BTCUSDT
+symbols:
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+timeframe: 1d
+max_hold_hours: 72
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price < smf_basis
+  - indicator: rsi
+    params:
+      period: 14
+    operator: < 45.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price > smf_basis
+  - indicator: rsi
+    params:
+      period: 14
+    operator: '> 55.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.02
+  max_positions: 2
+---
 name: swing_reversion
+enabled: true
+symbol: BTCUSDT
 symbols:
 - BTCUSDT
 - ETHUSDT
 - LINKUSDT
+timeframe: 1d
 max_hold_hours: 48
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
@@ -39,121 +236,8 @@ risk:
   sizing: 0.005
   max_positions: 2
 ---
-name: swing_trend_following
-symbol: BTCUSDT
-timeframe: 1d
-max_hold_hours: 72
-entry:
-  logic: AND
-  conditions:
-  - indicator: ichimoku
-    params:
-      tenkan: 19
-      kijun: 10
-      senkou_b: 64
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: ema
-    params:
-      period: 40
-    operator: price < ema
-  - indicator: adx
-    params:
-      period: 50
-    operator: '> 25.0'
-exit:
-- type: stop_loss
-  params:
-    pct: 1.0
-- type: trailing_stop
-  params:
-    pct: 4.0
-risk:
-  sizing: 0.005
-  max_positions: 2
----
-name: swing_breakout
-symbols:
-- BTCUSDT
-- ETHUSDT
-- SOLUSDT
-max_hold_hours: 48
-entry:
-  logic: AND
-  conditions:
-  - indicator: range_breakout
-    params:
-      period: 4
-      factor: 1.0
-  - indicator: volume_surge
-    params:
-      period: 35
-      factor: 3.6
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: range_breakout
-    params:
-      period: 4
-      factor: 1.0
-  - indicator: volume_surge
-    params:
-      period: 35
-      factor: 3.6
-exit:
-- type: stop_loss
-  params:
-    pct: 1.5
-- type: take_profit
-  params:
-    pct: 3.0
-risk:
-  sizing: 0.005
-  max_positions: 2
----
-name: swing_mean_reversion
-symbols:
-- BTCUSDT
-- ETHUSDT
-- SOLUSDT
-max_hold_hours: 48
-entry:
-  logic: AND
-  conditions:
-  - indicator: bollinger_lower
-    params:
-      period: 21
-      std: 2.0
-    operator: price < bollinger_lower
-  - indicator: rsi
-    params:
-      period: 35
-    operator: < 37.0
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: bollinger_upper
-    params:
-      period: 21
-      std: 2.0
-    operator: price > bollinger_upper
-  - indicator: rsi
-    params:
-      period: 35
-    operator: '> 63.0'
-exit:
-- type: stop_loss
-  params:
-    pct: 0.80
-- type: take_profit
-  params:
-    pct: 2.0
-risk:
-  sizing: 0.005
-  max_positions: 2
----
 name: swing_momentum
+enabled: true
 symbols:
 - BTCUSDT
 - ETHUSDT
@@ -161,17 +245,19 @@ symbols:
 symbol: ADAUSDT
 timeframe: 1d
 max_hold_hours: 72
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
   - indicator: ema
     params:
-      period: 40
+      period: 24
     operator: price > ema
   - indicator: adx
     params:
-      period: 50
-    operator: '> 37.0'
+      period: 25
+    operator: '> 10.0'
 short_entry:
   logic: AND
   conditions:
@@ -186,10 +272,10 @@ short_entry:
 exit:
 - type: stop_loss
   params:
-    pct: 1.0
+    pct: 0.9
 - type: trailing_stop
   params:
-    pct: 3.0
+    pct: 1.2000000000000002
 risk:
-  sizing: 0.005
+  sizing: 0.045
   max_positions: 4
