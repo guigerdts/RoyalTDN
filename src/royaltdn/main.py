@@ -214,7 +214,6 @@ async def main():
     for cell in cells:
         engine.register(cell)
         registry.register(cell)
-        logger.info("Celula registrada: {} ({})", cell.name, cell.symbol)
 
     logger.info("CellMesh iniciado — {} celulas, {} simbolos, broker={}",
                 len(cells), len(cfg.symbols), cfg.broker)
