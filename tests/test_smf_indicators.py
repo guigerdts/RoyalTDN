@@ -7,8 +7,6 @@ module-level caching, and compound operator resolution via ``_INDICATORS``.
 from __future__ import annotations
 
 import math
-from unittest.mock import patch
-
 import numpy as np
 import pandas as pd
 import pytest
