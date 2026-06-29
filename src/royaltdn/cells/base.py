@@ -416,16 +416,20 @@ class Cell:
         if self.entry_price == 0.0:
             return None
 
+        atr = self._calc_atr()
+
         logger.debug(
             "{} {} CHECK-EXIT price=${:.4f} entry=${:.4f} state={} "
-            "SL_pct={} TP_pct={} TS_pct={}",
+            "SL_pct={} SL_ATR={} TP_pct={} TS_pct={} TS_ATR={} "
+            "TS_min={} TS_max={} Z={} ATR={:.2f}",
             self.symbol, self.name, current_price, self.entry_price,
             self.state,
-            self.exit_stop_loss_pct, self.exit_take_profit_pct,
-            self.exit_trailing_stop_pct,
+            self.exit_stop_loss_pct, self.exit_stop_loss,
+            self.exit_take_profit_pct,
+            self.exit_trailing_stop_pct, self.exit_trailing_stop,
+            self.exit_trailing_min_mult, self.exit_trailing_max_mult,
+            self.exit_zscore_threshold, atr if atr else 0.0,
         )
-
-        atr = self._calc_atr()
         atr_pct = (atr / self.entry_price) if (atr and self.entry_price > 0) else 0.0
         has_atr = atr is not None and atr != 0.0
         is_short = self.state == "IN_SHORT"
