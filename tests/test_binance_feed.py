@@ -75,7 +75,7 @@ async def test_kline_message_parses_correctly(bus) -> None:
     assert data["volume"] == 100.5
     assert data["quote_volume"] == 5960000.0
     assert data["count"] == 150
-    assert data["_kline_start"] == 1719676800000
+    assert event["_kline_start"] == 1719676800000
 
 
 @pytest.mark.asyncio

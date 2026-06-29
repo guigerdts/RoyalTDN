@@ -165,6 +165,7 @@ class BinanceFeed:
                 "timestamp": datetime.fromtimestamp(
                     payload["E"] / 1000, tz=timezone.utc
                 ),
+                "_kline_start": k["t"],
                 "data": {
                     "high": float(k["h"]),
                     "low": float(k["l"]),
@@ -173,7 +174,6 @@ class BinanceFeed:
                     "volume": float(k["v"]),
                     "quote_volume": float(k["q"]),
                     "count": k["n"],
-                    "_kline_start": k["t"],
                 },
             }
             await self.bus.emit(event)

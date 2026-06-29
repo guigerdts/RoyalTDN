@@ -102,6 +102,19 @@ async def _optimization_scheduler(
 async def main():
     args = parse_args()
 
+    # ── Loguru routing ──────────────────────────────────────────────
+    # Default handler writes everything to stderr, which corrupts the
+    # Rich Live display.  Route based on --no-dashboard flag:
+    #   dashboard active  → file only (terminal is 100% Rich)
+    #   --no-dashboard    → stderr at DEBUG (legacy behavior)
+    logger.remove()
+    if args.no_dashboard:
+        logger.add(sys.stderr, level="DEBUG")
+    else:
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        logger.add(str(log_dir / "bot.log"), level="DEBUG", rotation="10 MB")
+
     # Cargar y validar config
     config_path = Path(__file__).parent / "config.yaml"
     with open(config_path) as f:
