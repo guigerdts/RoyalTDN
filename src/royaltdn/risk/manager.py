@@ -239,18 +239,18 @@ class RiskManager:
                 )
                 return {"approved": True, **signal}
 
-            # ── Capital + qty calculation (needed before limits for eviction) ──
-            capital = self.portfolio.capital
-            if capital <= 0 or price <= 0:
+            # ── Equity + qty calculation (uses total value, not raw cash) ──
+            equity = self.portfolio.get_total_value()
+            if equity <= 0 or price <= 0:
                 logger.warning(
-                    "RISK REJECT: invalid capital/price (capital={}, price={}) — {} cell={}",
-                    capital, price, symbol, cell_name,
+                    "RISK REJECT: invalid equity/price (equity={}, price={}) — {} cell={}",
+                    equity, price, symbol, cell_name,
                 )
                 return {"approved": False, "reason": "invalid_params",
-                        "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
+                        "detail": f"Equity o precio inválido: equity={equity}, price={price}"}
 
-            raw_qty = (capital * sizing) / price
-            min_qty = (capital * 0.001) / price if price > 0 else 0.0
+            raw_qty = (equity * sizing) / price
+            min_qty = (equity * 0.001) / price if price > 0 else 0.0
             qty = max(min_qty, raw_qty)
             signal["qty"] = qty
 
@@ -297,21 +297,21 @@ class RiskManager:
             self._active_entries.add((symbol, cell_name, "long"))
             self._entry_qty[(symbol, cell_name, "long")] = qty
             logger.info(
-                "RISK: {} {} aprobada — qty={:.4f} (capital=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
-                action, symbol, qty, capital, sizing, price, cell_name,
+                "RISK: {} {} aprobada — qty={:.4f} (equity=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
+                action, symbol, qty, equity, sizing, price, cell_name,
             )
             return {"approved": True, **signal}
 
         # ── SHORT entry ─────────────────────────────────────────────────
         elif action == "SHORT":
-            # Capital + qty calculation
-            capital = self.portfolio.capital
+            # Equity + qty calculation (uses total portfolio value)
+            equity = self.portfolio.get_total_value()
             if capital <= 0 or price <= 0:
                 return {"approved": False, "reason": "invalid_params",
                         "detail": f"Capital o precio inválido: capital={capital}, price={price}"}
 
-            raw_qty = (capital * sizing) / price
-            min_qty = (capital * 0.001) / price if price > 0 else 0.0
+            raw_qty = (equity * sizing) / price
+            min_qty = (equity * 0.001) / price if price > 0 else 0.0
             qty = max(min_qty, raw_qty)
             signal["qty"] = qty
 
@@ -352,8 +352,8 @@ class RiskManager:
             self._active_entries.add((symbol, cell_name, "short"))
             self._entry_qty[(symbol, cell_name, "short")] = qty
             logger.info(
-                "RISK: SHORT {} aprobada — qty={:.4f} (capital=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
-                symbol, qty, capital, sizing, price, cell_name,
+                "RISK: SHORT {} aprobada — qty={:.4f} (equity=${:.2f}, sizing={:.2%}, price=${:.2f}, cell={})",
+                symbol, qty, equity, sizing, price, cell_name,
             )
             return {"approved": True, **signal}
 

@@ -157,7 +157,7 @@ class Cell:
                 if "pct" in params:
                     pct_val = float(params["pct"]) * scale
                     logger.debug(
-                        "{} STOP-LOSS pct: {:.2f}% (base={}%, scale={})",
+                        "{} STOP-LOSS pct: {:.2f}% (base={:.2f}%, scale={})",
                         self.name, pct_val, params["pct"], scale,
                     )
                     self.exit_stop_loss_pct = pct_val / 100.0
@@ -167,7 +167,7 @@ class Cell:
                 if "pct" in params:
                     pct_val = float(params["pct"]) * scale
                     logger.debug(
-                        "{} TAKE-PROFIT pct: {:.2f}% (base={}%, scale={})",
+                        "{} TAKE-PROFIT pct: {:.2f}% (base={:.2f}%, scale={})",
                         self.name, pct_val, params["pct"], scale,
                     )
                     self.exit_take_profit_pct = pct_val / 100.0
@@ -177,7 +177,7 @@ class Cell:
                 if "pct" in params:
                     pct_val = float(params["pct"]) * scale
                     logger.debug(
-                        "{} TRAILING-STOP pct: {:.2f}% (base={}%, scale={})",
+                        "{} TRAILING-STOP pct: {:.2f}% (base={:.2f}%, scale={})",
                         self.name, pct_val, params["pct"], scale,
                     )
                     self.exit_trailing_stop_pct = pct_val / 100.0
@@ -415,6 +415,15 @@ class Cell:
         """
         if self.entry_price == 0.0:
             return None
+
+        logger.debug(
+            "{} {} CHECK-EXIT price=${:.4f} entry=${:.4f} state={} "
+            "SL_pct={} TP_pct={} TS_pct={}",
+            self.symbol, self.name, current_price, self.entry_price,
+            self.state,
+            self.exit_stop_loss_pct, self.exit_take_profit_pct,
+            self.exit_trailing_stop_pct,
+        )
 
         atr = self._calc_atr()
         atr_pct = (atr / self.entry_price) if (atr and self.entry_price > 0) else 0.0

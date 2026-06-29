@@ -5,6 +5,8 @@ symbols:
 - BTCUSDT
 - ETHUSDT
 - SOLUSDT
+- ADAUSDT
+- LINKUSDT
 timeframe: 1h
 max_hold_hours: 24
 reentry_cooldown: 0
@@ -55,6 +57,7 @@ symbols:
 - ETHUSDT
 - BTCUSDT
 - ADAUSDT
+- LINKUSDT
 timeframe: 1h
 max_hold_hours: 24
 reentry_cooldown: 0
@@ -107,6 +110,8 @@ symbols:
 - SOLUSDT
 - BTCUSDT
 - ETHUSDT
+- ADAUSDT
+- LINKUSDT
 timeframe: 1h
 max_hold_hours: 24
 reentry_cooldown: 0
@@ -159,6 +164,7 @@ symbols:
 - ADAUSDT
 - ETHUSDT
 - SOLUSDT
+- LINKUSDT
 timeframe: 1h
 max_hold_hours: 24
 reentry_cooldown: 0

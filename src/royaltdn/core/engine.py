@@ -123,7 +123,15 @@ class EventEngine:
             )
             return
 
+        # Track current open positions for rate-limiting
+        positions = len(self.risk_manager._active_entries) if hasattr(self.risk_manager, '_active_entries') else 0
+        max_pos = getattr(self.risk_manager, 'max_positions', 999)
+
         for cell in self.cells:
+            # Rate-limit: at max positions, skip IDLE cells (no entry checks)
+            if positions >= max_pos and getattr(cell, 'state', 'IDLE') == 'IDLE':
+                continue
+
             try:
                 signal = await cell.handle(event)
             except Exception:

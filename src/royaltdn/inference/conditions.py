@@ -1217,7 +1217,17 @@ def evaluate(
         left_val = _resolve_value(compound_match.group("left_word"), data)
         op_fn = _COMP_OPS[compound_match.group("op")]
         right_val = _resolve_value(compound_match.group("right_word"), data)
-        return op_fn(left_val, right_val)
+        result = op_fn(left_val, right_val)
+        logger.debug(
+            "{} {} -> {} {} {} = {} (left={:.4f}, right={:.4f})",
+            indicator, operator,
+            compound_match.group("left_word"),
+            compound_match.group("op"),
+            compound_match.group("right_word"),
+            result,
+            left_val, right_val,
+        )
+        return result
 
     # Simple operator: "op value"
     simple_match = _SIMPLE_OP_RE.match(operator)
@@ -1229,6 +1239,14 @@ def evaluate(
         indicator_val = _INDICATORS[indicator](data, **params)
         op_fn = _COMP_OPS[simple_match.group("op")]
         threshold = float(simple_match.group("value"))
-        return op_fn(indicator_val, threshold)
+        result = op_fn(indicator_val, threshold)
+        logger.debug(
+            "{} {} -> {} {:.4f} {} {} = {}",
+            indicator, operator,
+            indicator, indicator_val,
+            simple_match.group("op"),
+            threshold, result,
+        )
+        return result
 
     raise ValueError(f"Unrecognised operator format: '{operator}'")
