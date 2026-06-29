@@ -37,6 +37,10 @@ def parse_args() -> argparse.Namespace:
         "--optimize", action="store_true",
         help="Enable periodic strategy optimization",
     )
+    parser.add_argument(
+        "--no-dashboard", action="store_true",
+        help="Disable Rich Live dashboard — log output goes to terminal",
+    )
     return parser.parse_args()
 
 
@@ -233,10 +237,13 @@ async def main():
     feed = BinanceFeed(cfg.symbols, bus, testnet=cfg.testnet)
     _background_tasks.append(asyncio.create_task(feed.start()))
 
-    # Iniciar dashboard
-    from royaltdn.monitoring.dashboard import Dashboard
-    dashboard = Dashboard(portfolio, trade_tracker, engine)
-    _background_tasks.append(asyncio.create_task(dashboard.run()))
+    # Iniciar dashboard (saltar con --no-dashboard para ver logs en terminal)
+    if not args.no_dashboard:
+        from royaltdn.monitoring.dashboard import Dashboard
+        dashboard = Dashboard(portfolio, trade_tracker, engine)
+        _background_tasks.append(asyncio.create_task(dashboard.run()))
+    else:
+        logger.info("Dashboard desactivado — logs visibles en terminal")
 
     # Iniciar alertas Telegram (si configuradas)
     telegram_alerts = None
