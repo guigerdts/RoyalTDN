@@ -1,242 +1,238 @@
-# RoyalTDN
+# RoyalTDN — CellMesh Crypto Bot
 
-Bot de trading algorítmico de grado profesional construido sobre **Python + Alpaca + Redis + TimescaleDB + Grafana**.
+Bot de trading algorítmico con células componibles para Binance (paper/live). Arquitectura modular, backtesting con datos reales, y optimización automática de parámetros.
 
-**Stack**: Python 3.13 (asyncio), Alpaca API (paper + live), Redis Streams, TimescaleDB, Grafana, Docker, **Rich TUI**, **Loguru**, pandas-ta.
+**Stack**: Python 3.13 (asyncio), Binance API (WebSocket + REST), TimescaleDB, Grafana, Docker, Loguru, pandas-ta, Optuna.
 
-**Estado**: Fase 11 — Menú interactivo Rich con 8 opciones, Simulación What-if, Registro de Actividad, Alertas configurables.
+**Estado**: Producción — 15 estrategias en células sobre 3 timeframes (1m, 30m, 1d). 3 con Sharpe positivo confirmado sobre equity curve.
 
-## Arquitectura
+---
+
+## Quick start
+
+```bash
+# Setup
+cp .env.example .env    # Completá BINANCE_API_KEY, BINANCE_SECRET_KEY
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Backtest rápido de una estrategia
+python -m src.royaltdn.scripts.run_backtest --strategy scalping_reversion
+
+# Optimizar una estrategia
+python -m src.royaltdn.scripts.optimize --strategy swing_momentum --trials 25
+
+# Arrancar el bot (paper mode por defecto)
+python -m src.royaltdn.main
+
+# Con optimización periódica automática
+python -m src.royaltdn.main --optimize
+```
+
+---
+
+## Arquitectura: CellMesh
 
 ```
-┌──────────────┐    WebSocket     ┌──────────────────┐   Redis Stream   ┌────────────────┐
-│              │ ◄──────────────► │                  │  "market_bars"   │                │
-│ DataIngestor │     Alpaca       │      Redis       │ ───────────────► │  SMAStrategy   │
-│  (thread)    │     Bars         │   (opcional)     │                  │   (thread)     │
-│              │                  │                  │                  │                │
-└──────────────┘                  └──────────────────┘                  └───────┬────────┘
-                                                                                 │
-                                                                       Redis Stream "signals"
-                                                                                 │
-                                                                                 ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                                     Orchestrator                                        │
-│                                                                                         │
-│  _main_loop ──► consume signals ──► risk check ──► execute (TWAP/market) ──► TCA       │
-│                         │                                            ▲                  │
-│  ⚠️ Si DataIngestor muere → auto fallback a _run_legacy_loop (REST polling)             │
-│                         │                                            │                  │
-│  _run_legacy_loop ──► REST Alpaca ──► SMA inline ──► execute_signal ──► _publish_status │
-│       │                                                                                 │
-│       ├── _check_signals() ──► lee pause_signal.json / scanner_trigger.json             │
-│       ├── _watch_user_strategies() ──► detecta cambios en user_strategies/*.json       │
-│       └── evalúa DynamicStrategy de usuario ──► señales BUY/SELL                        │
-└────┬───────────────────────────────────────────────────────────────────────────────┬────┘
-     │  publica 7 JSON files                                                         │ poll signals
-     ▼ cada ciclo                                                                     ▼
-┌──────────────────┐                                                         ┌──────────────────┐
-│   logs/*.json     │                                                         │ pause_signal.json│
-│   - status        │◄──── lee ─────┐                                         │ scanner_trigger  │
-│   - equity        │               │                                         └──────────────────┘
-│   - positions     │               │
-│   - signals       │               │
-│   - strategies    │               │
-│   - trades        │               │
-│   - scanner_res   │               │
-└──────────────────┘               │
+                    ┌─────────────────────────────────────┐
+                    │            BinanceFeed              │
+                    │  WebSocket (candles+trades) + REST  │
+                    └──────────────┬──────────────────────┘
+                                   │  OHLCV bars
                                    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                   Menú Interactivo Rich (Fase 11)                 │
-│                                                                   │
-│  run_menu() → StateLoader → 8 opciones por número                │
-│                                                                   │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐ │
-│  │Dashboard │ │ Scanner  │ │Estrategias│ │  Trades  │ │  Logs  │ │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └────────┘ │
-│  ┌──────────┐ ┌────────────┐ ┌──────────┐                        │
-│  │ Control  │ │Simulación★│ │Actividad★│                        │
-│  └──────────┘ └────────────┘ └──────────┘                        │
-│                                                                   │
-│  Badges: 🔔 señales nuevas  💰 trades nuevos                     │
-│  PAUSADO en amarillo en header/Control/Dashboard KPI             │
-└──────────────────────────────────────────────────────────────────┘
+              ┌──────────────────────────────────────┐
+              │             EventBus                  │
+              │      publish → subscriber fan-out     │
+              └──────┬───────────────────────────────┘
+                     │
+         ┌───────────┼───────────┬───────────────────┐
+         ▼           ▼           ▼                   ▼
+   ┌──────────┐ ┌──────────┐ ┌──────────┐    ┌──────────────┐
+   │  Cell 1  │ │  Cell 2  │ │  Cell 3  │ …  │  Cell N      │
+   │ scalping │ │  swing   │ │ intraday │    │  user-defined │
+   │_reversion│ │_momentum │ │_trend    │    │  (hot-reload) │
+   └────┬─────┘ └────┬─────┘ └────┬─────┘    └──────┬───────┘
+        │            │            │                  │
+        └───────┬────┴────────────┴──────────────────┘
+                ▼
+        ┌──────────────────┐
+        │  InferenceEngine  │  ──  eval condition graph
+        └────────┬─────────┘
+                 ▼ signal
+        ┌──────────────────┐
+        │   RiskManager    │  ──  sizing, drawdown, max positions
+        └────────┬─────────┘
+                 ▼ order
+        ┌──────────────────┐
+        │    Broker        │  ──  Binance | PaperBroker
+        │  + OrderManager  │  ──  fill tracking, reconciliation
+        └────────┬─────────┘
+                 ▼
+        ┌──────────────────┐
+        │  TradeTracker    │  ──  journal, metrics, Telegram alerts
+        │  + Journal       │
+        │  + Dashboard     │
+        └──────────────────┘
 ```
 
-### Componentes
+### Componentes clave
 
-| Módulo | Descripción | Archivo |
-|--------|-------------|---------|
-| `DataIngestor` | WebSocket Alpaca → Redis Stream `market_bars` | `ingestion/data_ingestor.py` |
-| `BollingerRSIStrategy` | Estrategia Bollinger + RSI (oversold/overbought) | `strategy/bollinger_rsi.py` |
-| `MomentumATRStrategy` | Estrategia momentum con trailing ATR | `strategy/momentum_atr.py` |
-| `FactorRotationStrategy` | Rotación de factores basada en ranking | `strategy/factor_rotation.py` |
-| `Orchestrator` | Coordina todo: threads, risk manager, ejecución, TCA, **IPC signal polling**, watcher de estrategias | `orchestrator.py` |
-| `Scanner` | Escaneo multi-estrategia del universo de activos | `scanner.py` |
-| `TWAP` | Ejecución time-weighted average price para órdenes grandes | `execution/twap.py` |
-| `TCA` | Transaction Cost Analysis (slippage en bps) | `monitoring/tca.py` |
-| `Risk Manager` | Position sizing (ATR), kill switches (drawdown, pérdidas seguidas) | `risk_manager.py` |
-| — | — | — |
-| *Fase 7* | | |
-| `indicators` | 16 funciones indicadoras (15 pandas-ta + SmartMoneyFlowCloud manual) | `strategy/indicators.py` |
-| `rule_engine` | Evaluador recursivo de árboles de reglas AND/OR (20+ operadores) | `strategy/rule_engine.py` |
-| `schema` | Validador JSON v1 para configuraciones de estrategia | `strategy/schema.py` |
-| `StrategyStore` | CRUD atómico de estrategias de usuario (JSON + timestamps) | `strategy/strategy_store.py` |
-| `DynamicStrategy` | Estrategia definida en runtime desde JSON, hereda de BaseStrategy | `strategy/dynamic.py` |
-| `Backtesting` | Motor de backtesting con yfinance + simulación de portafolio | `strategy/backtesting.py` |
-| `Builder UI` | Constructor visual 3 columnas (paleta, reglas, preview, backtest, gestión) | `frontend/pages/builder.py` |
-| — | — | — |
-| *Fase 8* | | |
-| `StateLoader` | Lector de 7 JSON con TTL cache para el dashboard | `frontend/console/components/state.py` |
-| `LogBuffer` | Buffer circular thread-safe (200 líneas) para logs en vivo | `frontend/console/log_handler.py` |
-| `Widgets` | 12 funciones Rich renderable (KPIs, tablas, panels, footer) | `frontend/console/components/widgets.py` |
-| `Screens` | 5 pantallas: Dashboard, Scanner, Estrategias, Trades, Logs | `frontend/console/screens/` |
-| `Commands` | Señales IPC: pause_bot(), resume_bot(), trigger_scanner() | `frontend/console/commands.py` |
-| `Console App` | Bucle Rich Live @ 2 FPS con input() para comandos | `frontend/console/app.py` |
-| `Loguru Config` | Configuración centralizada de Loguru (3 sinks) | `frontend/console/loguru_config.py` |
-| `CLI` | 6 subcomandos: run, status, logs, pause, resume, scanner | `main.py` |
+| Módulo | Rol | Archivo |
+|--------|-----|---------|
+| `EventBus` | Pub/sub asíncrono (bar → cells) | `core/bus.py` |
+| `EventEngine` | Orquesta cells, risk, broker, journal | `core/engine.py` |
+| `BinanceFeed` | WebSocket + REST para datos en vivo | `data/binance_feed.py` |
+| `InferenceEngine` | Evalúa árboles de condiciones (AND/OR) | `inference/engine.py` |
+| `Cell` | Condiciones de entrada/salida + risk por célula | `cells/base.py` |
+| `CellLoader` | Carga células desde YAML templates | `cells/loader.py` |
+| `HotReloader` | Detecta cambios en células sin reiniciar | `core/hot_reload.py` |
+| `RiskManager` | Position sizing, drawdown kill switch | `risk/manager.py` |
+| `Portfolio` | Seguimiento de capital, P&L, drawdown | `risk/portfolio.py` |
+| `PaperBroker` | Simulación de órdenes sin capital real | `execution/paper_broker.py` |
+| `BinanceBroker` | Órdenes reales + reconciliación | `execution/binance_broker.py` |
+| `TradeTracker` | Métricas por cell (win rate, sharpe) | `core/trade_tracker.py` |
+| `KillSwitch` | Parada de emergencia automática | `execution/kill_switch.py` |
+| `Dashboard` | Monitoreo en tiempo real (asyncio) | `monitoring/dashboard.py` |
+| `TelegramAlerts` | Alertas configurables vía Telegram | `monitoring/telegram_alerts.py` |
 
-## Comandos
+---
+
+## Estrategias: 3 timeframes, 15 células
+
+Las células se definen en YAML y se cargan en caliente. 16 indicadores disponibles (pandas-ta + indicadores manuales como Support/Resistance y MACD Divergence).
+
+### Resultados de optimización (equity-curve Sharpe)
+
+Tras ~100 trials de Optuna por estrategia con métrica real de equity curve:
+
+```
+✅ scalping_reversion     1m  ETH  Sharpe 6.67    ← edge sólido
+✅ swing_reversion        1d  BTC  Sharpe 0.62    ← edge leve
+✅ swing_momentum         1d  ADA  Sharpe 0.41    ← modesto
+
+❌ Otras 12 estrategias    —   —    Sharpe ≤ 0    ← sin edge (en reemplazo)
+```
+
+### Paleta de indicadores
+
+| Indicador | Parámetros |
+|-----------|------------|
+| RSI | period |
+| EMA | period |
+| ADX | period, operator_threshold |
+| Bollinger (lower/upper) | period, std |
+| Momentum | period |
+| MACD Divergence | fast, slow, signal, lookback |
+| Support/Resistance | lookback, touch_count, side |
+| Range Breakout | period, factor |
+| Volume Surge | period, factor |
+| ATR | period, max_pct |
+| VWAP / VWAP Deviation | period, factor |
+| Z-Score | period |
+| Ichimoku | tenkan, kijun, senkou_b |
+| Spread | max_spread_pct |
+
+### Archivos de configuración
+
+| Archivo | Timeframe | Estrategias |
+|---------|-----------|-------------|
+| `cells/templates/scalping.yaml` | 1m | scalping_momentum, scalping_breakout, **scalping_reversion**, scalping_orderflow, scalping_spread |
+| `cells/templates/intraday.yaml` | 30m | intraday_trend, intraday_vwap, intraday_volume_breakout, intraday_support_resistance, intraday_macd_divergence |
+| `cells/templates/swing.yaml` | 1d | **swing_reversion**, swing_trend_following, swing_breakout, swing_mean_reversion, **swing_momentum** |
+
+---
+
+## Backtesting y Optimización
+
+### Backtest rápido (`run_backtest.py`)
 
 ```bash
-python -m royaltdn          # Mostrar ayuda con todos los comandos
+# Estrategia individual con símbolo y timeframe por defecto
+python -m src.royaltdn.scripts.run_backtest --strategy scalping_reversion
 
-python -m royaltdn check    # Verificar conexión Alpaca Paper
-python -m royaltdn run      # Bot completo + consola interactiva Rich (Fase 8)
-python -m royaltdn run-legacy # Bot legacy directo (sin Redis, sin consola)
+# Forzar símbolo y timeframe
+python -m src.royaltdn.scripts.run_backtest --strategy swing_momentum --symbol SOLUSDT --timeframe 1d
 
-python -m royaltdn status   # One-shot: mostrar estado actual del bot
-python -m royaltdn logs     # One-shot: mostrar últimas 50 líneas de log
-
-python -m royaltdn pause    # Señal IPC: pausar el bot
-python -m royaltdn resume   # Señal IPC: reanudar el bot
-python -m royaltdn scanner  # Señal IPC: disparar scanner manual
+# Control de drawdown (por defecto 50% para backtesting)
+python -m src.royaltdn.scripts.run_backtest --strategy scalping_reversion --max-drawdown 0.1
 ```
 
-### Modo run (recomendado)
+Métricas que reporta:
+- **Sharpe** (equity curve, anualizado por √bars_per_year)
+- **Win Rate, Profit Factor**
+- **Max Drawdown**
+- **Total Return, Total Trades**
+- **Ganancias por símbolo** (multi-symbol)
 
-Arranca la arquitectura modular completa **más la consola interactiva Rich** en la terminal. El Orchestrator corre en un thread daemon y la consola en el thread principal. Si Redis no está disponible o el thread del `DataIngestor` falla (ej: conflicto de event loop en `alpaca-py`), el `Orchestrator` **detecta automáticamente la muerte del thread** y transiciona a modo legacy:
+### Optimización (`optimize.py`)
 
 ```bash
-# Normal (con Redis + TimescaleDB + consola interactiva)
-REDIS_URL=redis://localhost:6379/0 python -m royaltdn run
+# Optimizar una estrategia con Optuna
+python -m src.royaltdn.scripts.optimize --strategy scalping_reversion --trials 100
 
-# Forzar fallback legacy (Redis inválido)
-REDIS_URL=redis://noexiste:6379/0 python -m royaltdn run
+# Optimizar todas las estrategias
+python -m src.royaltdn.scripts.optimize --strategy all --trials 25
+
+# Output: guarda los mejores parámetros en el YAML correspondiente
 ```
 
-En modo legacy, el risk manager, TWAP, alertas Telegram, **y las estrategias de usuario** siguen activos — solo cambia la fuente de datos (REST polling cada 60s en vez de WebSocket).
+- 25–100 trials con TPE sampler
+- Parámetros optimizados: entry conditions, stop loss, take profit, trailing stop, sizing, max positions
+- Multi-símbolo: optimiza sobre el promedio de todos los símbolos configurados
 
-### Menú Interactivo (Fase 11)
-
-Al ejecutar `python -m royaltdn run`, se inicia el menú interactivo Rich con **8 opciones** navegables por número:
-
-| Opción | Pantalla | Descripción |
-|--------|----------|-------------|
-| `1` | Dashboard | KPIs, posiciones, señales, trades, logs con auto-refresh configurable |
-| `2` | Scanner | Resultados del escaneo multi-estrategia (badge 🔔 si hay señales nuevas) |
-| `3` | Estrategias | Vista unificada predefinidas + usuario con CRUD completo |
-| `4` | Trades | Historial con filtros (símbolo + fecha), export CSV/JSON, estadísticas avanzadas |
-| `5` | Logs | Logs con filtros por nivel y búsqueda de texto |
-| `6` | Control | Pausar/reanudar bot, forzar scanner, configurar alertas de riesgo |
-| `7` | Simulación ★ | What-if: modificar riesgo, re-backtest, comparar resultados |
-| `8` | Actividad ★ | Registro de acciones del usuario con búsqueda |
-
-**Badges de notificación:** 🔔 señales nuevas, 💰 trades nuevos — aparecen automáticamente en el menú principal.
-
-**Estrategias (opción 3):** CRUD completo — activar/desactivar, editar con precarga, eliminar (usuario), backtest rápido, builder visual de 12 etapas.
-
-**Control (opción 6):** Bot PAUSADO se muestra en amarillo en header + Control + Dashboard. Alertas configurables (drawdown, pérdidas consecutivas).
-
-### One-shot: status y logs
+### Backtest completo (`backtest.py`)
 
 ```bash
-python -m royaltdn status    # Imprime dashboard una vez y sale
-python -m royaltdn logs      # Últimas 50 líneas con syntax highlighting
+python -m src.royaltdn.scripts.backtest --strategies scalping.yaml --start 2025-01-01 --end 2026-06-01
 ```
 
-## Strategy Builder (Fase 7)
+---
 
-Constructor visual para crear estrategias de trading sin código:
+## Monitoreo
 
-1. **Paleta de indicadores** (columna izquierda): seleccioná entre 16 indicadores, configurá parámetros, agregalos a la estrategia
-2. **Reglas de entrada/salida** (columna izquierda): construí árboles lógicos AND/OR con condiciones sobre indicadores
-3. **Vista previa JSON** (columna central): el JSON de configuración se genera automáticamente
-4. **Backtesting** (columna central): ejecutá el backtest con datos reales de Yahoo Finance, métricas (Sharpe, Sortino, WinRate, MaxDD) + 4 charts Plotly
-5. **Gestión** (columna derecha): guardá, cargá, validá y desplegá estrategias
-6. **Watcher automático**: el Orchestrator detecta nuevas estrategias guardadas y las carga sin reiniciar
+### Dashboard en terminal (Loguru + asyncio)
 
-### 16 indicadores disponibles
+El bot corre en background con logging estructurado a `logs/trading.log`. El dashboard muestra en tiempo real:
 
-| Indicador | Librería | Parámetros clave |
-|-----------|----------|------------------|
-| SMA | pandas-ta | period, source |
-| EMA | pandas-ta | period, source |
-| RSI | pandas-ta | period, source |
-| MACD | pandas-ta | fast, slow, signal, source |
-| Bollinger Bands | pandas-ta | period, std, source |
-| ATR | pandas-ta | period |
-| Volume | pandas-ta | — |
-| Ichimoku Cloud | pandas-ta | tenkan, kijun, senkou |
-| SuperTrend | pandas-ta | period, multiplier |
-| VWAP | pandas-ta / manual | anchor |
-| Z-Score | pandas-ta | period, entry/exit thresholds |
-| ADX | pandas-ta | period |
-| OBV | pandas-ta | — |
-| Stochastic | pandas-ta | k_period, d_period, slowing |
-| Parabolic SAR | pandas-ta | af, max_af |
-| **SmartMoneyFlowCloud** | **Manual** | trend_length, flow_window, atr_length |
+- Equity, P&L, drawdown
+- Posiciones abiertas
+- Señales generadas por cada cell
+- Alertas vía Telegram (opcional)
 
-### 20+ operadores de reglas
+### Grafana (TimescaleDB)
 
-- **Comparación**: `>`, `>=`, `<`, `<=`, `==`, `!=`
-- **Crossover**: `crosses_above`, `crosses_below`
-- **Overbought/Oversold**: `is_overbought`, `is_oversold`, `exits_overbought`, `exits_oversold`
-- **Tendencia**: `trend_strong`, `trend_weak`
-- **Bandas**: `inside_band`, `breaks_above_band`, `breaks_below_band`
-- **Ichimoku**: `price_above_cloud`, `price_below_cloud`, `price_in_cloud`, `tenkan_crosses_kijun`, `price_crosses_chikou`
-- **Smart Money Flow**: `smf_above_basis`, `smf_below_basis`, `smf_regime_bull/bear`, `smf_retest_bull/bear`
-
-### Arquitectura de persistencia
-
-```
-user_strategies/
-├── my_rsi_strategy_20260616_120000_123.json   # version 1
-├── my_rsi_strategy_20260616_120500_456.json   # version 2
-└── otra_estrategia_20260616_121000_789.json
-```
-
-- Escritura atómica (tempfile + os.replace)
-- Timestamps con precisión de milisegundos
-- Versionado automático (múltiples saves del mismo nombre)
-- Watcher en Orchestrator detecta nuevos archivos cada 60s
-
-## Setup
+Si TimescaleDB está configurado, las métricas se persisten y Grafana las visualiza:
 
 ```bash
-# Dependencias base
-pip install alpaca-py redis python-dotenv pandas numpy
-
-# Fase 5-6 (Scanner)
-pip install -r requirements/fase6.txt
-
-# Fase 7 (Builder + Backtesting)
-pip install -r requirements/fase7.txt
-
-# Fase 8 (Consola Rich + Loguru)
-pip install -r requirements/fase8_console.txt
-
-# Variables de entorno (ver .env.example)
-export ALPACA_API_KEY="tu_key"
-export ALPACA_SECRET_KEY="tu_secret"
-export REDIS_URL="redis://localhost:6379/0"    # Opcional — fallback legacy sin Redis
-export DATABASE_URL=""                          # Opcional — TimescaleDB
-
-# Ejecutar bot con consola interactiva
-python -m royaltdn run
-
-# One-shot status
-python -m royaltdn status
+docker-compose up -d timescaledb grafana
 ```
+
+---
+
+## Configuración
+
+### Variables de entorno (`.env`)
+
+| Variable | Obligatoria | Default |
+|----------|-------------|---------|
+| `BINANCE_API_KEY` | Sí (live) | — |
+| `BINANCE_SECRET_KEY` | Sí (live) | — |
+| `BINANCE_PRIVATE_KEY` | No | — |
+| `TELEGRAM_BOT_TOKEN` | No | — |
+| `TELEGRAM_CHAT_ID` | No | — |
+| `DATABASE_URL` | No | — |
+
+### Modos de broker
+
+| Modo | Config | Ejecución |
+|------|--------|-----------|
+| **Paper** | `broker: paper` (default) | Simulación, sin capital real |
+| **Binance Testnet** | `broker: binance` + `testnet: true` | Órdenes contra sandbox |
+| **Binance Live** | `broker: binance` + `testnet: false` | Capital real |
+
+Ver `src/royaltdn/config.yaml` para configuración completa.
+
+---
 
 ## Tests
 
@@ -244,27 +240,20 @@ python -m royaltdn status
 pytest tests/ -v
 ```
 
-~80 tests en total cubriendo: SMA, BollingerRSI, MomentumATR, FactorRotation, Scanner, Orchestrator, TCA, indicadores, rule_engine, schema, StrategyStore, DynamicStrategy, backtesting, integración, **StateLoader, LogBuffer, widgets, commands, screens, menú interactivo** (Fases 8-11).
+Cobertura: backtesting, optimización, risk manager, journal, indicators, inference engine, cell loader, hot reload.
 
-Los tests del menú (`tests/test_menu.py`) cubren:
-- StateLoader: carga, cache TTL, archivos faltantes, JSON corrupto
-- LogBuffer: add, trim, filtros, thread-safety
-- Dashboard: render con datos vacíos y reales
-- Builder flow: creación completa de estrategia
-- Ctrl+C: salida graceful del menú
+---
 
 ## Roadmap
 
 | Fase | Estado | Descripción |
 |------|--------|-------------|
-| Fase 0-1 | ✅ | Cimientos: estructura, SMA crossover, backtest VectorBT |
-| Fase 2 | ✅ | Risk manager, optimización, notebooks |
-| Fase 3 | ✅ | Docker, TimescaleDB, Grafana, CI/CD |
-| Fase 4 | ✅ | Arquitectura modular: ingestor → Redis → strategy → orchestrator + auto-fallback |
-| Fase 5 | ✅ | Scanner multi-estrategia, estrategias avanzadas (BollingerRSI, MomentumATR, FactorRotation) |
-| Fase 6 | ✅ | Frontend Streamlit: Dashboard, Scanner, Estrategias, Trades, Logs + status publishing |
-| Fase 7 | ✅ | Constructor visual de estrategias: 16 indicadores, reglas lógicas, backtesting, watcher automático |
-| **Fase 8** | **✅** | **Consola interactiva Rich: reemplazo de Streamlit por TUI, Loguru, 6 CLI subcomandos, IPC por señales** |
-| **Fase 9** | **✅** | **Textual TUI: BuilderScreen + HelpScreen + refactor a Textual** |
-| **Fase 10** | **✅** | **Menú texto interactivo: Rich puro sin Textual (compatibilidad Termux)** |
-| **Fase 11** | **✅** | **Menú profesional: 15 mejoras + PAUSADO + Simulación + Actividad + Alertas** |
+| CellMesh core | ✅ | EventBus, EventEngine, BinanceFeed, RiskManager, brokers |
+| Templates YAML | ✅ | 15 células en 3 timeframes |
+| Backtesting | ✅ | run_backtest.py con métricas reales |
+| Optimización | ✅ | Optimiza.py con Optuna, equity-curve Sharpe |
+| Hot reload | ✅ | Carga en caliente de células modificadas |
+| Dashboard + Telegram | ✅ | Monitoreo en tiempo real con alertas |
+| **Estrategias con edge** | **🔶** | **3/15 con Sharpe positivo — 12 en reemplazo** |
+| Gestión de riesgo real | 🔶 | Position sizing por ATR, drawdown kill switch |
+| Live trading Binance | 🔶 | Paper funcionando, live en validación |

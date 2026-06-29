@@ -1,94 +1,217 @@
-name: scalping_momentum
-symbols:
-- BTCUSDT
-- ETHUSDT
-- SOLUSDT
-- ADAUSDT
-- LINKUSDT
-symbol: BTCUSDT
-timeframe: 1m
-max_hold_hours: 4
-entry:
-  logic: AND
-  conditions:
-  - indicator: ema
-    params:
-      period: 23
-    operator: price > ema
-  - indicator: rsi
-    params:
-      period: 23
-    operator: < 32.0
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: ema
-    params:
-      period: 23
-    operator: price < ema
-  - indicator: rsi
-    params:
-      period: 23
-    operator: '> 68.0'
-exit:
-- type: stop_loss
-  params:
-    pct: 0.35
-- type: take_profit
-  params:
-    pct: 0.45
-risk:
-  sizing: 0.005
-  max_positions: 3
----
-name: scalping_breakout
-symbol: SOLUSDT
-timeframe: 1m
-max_hold_hours: 4
-entry:
-  logic: AND
-  conditions:
-  - indicator: range_breakout
-    params:
-      period: 17
-      factor: 0.8
-  - indicator: volume_surge
-    params:
-      period: 34
-      factor: 5.0
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: range_breakout
-    params:
-      period: 17
-      factor: 0.8
-  - indicator: volume_surge
-    params:
-      period: 34
-      factor: 5.0
-exit:
-- type: stop_loss
-  params:
-    pct: 0.30
-- type: take_profit
-  params:
-    pct: 1.00
-risk:
-  sizing: 0.005
-  max_positions: 3
----
-name: scalping_reversion
+name: scalping_smf_retest_rsi
+enabled: true
 symbol: ETHUSDT
-timeframe: 1m
-max_hold_hours: 4
+symbols:
+- ETHUSDT
+- BTCUSDT
+- SOLUSDT
+timeframe: 15m
+max_hold_hours: 8
+reentry_cooldown: 0
+min_signal_interval: 0
 entry:
   logic: AND
   conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price < smf_basis
   - indicator: rsi
     params:
       period: 7
-    operator: < 25.0
+    operator: < 40.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_basis
+    params: {}
+    operator: price > smf_basis
+  - indicator: rsi
+    params:
+      period: 7
+    operator: '> 60.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
+---
+name: scalping_smf_momentum
+enabled: true
+symbol: ETHUSDT
+symbols:
+- ETHUSDT
+- BTCUSDT
+- SOLUSDT
+timeframe: 15m
+max_hold_hours: 8
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow > 0.0
+  - indicator: smf_upper
+    params: {}
+    operator: price > smf_upper
+  - indicator: ema
+    params:
+      period: 9
+    operator: price > ema
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_flow
+    params: {}
+    operator: smf_flow < 0.0
+  - indicator: smf_upper
+    params: {}
+    operator: price < smf_lower
+  - indicator: ema
+    params:
+      period: 9
+    operator: price < ema
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
+---
+name: scalping_smf_breakout
+enabled: true
+symbol: ETHUSDT
+symbols:
+- ETHUSDT
+- BTCUSDT
+- SOLUSDT
+timeframe: 15m
+max_hold_hours: 8
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.5
+  - indicator: smf_upper
+    params: {}
+    operator: price > smf_upper
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 2.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength > 0.5
+  - indicator: smf_upper
+    params: {}
+    operator: price < smf_lower
+  - indicator: volume_surge
+    params:
+      period: 20
+      factor: 2.0
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
+---
+name: scalping_smf_reversion
+enabled: true
+symbol: ETHUSDT
+symbols:
+- ETHUSDT
+- BTCUSDT
+- SOLUSDT
+timeframe: 15m
+max_hold_hours: 8
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength < 0.3
+  - indicator: smf_lower
+    params: {}
+    operator: price < smf_lower
+  - indicator: rsi
+    params:
+      period: 7
+    operator: < 30.0
+short_entry:
+  logic: AND
+  conditions:
+  - indicator: smf_strength
+    params: {}
+    operator: smf_strength < 0.3
+  - indicator: smf_lower
+    params: {}
+    operator: price > smf_upper
+  - indicator: rsi
+    params:
+      period: 7
+    operator: '> 70.0'
+exit:
+- type: trailing_stop
+  params:
+    atr_multiplier: 2.0
+    min_mult: 0.5
+    max_mult: 1.5
+- type: stop_loss
+  params:
+    atr_multiplier: 3.0
+risk:
+  sizing: 0.01
+  max_positions: 3
+---
+name: scalping_reversion
+enabled: true
+symbol: ETHUSDT
+timeframe: 1m
+max_hold_hours: 4
+reentry_cooldown: 0
+min_signal_interval: 0
+entry:
+  logic: AND
+  conditions:
+  - indicator: rsi
+    params:
+      period: 49
+    operator: < 27.0
 short_entry:
   logic: AND
   conditions:
@@ -99,76 +222,10 @@ short_entry:
 exit:
 - type: stop_loss
   params:
-    pct: 0.25
+    pct: 0.9
 - type: take_profit
   params:
-    pct: 0.40
+    pct: 1.0
 risk:
-  sizing: 0.005
-  max_positions: 3
----
-name: scalping_orderflow
-symbols:
-- BTCUSDT
-- ETHUSDT
-- ADAUSDT
-max_hold_hours: 4
-entry:
-  logic: AND
-  conditions:
-  - indicator: volume_surge
-    params:
-      period: 20
-      factor: 4.8
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: volume_surge
-    params:
-      period: 20
-      factor: 4.8
-exit:
-- type: stop_loss
-  params:
-    pct: 0.35
-- type: take_profit
-  params:
-    pct: 0.50
-risk:
-  sizing: 0.005
-  max_positions: 3
----
-name: scalping_spread
-symbol: LINKUSDT
-timeframe: 1m
-max_hold_hours: 4
-entry:
-  logic: AND
-  conditions:
-  - indicator: spread
-    params:
-      max_spread_pct: 0.22
-  - indicator: atr
-    params:
-      period: 18
-      max_pct: 8.7
-short_entry:
-  logic: AND
-  conditions:
-  - indicator: spread
-    params:
-      max_spread_pct: 0.22
-  - indicator: atr
-    params:
-      period: 18
-      max_pct: 8.7
-exit:
-- type: stop_loss
-  params:
-    pct: 0.30
-- type: take_profit
-  params:
-    pct: 0.50
-risk:
-  sizing: 0.005
-  max_positions: 3
+  sizing: 0.08
+  max_positions: 4

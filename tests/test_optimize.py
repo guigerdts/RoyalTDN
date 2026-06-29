@@ -104,6 +104,12 @@ class _ControlledCell:
         self.state = "IDLE"
         self.entry_price = 0.0
 
+    def record_approval(self) -> None:
+        """Stub — required by EventEngine._process_event."""
+
+    def record_rejection(self) -> None:
+        """Stub — required by EventEngine._process_event."""
+
 
 class TestRegressionSimulateVsBacktestRun:
     """Compare old ``simulate()`` and new ``backtest_run()`` output."""

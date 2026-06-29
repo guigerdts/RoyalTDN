@@ -26,11 +26,17 @@ def _safe_numeric(
     series: Any,
     min_length: int = 1,
 ) -> pd.Series:
-    """Retorna la serie convertida a numérico, o una serie vacía si falla.
+    """Coerce a series to numeric dtype, safe to chain with pandas methods.
 
-    Coerce inputs to numeric dtype and drop NaN/None values.  Returns an
-    empty ``float64`` Series when the input is unusable or shorter than
-    *min_length* — safe to chain with ``.mean()``, ``.std()``, etc.
+    Drops NaN/None values and returns an empty ``float64`` Series when the
+    input is unusable or shorter than *min_length*.
+
+    Args:
+        series: Input to convert (Series, ndarray, or any coercible value).
+        min_length: Minimum length required; returns empty if shorter.
+
+    Returns:
+        Clean ``pd.Series`` (float64) or empty Series on failure.
     """
     if not isinstance(series, (pd.Series, np.ndarray)):
         return pd.Series(dtype=float)
@@ -684,6 +690,333 @@ def atr(data: Any, period: int = 20, max_pct: float = 4.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# SMF Cloud indicators
+# ---------------------------------------------------------------------------
+
+_smf_cache: dict[tuple[int, int, int, int], dict[str, float]] = {}
+
+
+def _compute_smf(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> dict[str, float]:
+    """Single-pass SMF Cloud computation.
+
+    Computes CLV -> RawFlow -> Money Flow -> Strength -> Basis -> ATR ->
+    upper/lower bands.  The result is cached by ``(id(data), *params)``
+    so that multiple wrappers called within the same evaluation cycle
+    only trigger one real computation.
+
+    Returns a dict with keys ``clv, raw_flow, mf, strength, mult, basis,
+    atr, upper, lower``, or an empty dict when there is insufficient data.
+
+    Typical YAML usage (compound operator — smf_basis/lower/upper work
+    as either side of a comparison)::
+
+        entry:
+          logic: AND
+          conditions:
+            - indicator: smf_flow
+              params: {flow_len: 24, ema_period: 34, atr_period: 14}
+              operator: "> 0.0"
+            - indicator: smf_strength
+              params: {flow_len: 24, ema_period: 34, atr_period: 14}
+              operator: "> 0.3"
+            - indicator: smf_lower
+              params: {flow_len: 24, ema_period: 34, atr_period: 14}
+              operator: "price > smf_lower"
+
+    Args:
+        data: Market data dict with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        9-key dict on success, empty dict on insufficient data.
+    """
+    key = (id(data), flow_len, ema_period, atr_period)
+    if key in _smf_cache:
+        return _smf_cache[key]
+
+    min_bars = max(flow_len, ema_period, atr_period) + 1
+
+    close = _safe_numeric(_to_series(data, "close"), min_length=min_bars)
+    high = _safe_numeric(_to_series(data, "high"), min_length=min_bars)
+    low = _safe_numeric(_to_series(data, "low"), min_length=min_bars)
+    volume = _safe_numeric(_to_series(data, "volume"), min_length=min_bars)
+
+    if len(close) < min_bars:
+        return {}
+
+    # --- CLV (Close Location Value) ---
+    hl_range = high - low
+    clv = pd.Series(0.0, index=close.index)
+    mask = hl_range > 0.0
+    clv[mask] = ((close[mask] - low[mask]) - (high[mask] - close[mask])) / hl_range[mask]
+
+    # --- RawFlow = CLV * volume ---
+    raw_flow = clv * volume
+
+    # --- MF = sum(RawFlow) / sum(|RawFlow|) over flow_len ---
+    mf_numer = float(raw_flow.iloc[-flow_len:].sum())
+    mf_denom = float(raw_flow.iloc[-flow_len:].abs().sum())
+    mf = mf_numer / mf_denom if mf_denom > 0.0 else 0.0
+
+    # --- Strength = |MF|^1.2 ---
+    strength = abs(mf) ** 1.2
+
+    # --- Mult = adaptive multiplier ---
+    min_mult = 0.9
+    max_mult = 2.2
+    mult = min_mult + (max_mult - min_mult) * strength
+
+    # --- Basis = EMA(close, ema_period) ---
+    basis = float(close.ewm(span=ema_period, adjust=False).mean().iloc[-1])
+
+    # --- ATR (Average True Range) ---
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    tr_safe = _safe_numeric(tr, min_length=atr_period)
+    if len(tr_safe) < 1:
+        return {}
+    atr_value = float(tr_safe.rolling(window=atr_period, min_periods=atr_period).mean().iloc[-1])
+    if pd.isna(atr_value):
+        return {}
+
+    # --- Bands ---
+    upper = basis + atr_value * mult
+    lower = basis - atr_value * mult
+
+    result: dict[str, float] = {
+        "clv": float(clv.iloc[-1]),
+        "raw_flow": float(raw_flow.iloc[-1]),
+        "mf": mf,
+        "strength": strength,
+        "mult": mult,
+        "basis": basis,
+        "atr": atr_value,
+        "upper": upper,
+        "lower": lower,
+    }
+
+    # Cache and evict if too large
+    _smf_cache[key] = result
+    if len(_smf_cache) > 10:
+        _smf_cache.clear()
+
+    return result
+
+
+def adaptive_mult(
+    strength: float,
+    min_mult: float = 0.9,
+    max_mult: float = 2.2,
+) -> float:
+    """Scale an ATR multiplier based on SMF flow strength.
+
+    ``min_mult + (max_mult - min_mult) * clamp(strength, 0, 1)``
+
+    When *strength* is NaN it is treated as 0.0 (widest trail, more room).
+
+    YAML usage — referenced automatically by ``adaptive_trailing``::
+
+        trailing_stop:
+          adaptive: true
+          min_atr_mult: 0.9
+          max_atr_mult: 2.2
+          lookback: 24
+
+    Args:
+        strength: Flow strength in [0, 1] (clamped internally).
+        min_mult: Minimum multiplier when strength is 0.
+        max_mult: Maximum multiplier when strength is 1.
+
+    Returns:
+        The interpolated multiplier value.
+    """
+    if not (np.isfinite(strength)):
+        return min_mult
+    clamped = max(0.0, min(1.0, strength))
+    return min_mult + (max_mult - min_mult) * clamped
+
+
+def _smf_wrapper(data: Any, key: str, **kwargs: Any) -> float:
+    """Call ``_compute_smf`` and return a single field from its result.
+
+    Args:
+        data: Market data passed through to ``_compute_smf``.
+        key: Dict key to extract (e.g. ``"mf"``, ``"strength"``).
+        **kwargs: Forwarded to ``_compute_smf`` (flow_len, ema_period, etc.).
+
+    Returns:
+        The requested field value, or ``0.0`` if computation yielded
+        insufficient data (empty dict).
+    """
+    result = _compute_smf(data, **kwargs)
+    if not result:
+        return 0.0
+    return float(result.get(key, 0.0))
+
+
+def smf_flow(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> float:
+    """Return the current Money Flow value from the SMF Cloud.
+
+    Positive MF indicates buying pressure; negative indicates selling.
+
+    YAML::
+
+        entry:
+          conditions:
+            - indicator: smf_flow
+              params: {flow_len: 24}
+              operator: "> 0.0"
+
+    Args:
+        data: Market data with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        Money Flow value, or ``0.0`` on insufficient data.
+    """
+    return _smf_wrapper(data, "mf", flow_len=flow_len, ema_period=ema_period, atr_period=atr_period)
+
+
+def smf_strength(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> float:
+    """Return the current SMF strength in [0, 1].
+
+    Strength = ``|MF|^1.2``.  Values > 0.3 indicate meaningful
+    directional flow.
+
+    YAML::
+
+        entry:
+          conditions:
+            - indicator: smf_strength
+              params: {flow_len: 24}
+              operator: "> 0.3"
+
+    Args:
+        data: Market data with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        Strength in [0.0, 1.0], or ``0.0`` on insufficient data.
+    """
+    return _smf_wrapper(data, "strength", flow_len=flow_len, ema_period=ema_period, atr_period=atr_period)
+
+
+def smf_basis(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> float:
+    """Return the current SMF basis (EMA of close).
+
+    Middle line of the cloud.  Use in compound operators to check
+    where price sits relative to the cloud::
+
+        entry:
+          conditions:
+            - indicator: smf_flow
+              params: {flow_len: 24}
+              operator: "> 0.0"
+            - indicator: ""
+              operator: "price > smf_basis"
+
+    Args:
+        data: Market data with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        Basis (EMA) value, or ``0.0`` on insufficient data.
+    """
+    return _smf_wrapper(data, "basis", flow_len=flow_len, ema_period=ema_period, atr_period=atr_period)
+
+
+def smf_upper(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> float:
+    """Return the current SMF upper band value.
+
+    Upper cloud boundary.  Price above the upper band signals
+    strong bullish pressure::
+
+        exit:
+          conditions:
+            - indicator: ""
+              operator: "price < smf_upper"
+
+    Args:
+        data: Market data with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        Upper band value, or ``0.0`` on insufficient data.
+    """
+    return _smf_wrapper(data, "upper", flow_len=flow_len, ema_period=ema_period, atr_period=atr_period)
+
+
+def smf_lower(
+    data: Any,
+    flow_len: int = 24,
+    ema_period: int = 34,
+    atr_period: int = 14,
+) -> float:
+    """Return the current SMF lower band value.
+
+    Lower cloud boundary.  Price below the lower band signals
+    strong bearish pressure::
+
+        entry:
+          conditions:
+            - indicator: ""
+              operator: "price < smf_lower"
+
+    Args:
+        data: Market data with ``close``, ``high``, ``low``, ``volume``.
+        flow_len: Lookback window for Money Flow ratio.
+        ema_period: EMA period for the basis line.
+        atr_period: ATR lookback window.
+
+    Returns:
+        Lower band value, or ``0.0`` on insufficient data.
+    """
+    return _smf_wrapper(data, "lower", flow_len=flow_len, ema_period=ema_period, atr_period=atr_period)
+
+
+# ---------------------------------------------------------------------------
 # Bollinger Bands (numeric)
 # ---------------------------------------------------------------------------
 
@@ -780,6 +1113,11 @@ _INDICATORS: dict[str, Any] = {
     "atr": atr,
     "bollinger_lower": bollinger_lower,
     "bollinger_upper": bollinger_upper,
+    "smf_flow": smf_flow,
+    "smf_strength": smf_strength,
+    "smf_basis": smf_basis,
+    "smf_upper": smf_upper,
+    "smf_lower": smf_lower,
 }
 
 # ---------------------------------------------------------------------------

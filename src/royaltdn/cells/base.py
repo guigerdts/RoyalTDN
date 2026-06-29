@@ -146,6 +146,8 @@ class Cell:
         self.exit_take_profit_pct: float | None = None # fixed % (0.062 = 6.2%)
         self.exit_trailing_stop: float | None = None   # ATR multiplier
         self.exit_trailing_stop_pct: float | None = None
+        self.exit_trailing_min_mult: float | None = None  # adaptive trailing
+        self.exit_trailing_max_mult: float | None = None  # adaptive trailing
         self.exit_zscore_threshold: float | None = None
 
         for rule in self.exit_list:
@@ -181,6 +183,11 @@ class Cell:
                     self.exit_trailing_stop_pct = pct_val / 100.0
                 else:
                     self.exit_trailing_stop = float(params.get("atr_multiplier", 2.0))
+                    # Adaptive trailing: optional min_mult / max_mult
+                    raw_min = params.get("min_mult")
+                    raw_max = params.get("max_mult")
+                    self.exit_trailing_min_mult = float(raw_min) if raw_min is not None else None
+                    self.exit_trailing_max_mult = float(raw_max) if raw_max is not None else None
             elif rule_type == "zscore":
                 self.exit_zscore_threshold = float(params.get("threshold", 0.5))
 
@@ -529,6 +536,41 @@ class Cell:
                         "{} {} TRAILING-STOP @ ${:.2f} ({:.1f}%, high ${:.2f})",
                         self.symbol, self.name, current_price,
                         self.exit_trailing_stop_pct * 100, self._trailing_high,
+                    )
+                    self._trailing_high = 0.0
+                    return self._exit_signal(current_price)
+
+        # ── Adaptive trailing (ATR mode with min_mult/max_mult) ───────
+        if self.exit_trailing_stop is not None and self.exit_trailing_min_mult is not None and has_atr:
+            from royaltdn.inference.conditions import _compute_smf, adaptive_mult
+            smf_result = _compute_smf(self._build_data())
+            if smf_result:
+                strength = smf_result.get("strength", 0.0)
+                trail_mult = adaptive_mult(
+                    strength, self.exit_trailing_min_mult, self.exit_trailing_max_mult,
+                )
+            else:
+                trail_mult = self.exit_trailing_stop  # fallback
+            trail_distance = trail_mult * atr
+            if is_short:
+                if self._trailing_low == 0.0:
+                    self._trailing_low = current_price
+                self._trailing_low = min(self._trailing_low, current_price)
+                if current_price >= self._trailing_low + trail_distance:
+                    logger.info(
+                        "{} {} SHORT ADAPTIVE-TRAIL @ ${:.2f} (mult={:.2f}, low ${:.2f})",
+                        self.symbol, self.name, current_price, trail_mult, self._trailing_low,
+                    )
+                    self._trailing_low = 0.0
+                    return self._exit_signal(current_price)
+            else:
+                if self._trailing_high == 0.0:
+                    self._trailing_high = current_price
+                self._trailing_high = max(self._trailing_high, current_price)
+                if current_price <= self._trailing_high - trail_distance:
+                    logger.info(
+                        "{} {} ADAPTIVE-TRAIL @ ${:.2f} (mult={:.2f}, high ${:.2f})",
+                        self.symbol, self.name, current_price, trail_mult, self._trailing_high,
                     )
                     self._trailing_high = 0.0
                     return self._exit_signal(current_price)
