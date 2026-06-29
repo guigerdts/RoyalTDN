@@ -1,27 +1,25 @@
 """Real-time Binance WebSocket feed for the CellMesh architecture.
 
-Subscribes to ticker streams via Binance WebSocket API and emits
-structured tick events onto the shared EventBus.
+Subscribes to kline streams via Binance WebSocket API and emits
+structured tick events (with OHLCV data) onto the shared EventBus.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import datetime, timezone
 from typing import Any
 
-import websockets
 from loguru import logger
 
 from royaltdn.core.bus import EventBus
 
 
 class BinanceFeed:
-    """WebSocket feed that streams real-time ticker data from Binance.
+    """WebSocket feed that streams real-time kline data from Binance.
 
-    Connects to Binance's combined stream endpoint, parses 24hr ticker
-    updates, and emits them as structured events on the EventBus.
+    Connects to Binance's combined stream endpoint, parses kline
+    updates (``@kline_<interval>``), and emits them as structured
+    events on the EventBus with OHLCV data.
     Supports both mainnet and testnet endpoints.
     """
 
@@ -30,6 +28,7 @@ class BinanceFeed:
         symbols: list[str],
         bus: EventBus,
         testnet: bool = False,
+        interval: str = "1m",
     ) -> None:
         """Initialise the feed.
 
@@ -37,10 +36,12 @@ class BinanceFeed:
             symbols: List of trading pair symbols (e.g. ``["BTC/USDT"]``).
             bus: Shared EventBus instance to emit tick events onto.
             testnet: If True, connect to Binance testnet instead of mainnet.
+            interval: Kline interval (e.g. ``"1m"``, ``"5m"``, ``"1h"``).
         """
         self.symbols = symbols
         self.bus = bus
         self.testnet = testnet
+        self.interval = interval
         self._running = False
         self._ws: Any = None  # websocket connection handle
 
@@ -57,7 +58,7 @@ class BinanceFeed:
             Full WebSocket URL for the configured symbols.
         """
         streams = "/".join(
-            f"{s.lower().replace('/', '')}@ticker" for s in self.symbols
+            f"{s.lower().replace('/', '')}@kline_{self.interval}" for s in self.symbols
         )
         return f"wss://stream.binance.com:9443/stream?streams={streams}"
 
@@ -73,6 +74,8 @@ class BinanceFeed:
         and propagates the exception so the caller can react.
         """
         self._running = True
+
+        import websockets
 
         base_delay: float = 1.0
         max_delay: float = 60.0
@@ -135,36 +138,48 @@ class BinanceFeed:
     async def _handle_message(self, raw: str) -> None:
         """Parse a raw WS message and emit a tick event to the bus.
 
+        Expects kline messages from Binance combined streams:
+        ``{"stream":"btcusdt@kline_1m","data":{"e":"kline","E":...,"s":"BTCUSDT","k":{...}}}``
+
         Args:
             raw: Raw JSON string from the WebSocket.
         """
         try:
+            import json
+            from datetime import datetime, timezone
             data = json.loads(raw)
 
             # Binance combined streams wrap payload in a "data" key
-            ticker = data.get("data", data)
+            payload = data.get("data", data)
+
+            # Only process kline messages (skip subscription confirmations, etc.)
+            if "k" not in payload:
+                return
+
+            k = payload["k"]
             event = {
                 "type": "tick",
-                "symbol": ticker["s"],
-                "price": float(ticker["c"]),
-                "volume": float(ticker["v"]),
+                "symbol": payload["s"],
+                "price": float(k["c"]),
+                "volume": float(k["v"]),
                 "timestamp": datetime.fromtimestamp(
-                    ticker["E"] / 1000, tz=timezone.utc
+                    payload["E"] / 1000, tz=timezone.utc
                 ),
                 "data": {
-                    "high": float(ticker["h"]),
-                    "low": float(ticker["l"]),
-                    "open": float(ticker["o"]),
-                    "close": float(ticker["c"]),
-                    "volume": float(ticker["v"]),
-                    "quote_volume": float(ticker["q"]),
-                    "count": ticker["n"],
+                    "high": float(k["h"]),
+                    "low": float(k["l"]),
+                    "open": float(k["o"]),
+                    "close": float(k["c"]),
+                    "volume": float(k["v"]),
+                    "quote_volume": float(k["q"]),
+                    "count": k["n"],
+                    "_kline_start": k["t"],
                 },
             }
             await self.bus.emit(event)
 
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
-            logger.warning("Failed to parse ticker message: {} — {}", exc, raw[:200])
+            logger.warning("Failed to parse kline message: {} — {}", exc, raw[:200])
 
     async def stop(self) -> None:
         """Gracefully stop the feed and close the WebSocket."""
