@@ -81,7 +81,7 @@ python -m src.royaltdn.main --optimize
 |--------|-----|---------|
 | `EventBus` | Pub/sub asíncrono (bar → cells) | `core/bus.py` |
 | `EventEngine` | Orquesta cells, risk, broker, journal | `core/engine.py` |
-| `BinanceFeed` | WebSocket + REST para datos en vivo | `data/binance_feed.py` |
+| `BinanceFeed` | WebSocket (@kline_1m) + REST para datos en vivo | `data/binance_feed.py` |
 | `InferenceEngine` | Evalúa árboles de condiciones (AND/OR) | `inference/engine.py` |
 | `Cell` | Condiciones de entrada/salida + risk por célula | `cells/base.py` |
 | `CellLoader` | Carga células desde YAML templates | `cells/loader.py` |
@@ -127,6 +127,19 @@ Tras ~100 trials de Optuna por estrategia con métrica real de equity curve:
 ✅ 12 SMF Cloud cells       —   —   en validación (bot test 06/2026: 44 cells,
                               9 señales SMF en 3.5 min, 0 errores)
 ```
+
+### Gestión de salidas (exits)
+
+Cada célula SMF tiene dos capas de salida:
+
+1. **Porcentaje fijo** — stop-loss, take-profit y trailing-stop con valores específicos por timeframe:
+   - Swing (1d): SL 2-3%, TP 3-5%, TS 2% (trend) / SL 2%, TP 3% (reversion)
+   - Intraday (1h): SL 1-1.5%, TP 2-2.5%, TS 1% (trend) / SL 1%, TP 2% (reversion)
+   - Scalping (15m): SL 0.6-0.8%, TP 1.2-1.5%, TS 0.5% (trend) / SL 0.6%, TP 1.2% (reversion)
+
+2. **ATR adaptativo** — trailing_stop con `atr_multiplier: 2.0` y stop_loss con `atr_multiplier: 3.0`
+
+Las salidas porcentuales se evalúan primero (sin requerir ATR). Si no se activan, se evalúan las ATR.
 
 ### Paleta de indicadores
 
