@@ -199,9 +199,14 @@ async def main():
         except Exception as exc:
             logger.warning("Reconciliacion inicial fallo (no critico): {}", exc)
 
-    # Cargar celulas desde YAML
+    # Cargar celulas desde YAML (con filtro enable/disable)
     strategies_dir = cfg.strategies_path
-    cells = load_cells(str(strategies_dir), inference_engine)
+    cells = load_cells(
+        str(strategies_dir),
+        inference_engine,
+        enabled_strategies=cfg.enabled_strategies or None,
+        disabled_strategies=cfg.disabled_strategies or None,
+    )
     for cell in cells:
         engine.register(cell)
         registry.register(cell)

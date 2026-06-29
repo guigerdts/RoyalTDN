@@ -17,6 +17,12 @@ telegram_equity_threshold: 1.0
 telegram_summary_interval: 15
 kill_switch_drawdown: 0.30
 
+# Estrategias habilitadas (vacío = todas). Para seleccionar grupos:
+#   enabled_strategies: [scalping_momentum, intraday_trend, swing_reversion]
+#   o poner el nombre exacto de la estrategia
+enabled_strategies: []
+disabled_strategies: []
+
 # Periodic optimization (used when run.py --optimize is active)
 optimization:
   interval_days: 30

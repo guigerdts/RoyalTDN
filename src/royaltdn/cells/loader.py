@@ -85,10 +85,47 @@ def _expand_strategy_config(config: dict) -> list[dict]:
     return result
 
 
+def _is_strategy_enabled(
+    config: dict[str, Any],
+    enabled_list: list[str] | None = None,
+    disabled_list: list[str] | None = None,
+) -> bool:
+    """Check if a strategy config is enabled.
+
+    Operates on the **base strategy document** (before symbol expansion),
+    so the name compared is the raw strategy name (e.g. ``scalping_momentum``),
+    not an expanded cell name (e.g. ``scalping_momentum_BTCUSDT``).
+
+    Priority (first match wins):
+    1. If config has ``enabled: false`` explicitly → disabled
+    2. If ``enabled_list`` is non-empty and strategy name is NOT in it → disabled
+    3. If ``disabled_list`` is non-empty and strategy name IS in it → disabled
+    4. Otherwise → enabled
+    """
+    name = config.get("name", "")
+
+    # Rule 1 — explicit enabled flag in the YAML config
+    enabled_flag = config.get("enabled", True)
+    if not enabled_flag:
+        return False
+
+    # Rule 2 — enabled_list is a whitelist
+    if enabled_list and name not in enabled_list:
+        return False
+
+    # Rule 3 — disabled_list is a blacklist
+    if disabled_list and name in disabled_list:
+        return False
+
+    return True
+
+
 def _load_cells_from_docs(
     documents: list[Any],
     inference_engine: Any,
     source_name: str,
+    enabled_strategies: list[str] | None = None,
+    disabled_strategies: list[str] | None = None,
 ) -> list[Cell]:
     """Parse a list of YAML documents into Cell objects.
 
@@ -96,10 +133,16 @@ def _load_cells_from_docs(
     <royaltdn.core.hot_reload.HotReloader>` can swap cells
     granularly per file (M6).
 
+    Filtering happens at the **document level** (before symbol expansion)
+    so that ``enabled_strategies`` / ``disabled_strategies`` use the
+    base strategy name.
+
     Args:
         documents: Parsed YAML documents from ``yaml.safe_load_all``.
         inference_engine: Shared InferenceEngine for new cells.
         source_name: Human-readable source name (file name) for logging.
+        enabled_strategies: If non-empty, ONLY load strategies in this list.
+        disabled_strategies: If non-empty, EXCLUDE strategies in this list.
 
     Returns:
         List of Cell instances.
@@ -111,6 +154,10 @@ def _load_cells_from_docs(
         if doc is None:
             continue
         if isinstance(doc, dict):
+            # Filter at the document level (base strategy name)
+            if not _is_strategy_enabled(doc, enabled_strategies, disabled_strategies):
+                logger.debug("Estrategia deshabilitada: {} ({})", doc.get("name"), source_name)
+                continue
             for expanded in _expand_strategy_config(doc):
                 expanded["_source_file"] = source_name
                 cell = Cell(expanded, inference_engine=inference_engine)
@@ -120,6 +167,10 @@ def _load_cells_from_docs(
         elif isinstance(doc, list):
             for item in doc:
                 if isinstance(item, dict):
+                    # Filter at the document level (base strategy name)
+                    if not _is_strategy_enabled(item, enabled_strategies, disabled_strategies):
+                        logger.debug("Estrategia deshabilitada: {} ({})", item.get("name"), source_name)
+                        continue
                     for expanded in _expand_strategy_config(item):
                         expanded["_source_file"] = source_name
                         cell = Cell(expanded, inference_engine=inference_engine)
@@ -137,12 +188,19 @@ def _load_cells_from_docs(
     return cells
 
 
-def load_cells_from_file(yaml_path: Path, inference_engine: Any) -> list[Cell]:
+def load_cells_from_file(
+    yaml_path: Path,
+    inference_engine: Any,
+    enabled_strategies: list[str] | None = None,
+    disabled_strategies: list[str] | None = None,
+) -> list[Cell]:
     """Load cell definitions from a single YAML file.
 
     Args:
         yaml_path: Path to the ``.yaml`` strategy file.
         inference_engine: Shared InferenceEngine for new cells.
+        enabled_strategies: If non-empty, ONLY load strategies in this list.
+        disabled_strategies: If non-empty, EXCLUDE strategies in this list.
 
     Returns:
         List of Cell instances parsed from the file.
@@ -154,17 +212,32 @@ def load_cells_from_file(yaml_path: Path, inference_engine: Any) -> list[Cell]:
         logger.exception("Error leyendo {} — se salta", yaml_path)
         return []
 
-    return _load_cells_from_docs(documents, inference_engine, yaml_path.name)
+    return _load_cells_from_docs(
+        documents, inference_engine, yaml_path.name,
+        enabled_strategies=enabled_strategies,
+        disabled_strategies=disabled_strategies,
+    )
 
 
 def load_cells(
     strategies_dir: str,
     inference_engine: Any,
+    enabled_strategies: list[str] | None = None,
+    disabled_strategies: list[str] | None = None,
 ) -> list[Cell]:
     """Load all cell definitions from YAML files in the given directory.
 
     Multi-symbol strategies (with a ``symbols`` list) are expanded into
     one Cell per symbol.  Backward-compatible with single-symbol configs.
+
+    Args:
+        strategies_dir: Path to the strategies templates directory.
+        inference_engine: Shared InferenceEngine for new cells.
+        enabled_strategies: If non-empty, ONLY load strategies in this list.
+        disabled_strategies: If non-empty, EXCLUDE strategies in this list.
+
+    Returns:
+        List of Cell instances.
     """
     cells: list[Cell] = []
     dir_path = Path(strategies_dir)
@@ -174,7 +247,11 @@ def load_cells(
         return cells
 
     for yaml_path in sorted(dir_path.glob("*.yaml")):
-        file_cells = load_cells_from_file(yaml_path, inference_engine)
+        file_cells = load_cells_from_file(
+            yaml_path, inference_engine,
+            enabled_strategies=enabled_strategies,
+            disabled_strategies=disabled_strategies,
+        )
         cells.extend(file_cells)
 
     return cells
